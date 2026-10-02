@@ -6,7 +6,7 @@ export default function Home() {
   const [market, setMarket] = useState<any>(null);
 
   useEffect(() => {
-    fetch("http://localhost:5000/api/market/nse")
+    fetch("https://studious-rotary-phone-j9vxx45gpwjh54jv-5000.app.github.dev/api/market/nse")
       .then((res) => res.json())
       .then((data) => setMarket(data));
   }, []);
