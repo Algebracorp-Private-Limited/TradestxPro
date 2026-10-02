@@ -14,11 +14,11 @@ const API_URL =
   "https://studious-rotary-phone-j9vxx45gpwjh54jv-5000.app.github.dev";
 
 const plans = [
-  { name: "7 Day Free Trial", monthly: "₹0", annual: "₹0", text: "Explore the core TradestXPro experience.", features: ["Market dashboard", "Basic watchlist", "Limited preview access"] },
-  { name: "Essential", monthly: "₹999", annual: "₹10,789", text: "Focused market research and disciplined analysis.", features: ["SuperChart · 2 indicators", "2 stock AI analyses", "2 option AI analyses"] },
-  { name: "Plus", monthly: "₹1,999", annual: "₹21,589", text: "More analysis capacity and price alerts.", features: ["SuperChart · 5 indicators", "5 stock AI analyses", "2 option AI analyses", "2 price notifications"], featured: true },
-  { name: "Premium", monthly: "₹999", annual: "₹10,789", text: "Advanced charting and deeper options analysis.", features: ["SuperChart · 10 indicators", "2 charts", "10 stock AI analyses", "Payoff chart", "10 option AI analyses"] },
-  { name: "Ultimate", monthly: "₹999", annual: "₹10,789", text: "Maximum workspace flexibility for advanced users.", features: ["SuperChart · Unlimited indicators", "10 charts", "Unlimited stock AI analyses", "Payoff chart", "Unlimited option AI analyses"] },
+  { name: "7 Day Free Trial", monthlyInr: 0, text: "Explore the core TradestXPro experience.", features: ["Market dashboard", "Basic watchlist", "Limited preview access"] },
+  { name: "Essential", monthlyInr: 999, text: "Focused market research and disciplined analysis.", features: ["SuperChart · 2 indicators", "2 stock AI analyses", "2 option AI analyses"] },
+  { name: "Plus", monthlyInr: 1999, text: "More analysis capacity and price alerts.", features: ["SuperChart · 5 indicators", "5 stock AI analyses", "2 option AI analyses", "2 price notifications"], featured: true },
+  { name: "Premium", monthlyInr: 5999, text: "Advanced charting and deeper options analysis.", features: ["SuperChart · 10 indicators", "2 charts", "10 stock AI analyses", "Payoff chart", "10 option AI analyses"] },
+  { name: "Ultimate", monthlyInr: 19999, text: "Maximum workspace flexibility for advanced users.", features: ["SuperChart · Unlimited indicators", "10 charts", "Unlimited stock AI analyses", "Payoff chart", "Unlimited option AI analyses"] },
 ];
 
 export default function Home() {
@@ -153,9 +153,11 @@ export default function Home() {
         </div>
         <div className="mt-10 grid gap-5 xl:grid-cols-5">
           {plans.map((plan) => {
-            const monthlyInr = Number(plan.monthly.replace(/[₹,]/g, "")) || 0;
-            const annualInr = Number(plan.annual.replace(/[₹,]/g, "")) || 0;
-            const price = currency === "USD" ? "$" + Math.round((annual ? annualInr : monthlyInr) / 90) : annual ? plan.annual : plan.monthly;
+            const monthlyInr = plan.monthlyInr;
+            const annualInr = Math.round(monthlyInr * 12 * 0.9);
+            const price = currency === "USD"
+              ? "$" + Math.round((annual ? annualInr : monthlyInr) / 90)
+              : "₹" + (annual ? annualInr : monthlyInr).toLocaleString("en-IN");
             const featured = plan.featured === true;
             return (
               <article key={plan.name} className={"flex flex-col rounded-2xl border p-6 " + (featured ? "border-white/30 bg-white text-slate-950" : "border-white/10 bg-[#0a0f17]")}>
