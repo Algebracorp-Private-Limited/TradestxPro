@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #05070b;
+  --color-panel: #0b0f17;
+  --color-panel-2: #111723;
+  --color-line: rgb(255 255 255 / 0.09);
+  --color-muted: #8b95a7;
+  --color-soft: #c4cbd8;
+  --color-up: #22c55e;
+  --color-down: #f43f5e;
+  --color-accent: #38bdf8;
+  --color-gold: #f5c451;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+html {
+  color-scheme: dark;
+  background: var(--color-ink);
+}
+
+body {
+  background: var(--color-ink);
+  color: #fff;
+  -webkit-font-smoothing: antialiased;
+}
+
+.grid-bg {
+  background-image:
+    linear-gradient(to right, rgb(255 255 255 / 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(255 255 255 / 0.035) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse at 50% 0%, #000 30%, transparent 75%);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
