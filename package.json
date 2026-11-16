@@ -19,6 +19,7 @@
   },
   "homepage": "https://github.com/Algebracorp-Private-Limited/tradestxpro#readme",
   "dependencies": {
+    "fflate": "^0.8.3",
     "next": "^16.1.6",
     "postgres": "^3.4.9",
     "react": "^19.2.3",

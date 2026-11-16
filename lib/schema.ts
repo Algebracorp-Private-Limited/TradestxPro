@@ -43,4 +43,73 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   ip                 TEXT,
   created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- P2: instrument master (cash segment). Identity = exchange + exchange token.
+CREATE TABLE IF NOT EXISTS instruments (
+  id                 BIGSERIAL PRIMARY KEY,
+  exchange           TEXT        NOT NULL,              -- NSE | BSE
+  token              TEXT        NOT NULL,              -- exchange token / BSE scrip code
+  symbol             TEXT        NOT NULL,              -- exchange trading symbol, e.g. RELIANCE
+  breeze_code        TEXT        NOT NULL,              -- ICICI Breeze stock_code, e.g. RELIND
+  name               TEXT        NOT NULL,
+  series             TEXT,
+  isin               TEXT,
+  tick_size          NUMERIC,
+  lot_size           INTEGER,
+  face_value         NUMERIC,
+  has_derivatives    BOOLEAN     NOT NULL DEFAULT false,
+  active             BOOLEAN     NOT NULL DEFAULT true,
+  synced_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (exchange, token)
+);
+CREATE INDEX IF NOT EXISTS instruments_symbol_idx ON instruments (lower(symbol));
+CREATE INDEX IF NOT EXISTS instruments_isin_idx ON instruments (isin);
+
+-- P2: listed futures & options contracts. Identity = exchange + token;
+-- canonical meaning = exchange + underlying + expiry + strike + option type.
+CREATE TABLE IF NOT EXISTS derivative_contracts (
+  exchange           TEXT        NOT NULL,              -- NFO | BFO
+  token              TEXT        NOT NULL,
+  instrument_type    TEXT        NOT NULL,              -- FUTIDX | FUTSTK | OPTIDX | OPTSTK
+  underlying         TEXT        NOT NULL,              -- exchange symbol, e.g. NIFTY, RELIANCE
+  underlying_name    TEXT        NOT NULL,
+  breeze_code        TEXT        NOT NULL,
+  expiry             DATE        NOT NULL,
+  strike             NUMERIC,                           -- null for futures
+  option_type        TEXT,                              -- CE | PE | null for futures
+  lot_size           INTEGER     NOT NULL,
+  tick_size          NUMERIC,
+  synced_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (exchange, token)
+);
+CREATE INDEX IF NOT EXISTS derivative_underlying_idx ON derivative_contracts (underlying, expiry);
+
+CREATE TABLE IF NOT EXISTS instrument_syncs (
+  id                 BIGSERIAL PRIMARY KEY,
+  source             TEXT        NOT NULL,
+  started_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  finished_at        TIMESTAMPTZ,
+  status             TEXT        NOT NULL DEFAULT 'running',  -- running | ok | error
+  file_date          TIMESTAMPTZ,
+  counts             JSONB,
+  error              TEXT
+);
+
+-- P2: watchlists, scoped per user.
+CREATE TABLE IF NOT EXISTS watchlists (
+  id                 BIGSERIAL PRIMARY KEY,
+  user_id            BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name               TEXT        NOT NULL,
+  position           INTEGER     NOT NULL DEFAULT 0,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS watchlists_user_idx ON watchlists (user_id);
+
+CREATE TABLE IF NOT EXISTS watchlist_items (
+  watchlist_id       BIGINT      NOT NULL REFERENCES watchlists(id) ON DELETE CASCADE,
+  instrument_id      BIGINT      NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
+  position           INTEGER     NOT NULL DEFAULT 0,
+  added_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (watchlist_id, instrument_id)
+);
 `;

@@ -3,7 +3,8 @@
 AI-powered Indian market intelligence terminal for NSE, BSE, F&O, MCX and FX.
 Built in phases per the *TradestXPro Master Blueprint & SOP* (v1.0).
 
-**Current phase: P1 Foundation.** It includes the landing page, pricing, signup with email OTP, login, sessions, logout and a protected dashboard shell. No market data is shown yet. Quotes arrive in P2 once a licensed feed is connected.
+**Live:** P1 Foundation (landing page, pricing, email-OTP signup, login, sessions, dashboard).
+**In progress:** P2 Market data. Done so far: the instrument master (NSE/BSE equities, NFO/BFO futures and options) loaded daily from ICICI Direct's public security master, instrument search, instrument pages, an F&O contract explorer with an option-chain grid, and per-user watchlists. No prices are shown until a licensed feed or the Breeze relay is connected.
 
 ## Stack
 
@@ -37,6 +38,8 @@ npm run build
 3. Add environment variables `RESEND_API_KEY` and `EMAIL_FROM`. Verify your domain in Resend first.
 4. Vercel → Settings → Domains: add your domain and create the DNS records Vercel shows.
 5. Every push to a branch gets a preview URL. Pushes to `main` go to production.
+
+6. Optional: add `CRON_SECRET` (any long random string). Vercel Cron then calls `/api/cron/instruments` daily (see `vercel.json`). Without the secret, that endpoint only runs when the data is more than 20 hours old.
 
 Health check: `GET /api/health` reports the database, email and market-data status.
 

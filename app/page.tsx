@@ -146,7 +146,8 @@ export default async function Home() {
                 <li key={p} className="rounded-2xl border border-line bg-panel p-5">
                   <div className="flex items-center justify-between">
                     <span className="font-mono text-sm text-accent">{p}</span>
-                    {i === 0 && <span className="rounded-full bg-up/15 px-2 py-0.5 text-[11px] font-medium text-up">In progress</span>}
+                    {i === 0 && <span className="rounded-full bg-white/10 px-2 py-0.5 text-[11px] font-medium text-soft">Live</span>}
+                    {i === 1 && <span className="rounded-full bg-up/15 px-2 py-0.5 text-[11px] font-medium text-up">In progress</span>}
                   </div>
                   <p className="mt-2 font-semibold">{PHASES[p]}</p>
                 </li>
