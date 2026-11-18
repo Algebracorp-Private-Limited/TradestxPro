@@ -7,11 +7,13 @@ import { MODULES } from "@/lib/catalog";
 export const LIVE_LINKS = [
   { href: "/dashboard", label: "Dashboard", icon: "◧" },
   { href: "/markets", label: "Markets", icon: "▤" },
+  { href: "/charts", label: "Charts", icon: "⌇" },
+  { href: "/screener", label: "Screener", icon: "⌕" },
   { href: "/watchlists", label: "Watchlists", icon: "☆" },
-  { href: "/derivatives", label: "F&O Contracts", icon: "⇄" },
+  { href: "/derivatives", label: "F&O", icon: "⇄" },
 ];
 
-const LIVE_SLUGS = new Set(["dashboard", "markets", "watchlists"]);
+const LIVE_SLUGS = new Set(["dashboard", "markets", "watchlists", "charts", "screener", "xscript"]);
 
 export function TerminalNav() {
   const path = usePathname();
@@ -49,7 +51,7 @@ export function TerminalNav() {
       </nav>
 
       {/* Mobile tabs */}
-      <nav aria-label="Terminal" className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t border-line bg-panel/95 backdrop-blur lg:hidden">
+      <nav aria-label="Terminal" className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-6 border-t border-line bg-panel/95 backdrop-blur lg:hidden">
         {LIVE_LINKS.map((l) => (
           <Link
             key={l.href}

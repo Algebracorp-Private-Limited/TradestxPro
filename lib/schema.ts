@@ -105,6 +105,79 @@ CREATE TABLE IF NOT EXISTS watchlists (
 );
 CREATE INDEX IF NOT EXISTS watchlists_user_idx ON watchlists (user_id);
 
+-- P3: end-of-day OHLCV bars. series = 'NSE:<symbol>' for equities, 'NSEIDX:<INDEX NAME>' for indices.
+CREATE TABLE IF NOT EXISTS candles (
+  series             TEXT        NOT NULL,
+  d                  DATE        NOT NULL,
+  o                  DOUBLE PRECISION NOT NULL,
+  h                  DOUBLE PRECISION NOT NULL,
+  l                  DOUBLE PRECISION NOT NULL,
+  c                  DOUBLE PRECISION NOT NULL,
+  v                  DOUBLE PRECISION NOT NULL DEFAULT 0,
+  PRIMARY KEY (series, d)
+);
+
+CREATE TABLE IF NOT EXISTS market_indices (
+  key                TEXT        PRIMARY KEY,           -- upper-case index name, e.g. NIFTY 50
+  name               TEXT        NOT NULL,
+  exchange           TEXT        NOT NULL DEFAULT 'NSE',
+  last_d             DATE,
+  close              DOUBLE PRECISION,
+  change_pct         DOUBLE PRECISION,
+  pe                 DOUBLE PRECISION,
+  pb                 DOUBLE PRECISION,
+  div_yield          DOUBLE PRECISION
+);
+
+CREATE TABLE IF NOT EXISTS eod_days (
+  exchange           TEXT        NOT NULL,
+  kind               TEXT        NOT NULL,               -- index | equity
+  d                  DATE        NOT NULL,
+  status             TEXT        NOT NULL,               -- ok | no_data | error
+  rows               INTEGER     NOT NULL DEFAULT 0,
+  error              TEXT,
+  loaded_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (exchange, kind, d)
+);
+
+-- P3: precomputed technical snapshot per NSE equity for the screener (latest EOD bar).
+CREATE TABLE IF NOT EXISTS screener_snapshot (
+  symbol             TEXT        PRIMARY KEY,
+  d                  DATE        NOT NULL,
+  name               TEXT,
+  close              DOUBLE PRECISION,
+  change_pct         DOUBLE PRECISION,
+  volume             DOUBLE PRECISION,
+  avg_vol20          DOUBLE PRECISION,
+  rel_vol            DOUBLE PRECISION,
+  high52             DOUBLE PRECISION,
+  low52              DOUBLE PRECISION,
+  rsi14              DOUBLE PRECISION,
+  ema20              DOUBLE PRECISION,
+  ema50              DOUBLE PRECISION,
+  ema200             DOUBLE PRECISION,
+  macd_hist          DOUBLE PRECISION,
+  macd_hist_prev     DOUBLE PRECISION,
+  adx14              DOUBLE PRECISION,
+  atr_pct            DOUBLE PRECISION,
+  supertrend_dir     SMALLINT,
+  ret5               DOUBLE PRECISION,
+  ret20              DOUBLE PRECISION,
+  ret60              DOUBLE PRECISION,
+  bars               INTEGER,
+  has_derivatives    BOOLEAN     NOT NULL DEFAULT false
+);
+
+-- P3: user XScript files.
+CREATE TABLE IF NOT EXISTS scripts (
+  id                 BIGSERIAL PRIMARY KEY,
+  user_id            BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name               TEXT        NOT NULL,
+  code               TEXT        NOT NULL,
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS scripts_user_idx ON scripts (user_id);
+
 CREATE TABLE IF NOT EXISTS watchlist_items (
   watchlist_id       BIGINT      NOT NULL REFERENCES watchlists(id) ON DELETE CASCADE,
   instrument_id      BIGINT      NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,

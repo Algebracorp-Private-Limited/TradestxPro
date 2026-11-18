@@ -1,8 +1,8 @@
 import "server-only";
 import { unzipSync } from "fflate";
 import { db } from "./db";
-import { parseCsv } from "./csv";
-import { istToday, mapBse, mapContract, mapNse, type CashInstrument, type Contract } from "./instrument-map";
+import { parseCsv } from "./csv.ts";
+import { istToday, mapBse, mapContract, mapNse, type CashInstrument, type Contract } from "./instrument-map.ts";
 
 export const SECURITY_MASTER_URL = "https://directlink.icicidirect.com/NewSecurityMaster/SecurityMaster.zip";
 const CHUNK = 2000;
