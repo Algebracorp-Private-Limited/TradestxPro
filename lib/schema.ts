@@ -168,6 +168,12 @@ CREATE TABLE IF NOT EXISTS screener_snapshot (
   has_derivatives    BOOLEAN     NOT NULL DEFAULT false
 );
 
+-- Short leases for background jobs (expire on their own if a run is killed).
+CREATE TABLE IF NOT EXISTS job_locks (
+  name               TEXT        PRIMARY KEY,
+  until              TIMESTAMPTZ NOT NULL
+);
+
 -- P3: user XScript files.
 CREATE TABLE IF NOT EXISTS scripts (
   id                 BIGSERIAL PRIMARY KEY,

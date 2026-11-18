@@ -7,10 +7,14 @@ import * as ta from "./ta/indicators.ts";
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
 export const BACKFILL_DAYS = 420;
-const LOCK_ID = 727001;
+const LEASE_SECONDS = 330; // longer than the 300 s function limit, so a killed run frees it
 
 async function download(url: string): Promise<ArrayBuffer | null> {
-  const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "*/*", Referer: "https://www.nseindia.com/" }, cache: "no-store" });
+  const res = await fetch(url, {
+    headers: { "User-Agent": UA, Accept: "*/*", Referer: "https://www.nseindia.com/" },
+    cache: "no-store",
+    signal: AbortSignal.timeout(25_000),
+  });
   if (res.status === 404) return null; // holiday / not yet published
   if (!res.ok) throw new Error(`NSE responded ${res.status} for ${url.split("/").pop()}`);
   return res.arrayBuffer();
@@ -40,10 +44,10 @@ export async function ingestDay(sql: Sql, d: string): Promise<{ index: number | 
   if (idx) {
     const { bars, meta } = parseIndexFile(new TextDecoder().decode(idx), d);
     await insertBars(sql, bars);
-    for (const m of meta) {
+    const uniq = [...new Map(meta.map((m) => [m.key, { ...m, last_d: d }])).values()];
+    if (uniq.length) {
       await sql`
-        INSERT INTO market_indices (key, name, last_d, close, change_pct, pe, pb, div_yield)
-        VALUES (${m.key}, ${m.name}, ${d}, ${m.close}, ${m.change_pct}, ${m.pe}, ${m.pb}, ${m.div_yield})
+        INSERT INTO market_indices ${sql(uniq, "key", "name", "last_d", "close", "change_pct", "pe", "pb", "div_yield")}
         ON CONFLICT (key) DO UPDATE SET name = EXCLUDED.name, last_d = EXCLUDED.last_d, close = EXCLUDED.close,
           change_pct = EXCLUDED.change_pct, pe = EXCLUDED.pe, pb = EXCLUDED.pb, div_yield = EXCLUDED.div_yield
         WHERE market_indices.last_d IS NULL OR market_indices.last_d <= EXCLUDED.last_d`;
@@ -76,41 +80,44 @@ export type EodRunResult = { processed: { d: string; index: number | null; equit
 
 /**
  * Loads missing NSE end-of-day files, newest first, within a time budget, then rebuilds the
- * screener snapshot if anything new arrived. Safe to call repeatedly; a DB advisory lock
- * prevents concurrent runs.
+ * screener snapshot once nothing is missing. Safe to call repeatedly: a lease row (which expires
+ * on its own if the function is killed) prevents concurrent runs.
  */
-export async function runEod(budgetMs = 240_000): Promise<EodRunResult> {
+export async function runEod(budgetMs = 150_000): Promise<EodRunResult> {
   const t0 = Date.now();
   const sql = await db();
-  const conn = await sql.reserve();
+  const got = await sql`
+    INSERT INTO job_locks (name, until) VALUES ('eod', now() + ${LEASE_SECONDS} * interval '1 second')
+    ON CONFLICT (name) DO UPDATE SET until = EXCLUDED.until WHERE job_locks.until < now()
+    RETURNING name`;
+  if (!got.length) return { processed: [], remaining: -1, locked: true };
   try {
-    const [{ ok }] = await conn<{ ok: boolean }[]>`SELECT pg_try_advisory_lock(${LOCK_ID}) AS ok`;
-    if (!ok) return { processed: [], remaining: -1, locked: true };
-    try {
-      const candidates = recentWeekdays(latestTradingCandidate(), BACKFILL_DAYS);
-      const done = await conn<{ d: Date }[]>`
-        SELECT d FROM eod_days WHERE exchange = 'NSE' AND kind = 'equity' AND status IN ('ok', 'no_data') AND d >= ${candidates[candidates.length - 1]}`;
-      const doneSet = new Set(done.map((r) => r.d.toISOString().slice(0, 10)));
-      const todo = candidates.filter((d) => !doneSet.has(d));
-      const processed: EodRunResult["processed"] = [];
-      for (const d of todo) {
-        if (Date.now() - t0 > budgetMs) break;
-        try {
-          processed.push({ d, ...(await ingestDay(conn as unknown as Sql, d)) });
-        } catch (e) {
-          await mark(conn as unknown as Sql, "equity", d, "error", 0, String(e).slice(0, 300));
-          throw e;
-        }
+    const candidates = recentWeekdays(latestTradingCandidate(), BACKFILL_DAYS);
+    const done = await sql<{ d: Date }[]>`
+      SELECT d FROM eod_days WHERE exchange = 'NSE' AND kind = 'equity' AND status IN ('ok', 'no_data') AND d >= ${candidates[candidates.length - 1]}`;
+    const doneSet = new Set(done.map((r) => r.d.toISOString().slice(0, 10)));
+    const todo = candidates.filter((d) => !doneSet.has(d));
+    const processed: EodRunResult["processed"] = [];
+    for (const d of todo) {
+      if (Date.now() - t0 > budgetMs) break;
+      try {
+        processed.push({ d, ...(await ingestDay(sql, d)) });
+      } catch (e) {
+        await mark(sql, "equity", d, "error", 0, String(e).slice(0, 300));
+        throw e;
       }
-      let snapshot: number | undefined;
-      const [{ n }] = await conn<{ n: number }[]>`SELECT count(*)::int AS n FROM screener_snapshot`;
-      if ((processed.some((p) => p.equity) || n === 0) && Date.now() - t0 < budgetMs + 40_000) snapshot = await buildSnapshot(sql);
-      return { processed, remaining: todo.length - processed.length, snapshot };
-    } finally {
-      await conn`SELECT pg_advisory_unlock(${LOCK_ID})`;
     }
+    const remaining = todo.length - processed.length;
+    let snapshot: number | undefined;
+    const [{ n, snapD }] = await sql<{ n: number; snapD: Date | null }[]>`
+      SELECT count(*)::int AS n, max(d) AS "snapD" FROM screener_snapshot`;
+    const [{ lastD }] = await sql<{ lastD: Date | null }[]>`
+      SELECT max(d) AS "lastD" FROM eod_days WHERE exchange = 'NSE' AND kind = 'equity' AND status = 'ok'`;
+    const stale = n === 0 || !snapD || (lastD && snapD.getTime() < lastD.getTime());
+    if (remaining === 0 && stale && Date.now() - t0 < 200_000) snapshot = await buildSnapshot(sql);
+    return { processed, remaining, snapshot };
   } finally {
-    conn.release();
+    await sql`DELETE FROM job_locks WHERE name = 'eod'`;
   }
 }
 
@@ -177,8 +184,17 @@ export async function buildSnapshot(sql: Sql): Promise<number> {
 
 export async function eodStatus() {
   const sql = await db();
-  const [r] = await sql<{ last: Date | null; days: number }[]>`
-    SELECT max(d) FILTER (WHERE status = 'ok') AS last, count(*) FILTER (WHERE status = 'ok')::int AS days
+  const [r] = await sql<{ last: Date | null; days: number; errors: number; err: string | null; snap: number }[]>`
+    SELECT max(d) FILTER (WHERE status = 'ok') AS last, count(*) FILTER (WHERE status = 'ok')::int AS days,
+           count(*) FILTER (WHERE status = 'error')::int AS errors,
+           (SELECT error FROM eod_days WHERE status = 'error' ORDER BY loaded_at DESC LIMIT 1) AS err,
+           (SELECT count(*)::int FROM screener_snapshot) AS snap
       FROM eod_days WHERE exchange = 'NSE' AND kind = 'equity'`;
-  return { lastDate: r?.last ? r.last.toISOString().slice(0, 10) : null, days: r?.days ?? 0 };
+  return {
+    lastDate: r?.last ? r.last.toISOString().slice(0, 10) : null,
+    days: r?.days ?? 0,
+    errors: r?.errors ?? 0,
+    lastError: r?.err ?? null,
+    screenerRows: r?.snap ?? 0,
+  };
 }

@@ -13,7 +13,7 @@ export const maxDuration = 300;
 export async function GET() {
   if (!isDbConfigured()) return fail("Database not configured.", 503);
   try {
-    const r = await runEod(240_000);
+    const r = await runEod(150_000);
     if (r.locked) return fail("An end-of-day load is already running.", 409);
     return json({ ok: true, ...r });
   } catch (e) {
