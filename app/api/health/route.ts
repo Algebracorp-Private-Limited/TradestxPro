@@ -1,6 +1,7 @@
 import { db, isDbConfigured } from "@/lib/db";
 import { isMailConfigured } from "@/lib/mail";
 import { eodStatus } from "@/lib/eod";
+import { isVaultConfigured } from "@/lib/brokers/vault";
 import { json } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
@@ -25,6 +26,8 @@ export async function GET() {
     database,
     email: isMailConfigured() ? "ok" : "not_configured",
     marketData: "not_connected",
+    brokerConnect: isVaultConfigured() ? "ok" : "not_configured",
+    adminConfigured: Boolean(process.env.ADMIN_EMAILS?.trim()),
     endOfDay: eod,
   });
 }
