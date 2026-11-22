@@ -8,6 +8,8 @@ Built in phases per the *TradestXPro Master Blueprint & SOP* (v1.0).
 
 **Broker Connect (new):** users connect their own ICICI Direct (Breeze), Kotak Neo or Dhan account. Zerodha, Upstox, Angel One and Fyers are in beta and need platform app keys. Charts for NSE stocks and the main indices then use the user's own broker data, including intraday timeframes. Credentials are AES-256-GCM encrypted (`BROKER_ENC_KEY`). TOTP and MPIN are never stored. Order placement is not enabled.
 
+**Options & navigation (new):** `/options` has an index → constituents underlying list, a live option chain from the user's broker (ICICI / Dhan) with OI, OI change, volume, IV and delta, PCR, max pain and ATM, plus a contract panel (Greeks from the broker or Black-Scholes, top-5 depth, spread %, most-traded contracts, ⓘ explanations, contract chart). A collapsible watchlist/indices panel on every terminal page switches the current page to the picked scrip.
+
 **Algo trading waitlist:** `/algo-trading` explains algo trading with worked XScript strategy examples and collects interest. Admins (`ADMIN_EMAILS`) see counts and a CSV export at `/admin/waitlist`.
 
 **In progress:** P2 Market data. Done so far: the instrument master (NSE/BSE equities, NFO/BFO futures and options) loaded daily from ICICI Direct's public security master, instrument search, instrument pages, an F&O contract explorer with an option-chain grid, and per-user watchlists. No prices are shown until a licensed feed or the Breeze relay is connected.

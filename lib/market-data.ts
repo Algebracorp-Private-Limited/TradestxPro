@@ -95,6 +95,7 @@ export async function getUnderlying(underlying: string, expiry?: string, exchang
     SELECT exchange, token, instrument_type, underlying_name, breeze_code, expiry, strike, option_type, lot_size, tick_size
       FROM derivative_contracts
      WHERE underlying = ${u} AND (${exchange ?? null}::text IS NULL OR exchange = ${exchange?.toUpperCase() ?? null})
+       AND expiry >= (now() AT TIME ZONE 'Asia/Kolkata')::date
      ORDER BY expiry, strike NULLS FIRST, option_type`;
   if (!rows.length) return null;
 

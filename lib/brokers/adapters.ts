@@ -51,16 +51,21 @@ const breeze: Adapter = {
   async history({ session, creds, inst, tf, from, to }) {
     const native: Tf = tf === "1m" ? "1m" : tf === "5m" || tf === "15m" ? "5m" : tf === "30m" || tf === "1h" ? "30m" : "1D";
     const interval = { "1m": "1minute", "5m": "5minute", "30m": "30minute", "1D": "1day" }[native as "1m"];
-    const code = inst.kind === "index" ? INDEX_IDS[inst.symbol]?.breeze : inst.breezeCode;
+    const code = inst.contract ? inst.breezeCode : inst.kind === "index" ? INDEX_IDS[inst.symbol]?.breeze : inst.breezeCode;
     if (!code) throw new BrokerError("This instrument is not available from ICICI.");
     const q = new URLSearchParams({
       interval: interval!,
       from_date: from.toISOString().slice(0, 19) + ".000Z",
       to_date: to.toISOString().slice(0, 19) + ".000Z",
       stock_code: code,
-      exch_code: inst.kind === "index" ? (INDEX_IDS[inst.symbol]?.breezeExch ?? "NSE") : "NSE",
-      product_type: "cash",
+      exch_code: inst.contract ? inst.contract.exchange : inst.kind === "index" ? (INDEX_IDS[inst.symbol]?.breezeExch ?? "NSE") : "NSE",
+      product_type: inst.contract ? (inst.contract.right ? "options" : "futures") : "cash",
     });
+    if (inst.contract) {
+      q.set("expiry_date", `${inst.contract.expiry}T07:00:00.000Z`);
+      q.set("right", inst.contract.right === "CE" ? "call" : inst.contract.right === "PE" ? "put" : "others");
+      q.set("strike_price", inst.contract.strike !== null ? String(inst.contract.strike) : "0");
+    }
     const r = await httpJson<{ Success?: Record<string, unknown>[]; Error?: string }>(`${BREEZE_V2}historicalcharts?${q}`, {
       headers: { "Content-Type": "application/json", "X-SessionToken": session.b64, apikey: creds.appKey },
     });
@@ -98,9 +103,12 @@ const dhan: Adapter = {
   async history({ session, inst, tf, from, to }) {
     const s = { accessToken: session.accessToken, clientId: session.clientId };
     const isIdx = inst.kind === "index";
-    const securityId = isIdx ? INDEX_IDS[inst.symbol]?.dhan : inst.token;
+    const k = inst.contract;
+    const securityId = k ? k.token : isIdx ? INDEX_IDS[inst.symbol]?.dhan : inst.token;
     if (!securityId) throw new BrokerError("This instrument is not available from Dhan.");
-    const base = { securityId, exchangeSegment: isIdx ? "IDX_I" : "NSE_EQ", instrument: isIdx ? "INDEX" : "EQUITY", oi: false };
+    const base = k
+      ? { securityId, exchangeSegment: k.exchange === "NFO" ? "NSE_FNO" : "BSE_FNO", instrument: k.type, oi: true }
+      : { securityId, exchangeSegment: isIdx ? "IDX_I" : "NSE_EQ", instrument: isIdx ? "INDEX" : "EQUITY", oi: false };
     type R = { open: number[]; high: number[]; low: number[]; close: number[]; volume: number[]; timestamp: number[] };
     const toBars = (r: R) => sortBars((r?.timestamp ?? []).map((t, i) => toBar(t, r.open[i], r.high[i], r.low[i], r.close[i], r.volume?.[i])));
     if (tf === "1D" || tf === "1W") {

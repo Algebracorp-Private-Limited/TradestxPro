@@ -4,7 +4,7 @@ import { db } from "../db";
 import { BROKER_BY_ID, CALLBACK_PATH, type BrokerId } from "./catalog";
 import { open, seal } from "./vault";
 import { ADAPTERS, HISTORY_PREFERENCE } from "./adapters";
-import { BrokerAuthError, type Creds, type Instrument, type LoginResult, type Session, type Tf, lookbackDays } from "./common";
+import { BrokerAuthError, BrokerError, type Creds, type Instrument, type LoginResult, type Session, type Tf, lookbackDays } from "./common";
 import type { Bar } from "../ta/catalog";
 
 export type ConnectionView = {
@@ -150,6 +150,9 @@ export async function historyBroker(userId: number): Promise<{ broker: BrokerId;
 export async function brokerHistory(userId: number, inst: Instrument, tf: Tf): Promise<{ broker: BrokerId; bars: Bar[] } | null> {
   const hb = await historyBroker(userId);
   if (!hb) return null;
+  if (inst.contract && hb.broker !== "icici" && hb.broker !== "dhan") {
+    throw new BrokerError(`Contract charts currently need ICICI Direct or Dhan (connected: ${hb.broker}).`);
+  }
   const to = new Date();
   const from = new Date(to.getTime() - lookbackDays(tf) * 86400_000);
   try {

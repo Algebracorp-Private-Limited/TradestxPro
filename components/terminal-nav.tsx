@@ -10,11 +10,12 @@ export const LIVE_LINKS = [
   { href: "/charts", label: "Charts", icon: "⌇" },
   { href: "/screener", label: "Screener", icon: "⌕" },
   { href: "/watchlists", label: "Watchlists", icon: "☆" },
+  { href: "/options", label: "Options", icon: "⋮" },
   { href: "/derivatives", label: "F&O", icon: "⇄" },
   { href: "/brokers", label: "Brokers", icon: "⛓" },
 ];
 
-const LIVE_SLUGS = new Set(["dashboard", "markets", "watchlists", "charts", "screener", "xscript", "brokers"]);
+const LIVE_SLUGS = new Set(["dashboard", "markets", "watchlists", "charts", "screener", "xscript", "brokers", "options"]);
 
 export function TerminalNav() {
   const path = usePathname();
@@ -52,13 +53,13 @@ export function TerminalNav() {
       </nav>
 
       {/* Mobile tabs */}
-      <nav aria-label="Terminal" className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-7 border-t border-line bg-panel/95 backdrop-blur lg:hidden">
+      <nav aria-label="Terminal" className="fixed inset-x-0 bottom-0 z-30 flex overflow-x-auto border-t border-line bg-panel/95 backdrop-blur lg:hidden">
         {LIVE_LINKS.map((l) => (
           <Link
             key={l.href}
             href={l.href}
             aria-current={active(l.href) ? "page" : undefined}
-            className={`flex flex-col items-center gap-0.5 py-2.5 text-[11px] ${active(l.href) ? "text-white" : "text-muted"}`}
+            className={`flex min-w-[64px] flex-1 flex-col items-center gap-0.5 py-2.5 text-[11px] ${active(l.href) ? "text-white" : "text-muted"}`}
           >
             <span className="font-mono text-sm text-accent" aria-hidden>{l.icon}</span>
             {l.label}

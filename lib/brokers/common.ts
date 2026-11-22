@@ -11,6 +11,8 @@ export type Instrument = {
   token: string | null; // NSE exchange token (stocks)
   isin: string | null;
   breezeCode: string | null;
+  /** Set for futures & options contracts (charts of a single contract). */
+  contract?: { exchange: "NFO" | "BFO"; token: string; type: string; expiry: string; strike: number | null; right: "CE" | "PE" | null };
 };
 
 export type Creds = Record<string, string>;

@@ -29,6 +29,7 @@ export async function getBars(symbol: string, tf: string, userId?: number): Prom
     return { symbol, name: p?.description ?? code, source: "Delta Exchange", delayed: null, tf, tfs: [...DELTA_TFS], bars };
   }
 
+  if (prefix === "NFO" || prefix === "BFO") return contractBars(prefix, code, tf, userId);
   if (prefix !== "NSE" && prefix !== "NSEIDX" && prefix !== "BSEIDX") return null;
   const sql = await db();
 
@@ -116,4 +117,30 @@ export async function listIndices(): Promise<IndexRow[]> {
   const rows = await sql<{ key: string; name: string; last_d: Date | null; close: number | null; change_pct: number | null; pe: number | null; pb: number | null; div_yield: number | null }[]>`
     SELECT key, name, last_d, close, change_pct, pe, pb, div_yield FROM market_indices ORDER BY key`;
   return rows.map((r) => ({ key: r.key, name: r.name, lastDate: r.last_d?.toISOString().slice(0, 10) ?? null, close: r.close, changePct: r.change_pct, pe: r.pe, pb: r.pb, divYield: r.div_yield }));
+}
+
+/** Chart of a single futures/options contract, from the user's broker (ICICI or Dhan). */
+async function contractBars(exchange: "NFO" | "BFO", token: string, tf: string, userId?: number): Promise<BarsResponse | null> {
+  const sql = await db();
+  const [c] = await sql<{ instrument_type: string; underlying: string; breeze_code: string; expiry: Date; strike: string | null; option_type: "CE" | "PE" | null }[]>`
+    SELECT instrument_type, underlying, breeze_code, expiry, strike, option_type FROM derivative_contracts WHERE exchange = ${exchange} AND token = ${token}`;
+  if (!c) return null;
+  const expiry = c.expiry.toISOString().slice(0, 10);
+  const strike = c.strike !== null ? Number(c.strike) : null;
+  const name = `${c.underlying} ${expiry}${strike !== null ? ` ${strike} ${c.option_type}` : " FUT"}`;
+  const symbol = `${exchange}:${token}`;
+  const base = { symbol, name, delayed: null, tf, tfs: [...BROKER_TFS] };
+  if (!userId || !isVaultConfigured()) return { ...base, source: "—", bars: [], notice: "Connect a broker to chart option and futures contracts." };
+  const inst: Instrument = {
+    kind: "stock", symbol: c.underlying, token: null, isin: null, breezeCode: c.breeze_code,
+    contract: { exchange, token, type: c.instrument_type, expiry, strike, right: c.option_type },
+  };
+  if (!(BROKER_TFS as string[]).includes(tf)) tf = "5m";
+  try {
+    const r = await brokerHistory(userId, inst, tf as Tf);
+    if (!r) return { ...base, tf, source: "—", bars: [], notice: "Connect ICICI Direct or Dhan to chart option contracts." };
+    return { ...base, tf, source: `${BROKER_BY_ID[r.broker].name} (your account)`, bars: r.bars };
+  } catch (e) {
+    return { ...base, tf, source: "—", bars: [], notice: (e as Error).message };
+  }
 }
