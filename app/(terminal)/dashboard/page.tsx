@@ -3,12 +3,11 @@ import Link from "next/link";
 import { getSessionUser } from "@/lib/auth";
 import { lastSync } from "@/lib/instruments";
 import { listWatchlists } from "@/lib/market-data";
-import { FeedBanner, Dash } from "@/components/feed-banner";
+import { MarketOverview } from "@/components/market-overview";
 import { InstrumentSearch } from "@/components/instrument-search";
 
 export const metadata: Metadata = { title: "Dashboard" };
 
-const INDEX_TILES = ["NIFTY 50", "SENSEX", "NIFTY BANK", "INDIA VIX", "USD/INR", "MCX GOLD"];
 
 function daysLeft(iso: string | null): number | null {
   if (!iso) return null;
@@ -37,25 +36,12 @@ export default async function Dashboard() {
         </div>
       </section>
 
-      <FeedBanner compact />
-
       <section aria-labelledby="search" className="rounded-2xl border border-line bg-panel/60 p-4 sm:p-5">
         <h2 id="search" className="mb-3 text-sm font-medium text-soft">Find an instrument</h2>
         <InstrumentSearch limit={6} />
       </section>
 
-      <section aria-labelledby="indices">
-        <h2 id="indices" className="mb-3 text-sm font-medium text-soft">Market overview</h2>
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-          {INDEX_TILES.map((name) => (
-            <div key={name} className="rounded-xl border border-line bg-panel p-4">
-              <p className="text-xs text-muted">{name}</p>
-              <p className="mt-2 font-mono text-xl"><Dash /></p>
-              <p className="mt-1 text-[11px] text-muted">Awaiting feed</p>
-            </div>
-          ))}
-        </div>
-      </section>
+      <MarketOverview />
 
       <section className="grid gap-3 md:grid-cols-3">
         <Link href="/markets" className="rounded-xl border border-line bg-panel p-5 hover:border-white/20">

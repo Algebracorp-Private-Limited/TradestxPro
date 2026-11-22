@@ -7,6 +7,7 @@ import { brokerHistory, historyBroker } from "./brokers/store";
 import { BROKER_BY_ID } from "./brokers/catalog";
 import { BROKER_TFS, INDEX_IDS, type Instrument, type Tf } from "./brokers/common";
 import { isVaultConfigured } from "./brokers/vault";
+import { BSE_INDICES } from "./index-catalog";
 
 export type ChartSymbol = { symbol: string; name: string; kind: "index" | "stock" | "crypto"; exchange: string };
 export type BarsResponse = { symbol: string; name: string; source: string; delayed: string | null; tf: string; tfs: string[]; bars: Bar[]; notice?: string };
@@ -28,7 +29,7 @@ export async function getBars(symbol: string, tf: string, userId?: number): Prom
     return { symbol, name: p?.description ?? code, source: "Delta Exchange", delayed: null, tf, tfs: [...DELTA_TFS], bars };
   }
 
-  if (prefix !== "NSE" && prefix !== "NSEIDX") return null;
+  if (prefix !== "NSE" && prefix !== "NSEIDX" && prefix !== "BSEIDX") return null;
   const sql = await db();
 
   // Prefer the user's own connected broker (intraday + today's candle); fall back to end-of-day files.
@@ -37,7 +38,7 @@ export async function getBars(symbol: string, tf: string, userId?: number): Prom
     const hb = await historyBroker(userId).catch(() => null);
     if (hb && (BROKER_TFS as string[]).includes(tf)) {
       let inst: Instrument | null = null;
-      if (prefix === "NSEIDX") inst = { kind: "index", symbol: code.toUpperCase(), token: null, isin: null, breezeCode: null };
+      if (prefix === "NSEIDX" || prefix === "BSEIDX") inst = { kind: "index", symbol: code.toUpperCase(), token: null, isin: null, breezeCode: null };
       else {
         const [i] = await sql<{ token: string; isin: string | null; breeze_code: string; name: string }[]>`
           SELECT token, isin, breeze_code, name FROM instruments WHERE exchange = 'NSE' AND symbol = ${code.toUpperCase()} AND active LIMIT 1`;
@@ -57,6 +58,10 @@ export async function getBars(symbol: string, tf: string, userId?: number): Prom
       }
     }
   }
+  if (prefix === "BSEIDX") {
+    // No public end-of-day source for BSE indices yet: they need a connected broker.
+    return { symbol: `${prefix}:${code.toUpperCase()}`, name: await displayName(sql, prefix, code), source: "—", delayed: "End of day", tf, tfs: [...EOD_TFS], bars: [], notice: notice ?? "Connect ICICI Direct or Dhan on the Brokers page to chart BSE indices." };
+  }
   if (!(EOD_TFS as readonly string[]).includes(tf)) tf = "1D";
   const rows = await sql<{ d: Date; o: number; h: number; l: number; c: number; v: number }[]>`
     SELECT d, o, h, l, c, v FROM candles WHERE series = ${prefix + ":" + code.toUpperCase()} ORDER BY d DESC LIMIT 2500`;
@@ -68,6 +73,7 @@ export async function getBars(symbol: string, tf: string, userId?: number): Prom
 }
 
 async function displayName(sql: Awaited<ReturnType<typeof db>>, prefix: string, code: string): Promise<string> {
+  if (prefix === "BSEIDX") return BSE_INDICES.find((b) => b.key === code.toUpperCase())?.name ?? code;
   if (prefix === "NSEIDX") {
     const [m] = await sql<{ name: string }[]>`SELECT name FROM market_indices WHERE key = ${code.toUpperCase()}`;
     return m?.name ?? code;

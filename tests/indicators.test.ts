@@ -107,3 +107,17 @@ test("PSAR and Ichimoku produce values without look-ahead", () => {
   assert.ok(Number.isNaN(ich.spanA[30]));
   assert.ok(!Number.isNaN(ich.spanA[60]));
 });
+
+test("anchored VWAP and bands", () => {
+  const day = 1_763_400_000; // a timestamp; anchors use IST dates
+  const t = [day, day + 60, day + 120];
+  const r = ta.vwapBands([10, 20, 30], [1, 1, 2], t, "session");
+  near(r.vwap[2], (10 + 20 + 60) / 4, 1e-9);
+  const variance = (100 + 400 + 2 * 900) / 4 - ((10 + 20 + 60) / 4) ** 2;
+  near(r.sd[2], Math.sqrt(variance), 1e-9);
+  const nextDay = ta.vwapBands([10, 50], [1, 1], [day, day + 86400], "session");
+  assert.equal(nextDay.vwap[1], 50); // resets each session
+  const week = ta.vwapBands([10, 50], [1, 1], [day, day + 86400], "month");
+  near(week.vwap[1], 30, 1e-9);
+  assert.deepEqual(ta.shift([1, 2, 3], 1).slice(1), [1, 2]);
+});

@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { Logo } from "@/components/site";
 import { LogoutButton } from "@/components/logout-button";
 import { TerminalNav } from "@/components/terminal-nav";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { getSessionUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +17,7 @@ export default async function TerminalLayout({ children }: { children: React.Rea
         <Logo />
         <div className="flex items-center gap-3">
           <span className="hidden text-sm text-muted sm:inline">{user.email}</span>
+          <ThemeToggle />
           <LogoutButton />
         </div>
       </header>

@@ -5,10 +5,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { PriceChart, type ActiveIndicator, type ChartStyle } from "./price-chart";
 import { useBars } from "./use-bars";
 import { SymbolSearch } from "./symbol-search";
-import { IndicatorChips, IndicatorPicker } from "./indicator-picker";
+import { IndicatorPicker } from "./indicator-picker";
 import { XScriptLab, type AppliedScript } from "./xscript-lab";
 import type { ChartEngine, Drawing, DrawingTool } from "./engine";
-import { defaultParams } from "@/lib/ta/catalog";
+import { newIndicator } from "@/lib/ta/indicator-settings";
 import { runXScript, XScriptError, type XInput, type XResult } from "@/lib/xscript/xscript";
 
 const EOD_TFS = ["1D", "1W", "1M"];
@@ -21,7 +21,9 @@ const STYLES: { id: ChartStyle; label: string }[] = [
   { id: "area", label: "Area" },
 ];
 const TOOLS: { id: DrawingTool; label: string; icon: string }[] = [
+  { id: "none", label: "Cursor (select / move drawings)", icon: "✛" },
   { id: "trend", label: "Trend line", icon: "╱" },
+  { id: "ray", label: "Ray", icon: "↗" },
   { id: "hline", label: "Horizontal line", icon: "―" },
   { id: "rect", label: "Rectangle", icon: "▭" },
   { id: "fib", label: "Fibonacci retracement", icon: "≡" },
@@ -138,17 +140,6 @@ export function ChartTerminal() {
         >
           {"{}"} XScript Lab
         </button>
-        <span className="mx-1 hidden h-5 w-px bg-line sm:block" aria-hidden />
-        <div role="group" aria-label="Drawing tools" className="flex gap-0.5">
-          {TOOLS.map((t) => (
-            <button key={t.id} title={t.label} aria-label={t.label} aria-pressed={tool === t.id} onClick={() => setTool(tool === t.id ? "none" : t.id)}
-              className={`h-7 w-7 rounded-md text-sm ${tool === t.id ? "bg-gold/20 text-gold" : "text-soft hover:bg-white/5"}`}>
-              {t.icon}
-            </button>
-          ))}
-          <button title="Undo last drawing" aria-label="Undo last drawing" disabled={!layout.drawings.length} onClick={() => setLayout((l) => ({ ...l, drawings: l.drawings.slice(0, -1) }))} className="h-7 w-7 rounded-md text-sm text-soft hover:bg-white/5 disabled:opacity-30">↶</button>
-          <button title="Clear drawings" aria-label="Clear drawings" disabled={!layout.drawings.length} onClick={() => setLayout((l) => ({ ...l, drawings: [] }))} className="h-7 w-7 rounded-md text-sm text-soft hover:bg-white/5 disabled:opacity-30">⌫</button>
-        </div>
         <div className="ml-auto flex items-center gap-1">
           <button aria-label="Zoom in" onClick={() => engineRef.current?.zoom(1.25)} className="h-7 w-7 rounded-md text-soft hover:bg-white/5">＋</button>
           <button aria-label="Zoom out" onClick={() => engineRef.current?.zoom(0.8)} className="h-7 w-7 rounded-md text-soft hover:bg-white/5">－</button>
@@ -171,19 +162,34 @@ export function ChartTerminal() {
       <div className="flex flex-wrap items-center gap-2 border-b border-line bg-ink px-3 py-1.5">
         <span className="max-w-[40ch] truncate text-xs text-soft" title={data.name}>{data.name}</span>
         <span className={`rounded px-1.5 py-0.5 text-[10px] ${data.delayed ? "bg-gold/15 text-gold" : "bg-up/15 text-up"}`}>{data.delayed ?? "Live · refreshes 30s"}</span>
-        <IndicatorChips items={layout.indicators} onChange={setIndicators} />
+        <span className="text-[11px] text-muted">Click an indicator name on the chart for its settings.</span>
         {data.notice && <span className="text-xs text-gold">{data.notice}</span>}
-        {tool !== "none" && <span className="text-xs text-gold">{tool === "hline" ? "Click the chart to place a line" : "Click two points on the chart"}</span>}
+        {tool !== "none" && <span className="text-xs text-gold">{tool === "hline" ? "Click the chart to place a line" : "Click two points on the chart · Esc to cancel"}</span>}
         {savedNote && <span role="status" className="text-xs text-up">{savedNote}</span>}
       </div>
 
       <div className={`grid min-h-0 flex-1 ${lab ? "grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)_420px] lg:grid-rows-1" : ""}`}>
-        <div className="relative min-h-0">
+        <div className="relative flex min-h-0">
+          <div role="toolbar" aria-label="Drawing tools" aria-orientation="vertical" className="flex w-10 shrink-0 flex-col items-center gap-1 border-r border-line bg-panel py-2">
+            {TOOLS.map((t) => (
+              <button key={t.id} title={t.label} aria-label={t.label} aria-pressed={tool === t.id} onClick={() => setTool(tool === t.id && t.id !== "none" ? "none" : t.id)}
+                className={`h-8 w-8 rounded-md text-sm ${tool === t.id ? "bg-accent/20 text-accent" : "text-soft hover:bg-white/5 hover:text-white"}`}>
+                {t.icon}
+              </button>
+            ))}
+            <span className="my-1 h-px w-6 bg-line" aria-hidden />
+            <button title="Delete selected drawing (Del)" aria-label="Delete selected drawing" onClick={() => engineRef.current?.deleteSelected()} className="h-8 w-8 rounded-md text-sm text-soft hover:bg-white/5 hover:text-rose-300">🗑</button>
+            <button title="Undo last drawing" aria-label="Undo last drawing" disabled={!layout.drawings.length} onClick={() => setLayout((l) => ({ ...l, drawings: l.drawings.slice(0, -1) }))} className="h-8 w-8 rounded-md text-sm text-soft hover:bg-white/5 disabled:opacity-30">↶</button>
+            <button title="Clear all drawings" aria-label="Clear all drawings" disabled={!layout.drawings.length} onClick={() => { if (confirm("Remove all drawings on this chart?")) setLayout((l) => ({ ...l, drawings: [] })); }} className="h-8 w-8 rounded-md text-sm text-soft hover:bg-white/5 disabled:opacity-30">⌫</button>
+          </div>
+          <div className="relative min-h-0 min-w-0 flex-1">
           {data.status === "ready" && data.bars.length > 0 ? (
             <PriceChart
               bars={data.bars}
               style={layout.style}
               indicators={layout.indicators}
+              onIndicatorsChange={setIndicators}
+              tf={tf}
               scripts={results}
               intraday={!["1D", "1W", "1M"].includes(tf)}
               tool={tool}
@@ -198,6 +204,7 @@ export function ChartTerminal() {
               {data.status === "error" ? data.error : data.status === "ready" ? "No price history for this symbol yet." : "Loading chart…"}
             </div>
           )}
+          </div>
         </div>
         {lab && (
           <div className="min-h-0 border-t border-line lg:border-l lg:border-t-0">
@@ -217,14 +224,14 @@ export function ChartTerminal() {
       </div>
 
       <p className="border-t border-line bg-panel px-3 py-1 text-[10px] text-muted">
-        Source: {data.source || "—"}. Scroll to zoom · drag to pan · double-click to reset. Research tool only, not investment advice.
+        Source: {data.source || "—"}. Scroll to zoom · drag to pan (up/down too) · drag or scroll the price axis to stretch it · double-click to reset. Select a drawing to move it; Del removes it. Research tool only, not investment advice.
       </p>
 
       {picker && (
         <IndicatorPicker
           onClose={() => setPicker(false)}
           onAdd={(def) => {
-            setIndicators([...layout.indicators, { uid: `${def.id}-${Date.now()}`, id: def.id, params: defaultParams(def) }]);
+            setIndicators([...layout.indicators, newIndicator(def)]);
             setPicker(false);
           }}
         />

@@ -58,7 +58,7 @@ const breeze: Adapter = {
       from_date: from.toISOString().slice(0, 19) + ".000Z",
       to_date: to.toISOString().slice(0, 19) + ".000Z",
       stock_code: code,
-      exch_code: "NSE",
+      exch_code: inst.kind === "index" ? (INDEX_IDS[inst.symbol]?.breezeExch ?? "NSE") : "NSE",
       product_type: "cash",
     });
     const r = await httpJson<{ Success?: Record<string, unknown>[]; Error?: string }>(`${BREEZE_V2}historicalcharts?${q}`, {

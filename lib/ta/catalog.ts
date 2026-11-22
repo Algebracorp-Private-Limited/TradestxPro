@@ -11,7 +11,20 @@ export type Output = {
   style?: "line" | "histogram" | "dots" | "area";
 };
 
-export type ParamDef = { key: string; label: string; default: number; min: number; max: number; step?: number };
+/** Every parameter is stored as a number: selects store the option index, checkboxes store 0/1. */
+export type ParamDef = {
+  key: string;
+  label: string;
+  default: number;
+  min: number;
+  max: number;
+  step?: number;
+  kind?: "number" | "select" | "bool";
+  options?: string[];
+  group?: string;
+};
+
+export type ComputeContext = { intraday: boolean };
 
 export type IndicatorDef = {
   id: string;
@@ -22,7 +35,7 @@ export type IndicatorDef = {
   params: ParamDef[];
   levels?: number[];
   range?: [number, number];
-  compute: (bars: Bar[], p: Record<string, number>) => Output[];
+  compute: (bars: Bar[], p: Record<string, number>, ctx: ComputeContext) => Output[];
 };
 
 const cols = (bars: Bar[]) => ({
@@ -33,6 +46,19 @@ const cols = (bars: Bar[]) => ({
   v: bars.map((b) => b.v),
   t: bars.map((b) => b.t),
 });
+
+export const SOURCE_NAMES = ["(H + L + C)/3", "Close", "Open", "High", "Low", "(H + L)/2", "(O + H + L + C)/4"];
+function sourceSeries(x: ReturnType<typeof cols>, idx: number): number[] {
+  switch (idx) {
+    case 1: return x.c;
+    case 2: return x.o;
+    case 3: return x.h;
+    case 4: return x.l;
+    case 5: return x.h.map((h, i) => (h + x.l[i]) / 2);
+    case 6: return x.o.map((o, i) => (o + x.h[i] + x.l[i] + x.c[i]) / 4);
+    default: return x.h.map((h, i) => (h + x.l[i] + x.c[i]) / 3);
+  }
+}
 
 const len = (key = "length", def = 14, label = "Length"): ParamDef => ({ key, label, default: def, min: 1, max: 500 });
 const mult = (def = 2, key = "mult", label = "Multiplier"): ParamDef => ({ key, label, default: def, min: 0.1, max: 10, step: 0.1 });
@@ -111,10 +137,37 @@ export const INDICATORS: IndicatorDef[] = [
     },
   },
   {
-    id: "vwap", name: "VWAP (session)", short: "VWAP", pane: "overlay", category: "Volume", params: [],
-    compute: (b) => {
+    id: "vwap", name: "VWAP", short: "VWAP", pane: "overlay", category: "Volume",
+    params: [
+      { key: "hideDaily", label: "Hide VWAP on 1D or above", default: 0, min: 0, max: 1, kind: "bool", group: "VWAP settings" },
+      { key: "anchor", label: "Anchor period", default: 0, min: 0, max: 2, kind: "select", options: ["Session", "Week", "Month"], group: "VWAP settings" },
+      { key: "source", label: "Source", default: 0, min: 0, max: 6, kind: "select", options: SOURCE_NAMES, group: "VWAP settings" },
+      { key: "offset", label: "Offset", default: 0, min: -500, max: 500, group: "VWAP settings" },
+      { key: "bandsMode", label: "Bands calculation mode", default: 0, min: 0, max: 1, kind: "select", options: ["Standard deviation", "Percentage"], group: "Bands settings" },
+      { key: "band1", label: "Bands multiplier #1", default: 1, min: 0, max: 1, kind: "bool", group: "Bands settings" },
+      { key: "mult1", label: "Multiplier #1", default: 1, min: 0, max: 50, step: 0.1, group: "Bands settings" },
+      { key: "band2", label: "Bands multiplier #2", default: 1, min: 0, max: 1, kind: "bool", group: "Bands settings" },
+      { key: "mult2", label: "Multiplier #2", default: 2, min: 0, max: 50, step: 0.1, group: "Bands settings" },
+      { key: "band3", label: "Bands multiplier #3", default: 1, min: 0, max: 1, kind: "bool", group: "Bands settings" },
+      { key: "mult3", label: "Multiplier #3", default: 3, min: 0, max: 50, step: 0.1, group: "Bands settings" },
+    ],
+    compute: (b, p, ctx) => {
+      if (p.hideDaily && !ctx.intraday) return [];
       const x = cols(b);
-      return [{ key: "vwap", label: "VWAP", values: ta.vwap(x.h, x.l, x.c, x.v, x.t), color: "#e879f9" }];
+      const src = sourceSeries(x, p.source);
+      const anchor = (["session", "week", "month"] as const)[p.anchor] ?? "session";
+      const r = ta.vwapBands(src, x.v, x.t, anchor);
+      const pct = p.bandsMode === 1;
+      const band = (m: number, sign: 1 | -1) => r.vwap.map((v, i) => (pct ? v * (1 + (sign * m) / 100) : v + sign * m * r.sd[i]));
+      const outs: Output[] = [{ key: "vwap", label: `VWAP ${["Session", "Week", "Month"][p.anchor] ?? ""}`, values: r.vwap, color: "#a855f7" }];
+      const bandColors = ["#4caf50", "#a3a32a", "#14b8a6"];
+      ([1, 2, 3] as const).forEach((k, i) => {
+        if (!p[`band${k}`]) return;
+        const m = p[`mult${k}`];
+        outs.push({ key: `up${k}`, label: `Upper #${k}`, values: band(m, 1), color: bandColors[i] });
+        outs.push({ key: `lo${k}`, label: `Lower #${k}`, values: band(m, -1), color: bandColors[i] });
+      });
+      return outs.map((o) => ({ ...o, values: ta.shift(o.values, Math.round(p.offset)) }));
     },
   },
   {

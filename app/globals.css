@@ -18,18 +18,45 @@
 html {
   color-scheme: dark;
   background: var(--color-ink);
+  --grid-line: rgb(255 255 255 / 0.035);
+}
+
+/* Light theme: re-points the palette tokens. Tailwind utilities read these variables,
+   so `text-white`, `bg-white/5`, `bg-panel` etc. all flip together. */
+html[data-theme="light"] {
+  color-scheme: light;
+  --color-ink: #f4f6f9;
+  --color-panel: #ffffff;
+  --color-panel-2: #eef1f5;
+  --color-line: rgb(15 23 42 / 0.12);
+  --color-muted: #5b6474;
+  --color-soft: #2a3342;
+  --color-white: #0b0f17;
+  --color-slate-950: #ffffff;
+  --color-slate-200: #273244;
+  --color-slate-600: #cbd5e1;
+  --color-up: #15803d;
+  --color-down: #be123c;
+  --color-accent: #0369a1;
+  --color-gold: #a16207;
+  --color-rose-200: #9f1239;
+  --color-rose-300: #be123c;
+  --color-rose-400: #be123c;
+  --color-emerald-200: #065f46;
+  --color-emerald-300: #047857;
+  --grid-line: rgb(15 23 42 / 0.05);
 }
 
 body {
   background: var(--color-ink);
-  color: #fff;
+  color: var(--color-white);
   -webkit-font-smoothing: antialiased;
 }
 
 .grid-bg {
   background-image:
-    linear-gradient(to right, rgb(255 255 255 / 0.035) 1px, transparent 1px),
-    linear-gradient(to bottom, rgb(255 255 255 / 0.035) 1px, transparent 1px);
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
   background-size: 48px 48px;
   mask-image: radial-gradient(ellipse at 50% 0%, #000 30%, transparent 75%);
 }

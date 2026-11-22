@@ -105,7 +105,7 @@ export function IndexChart({ indices }: { indices: IndexRow[] }) {
 
       <div className="relative h-[440px]">
         {data.status === "ready" && data.bars.length > 0 ? (
-          <PriceChart bars={data.bars} style={style} indicators={active} className="h-full" />
+          <PriceChart bars={data.bars} style={style} indicators={active} tf={tf} className="h-full" />
         ) : (
           <div className="grid h-full place-items-center text-sm text-muted">
             {data.status === "error" ? data.error : data.status === "ready" ? "No history for this index yet." : "Loading chart…"}

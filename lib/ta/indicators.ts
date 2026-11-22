@@ -224,6 +224,46 @@ export function vwap(h: Series, l: Series, c: Series, v: Series, times: number[]
   return out;
 }
 
+export type VwapAnchor = "session" | "week" | "month";
+
+/** Anchored VWAP with volume-weighted standard deviation (for bands). Times are UTC seconds; anchors use IST. */
+export function vwapBands(src: Series, v: Series, times: number[], anchor: VwapAnchor = "session") {
+  const vwapOut = nanArray(src.length);
+  const sdOut = nanArray(src.length);
+  let pv = 0;
+  let pv2 = 0;
+  let vol = 0;
+  let key = "";
+  for (let i = 0; i < src.length; i++) {
+    const d = new Date((times[i] + 19800) * 1000);
+    let k: string;
+    if (anchor === "month") k = `${d.getUTCFullYear()}-${d.getUTCMonth()}`;
+    else if (anchor === "week") {
+      const monday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - ((d.getUTCDay() + 6) % 7)));
+      k = monday.toISOString().slice(0, 10);
+    } else k = d.toISOString().slice(0, 10);
+    if (k !== key) {
+      key = k;
+      pv = pv2 = vol = 0;
+    }
+    const x = src[i];
+    const w = v[i] > 0 ? v[i] : 0;
+    pv += x * w;
+    pv2 += x * x * w;
+    vol += w;
+    const mean = vol > 0 ? pv / vol : x;
+    vwapOut[i] = mean;
+    sdOut[i] = vol > 0 ? Math.sqrt(Math.max(0, pv2 / vol - mean * mean)) : 0;
+  }
+  return { vwap: vwapOut, sd: sdOut };
+}
+
+/** Shifts a series right by `n` bars (positive offset). */
+export function shift(src: Series, n: number): Series {
+  if (!n) return src;
+  return src.map((_, i) => (i - n >= 0 && i - n < src.length ? src[i - n] : NaN));
+}
+
 export function obv(c: Series, v: Series): Series {
   let acc = 0;
   return c.map((x, i) => {

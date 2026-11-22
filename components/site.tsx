@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { ThemeToggle } from "./theme-toggle";
 
 export function Logo({ className = "" }: { className?: string }) {
   return (
@@ -25,6 +26,7 @@ export function SiteHeader({ signedIn = false }: { signedIn?: boolean }) {
           <Link href="/#roadmap" className="hover:text-white">Roadmap</Link>
         </nav>
         <div className="flex items-center gap-2">
+          <ThemeToggle />
           {signedIn ? (
             <Link href="/dashboard" className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-slate-200">
               Open terminal

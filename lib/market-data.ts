@@ -148,4 +148,4 @@ export async function listWatchlists(userId: number): Promise<Watchlist[]> {
   }));
 }
 
-export const WATCHLIST_LIMITS = { lists: 10, itemsPerList: 50, nameLength: 40 };
+export const WATCHLIST_LIMITS = { lists: 10, itemsPerList: 250, nameLength: 40 };

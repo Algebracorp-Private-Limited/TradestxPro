@@ -201,6 +201,24 @@ CREATE TABLE IF NOT EXISTS broker_connections (
   UNIQUE (user_id, broker)
 );
 
+-- Index constituents (from NSE's published lists), refreshed lazily.
+CREATE TABLE IF NOT EXISTS index_constituents (
+  index_key          TEXT        NOT NULL,
+  symbol             TEXT        NOT NULL,
+  name               TEXT,
+  industry           TEXT,
+  isin               TEXT,
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (index_key, symbol)
+);
+
+-- Per-user preferences (dashboard indices etc.).
+CREATE TABLE IF NOT EXISTS user_prefs (
+  user_id            BIGINT      PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  dashboard_indices  TEXT[]      NOT NULL DEFAULT '{}',
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Short leases for background jobs (expire on their own if a run is killed).
 CREATE TABLE IF NOT EXISTS job_locks (
   name               TEXT        PRIMARY KEY,

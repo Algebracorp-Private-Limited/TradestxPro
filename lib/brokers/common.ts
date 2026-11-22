@@ -127,10 +127,14 @@ export function toBar(t: number, o: unknown, h: unknown, l: unknown, c: unknown,
 export const sortBars = (bars: (Bar | null)[]): Bar[] =>
   (bars.filter(Boolean) as Bar[]).sort((a, b) => a.t - b.t).filter((b, i, arr) => i === 0 || b.t !== arr[i - 1].t);
 
-// Index identifiers per broker for the main NSE indices (others fall back to end-of-day data).
-export const INDEX_IDS: Record<string, { dhan?: string; kite?: number; upstox?: string; fyers?: string; breeze?: string; angel?: string }> = {
+// Index identifiers per broker (others fall back to end-of-day data).
+export type IndexIds = { dhan?: string; dhanSeg?: string; kite?: number; upstox?: string; fyers?: string; breeze?: string; breezeExch?: string; angel?: string };
+export const INDEX_IDS: Record<string, IndexIds> = {
   "NIFTY 50": { dhan: "13", kite: 256265, upstox: "NSE_INDEX|Nifty 50", fyers: "NSE:NIFTY50-INDEX", breeze: "NIFTY", angel: "99926000" },
   "NIFTY BANK": { dhan: "25", kite: 260105, upstox: "NSE_INDEX|Nifty Bank", fyers: "NSE:NIFTYBANK-INDEX", breeze: "CNXBAN", angel: "99926009" },
   "NIFTY FINANCIAL SERVICES": { dhan: "27", kite: 257801, upstox: "NSE_INDEX|Nifty Fin Service", fyers: "NSE:FINNIFTY-INDEX", breeze: "NIFFIN", angel: "99926037" },
+  "NIFTY MIDCAP SELECT": { dhan: "442", upstox: "NSE_INDEX|NIFTY MID SELECT", fyers: "NSE:MIDCPNIFTY-INDEX", breeze: "NIFSEL" },
   "INDIA VIX": { dhan: "21", kite: 264969, upstox: "NSE_INDEX|India VIX", fyers: "NSE:INDIAVIX-INDEX", angel: "99926017" },
+  SENSEX: { dhan: "51", kite: 265, upstox: "BSE_INDEX|SENSEX", fyers: "BSE:SENSEX-INDEX", breeze: "BSESEN", breezeExch: "BSE", angel: "99919000" },
+  BANKEX: { dhan: "69", upstox: "BSE_INDEX|BANKEX", fyers: "BSE:BANKEX-INDEX", breeze: "BANKEX", breezeExch: "BSE" },
 };
