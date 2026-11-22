@@ -9,12 +9,14 @@ export type BarsState = {
   name: string;
   source: string;
   delayed: string | null;
+  tfs: string[];
+  notice?: string;
   error?: string;
 };
 
 /** Loads bars for a chart symbol; refreshes every 30 s for live (non end-of-day) sources. */
 export function useBars(symbol: string, tf: string): BarsState {
-  const [state, setState] = useState<BarsState>({ status: "loading", bars: [], name: "", source: "", delayed: null });
+  const [state, setState] = useState<BarsState>({ status: "loading", bars: [], name: "", source: "", delayed: null, tfs: [] });
 
   useEffect(() => {
     let alive = true;
@@ -25,7 +27,7 @@ export function useBars(symbol: string, tf: string): BarsState {
         const d = await res.json();
         if (!alive) return;
         if (!res.ok) throw new Error(d.error ?? "Could not load chart data.");
-        setState({ status: "ready", bars: d.bars, name: d.name, source: d.source, delayed: d.delayed });
+        setState({ status: "ready", bars: d.bars, name: d.name, source: d.source, delayed: d.delayed, tfs: d.tfs ?? [], notice: d.notice });
         if (!d.delayed) timer = setTimeout(() => load(false), 30_000);
       } catch (e) {
         if (alive && first) setState((s) => ({ ...s, status: "error", error: (e as Error).message }));

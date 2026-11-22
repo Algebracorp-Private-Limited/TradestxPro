@@ -11,9 +11,10 @@ export const LIVE_LINKS = [
   { href: "/screener", label: "Screener", icon: "⌕" },
   { href: "/watchlists", label: "Watchlists", icon: "☆" },
   { href: "/derivatives", label: "F&O", icon: "⇄" },
+  { href: "/brokers", label: "Brokers", icon: "⛓" },
 ];
 
-const LIVE_SLUGS = new Set(["dashboard", "markets", "watchlists", "charts", "screener", "xscript"]);
+const LIVE_SLUGS = new Set(["dashboard", "markets", "watchlists", "charts", "screener", "xscript", "brokers"]);
 
 export function TerminalNav() {
   const path = usePathname();
@@ -51,7 +52,7 @@ export function TerminalNav() {
       </nav>
 
       {/* Mobile tabs */}
-      <nav aria-label="Terminal" className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-6 border-t border-line bg-panel/95 backdrop-blur lg:hidden">
+      <nav aria-label="Terminal" className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-7 border-t border-line bg-panel/95 backdrop-blur lg:hidden">
         {LIVE_LINKS.map((l) => (
           <Link
             key={l.href}

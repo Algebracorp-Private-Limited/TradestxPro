@@ -3,14 +3,18 @@ import { db } from "./db";
 import { deltaCandles, deltaProducts, DELTA_RESOLUTIONS } from "./delta";
 import { resample, type Bar } from "./ta/catalog";
 import { searchInstruments } from "./market-data";
+import { brokerHistory, historyBroker } from "./brokers/store";
+import { BROKER_BY_ID } from "./brokers/catalog";
+import { BROKER_TFS, INDEX_IDS, type Instrument, type Tf } from "./brokers/common";
+import { isVaultConfigured } from "./brokers/vault";
 
 export type ChartSymbol = { symbol: string; name: string; kind: "index" | "stock" | "crypto"; exchange: string };
-export type BarsResponse = { symbol: string; name: string; source: string; delayed: string | null; tf: string; bars: Bar[] };
+export type BarsResponse = { symbol: string; name: string; source: string; delayed: string | null; tf: string; tfs: string[]; bars: Bar[]; notice?: string };
 
 export const EOD_TFS = ["1D", "1W", "1M"] as const;
 export const DELTA_TFS = ["1m", "5m", "15m", "30m", "1h", "4h", "1D", "1W"] as const;
 
-export async function getBars(symbol: string, tf: string): Promise<BarsResponse | null> {
+export async function getBars(symbol: string, tf: string, userId?: number): Promise<BarsResponse | null> {
   const [prefix, ...rest] = symbol.split(":");
   const code = rest.join(":");
   if (!code) return null;
@@ -21,26 +25,55 @@ export async function getBars(symbol: string, tf: string): Promise<BarsResponse 
     const products = await deltaProducts().catch(() => []);
     const p = products.find((x) => x.symbol === code);
     const bars = await deltaCandles(code, res, 1500);
-    return { symbol, name: p?.description ?? code, source: "Delta Exchange", delayed: null, tf, bars };
+    return { symbol, name: p?.description ?? code, source: "Delta Exchange", delayed: null, tf, tfs: [...DELTA_TFS], bars };
   }
 
   if (prefix !== "NSE" && prefix !== "NSEIDX") return null;
-  if (!(EOD_TFS as readonly string[]).includes(tf)) tf = "1D";
   const sql = await db();
+
+  // Prefer the user's own connected broker (intraday + today's candle); fall back to end-of-day files.
+  let notice: string | undefined;
+  if (userId && isVaultConfigured() && (prefix === "NSE" || INDEX_IDS[code.toUpperCase()])) {
+    const hb = await historyBroker(userId).catch(() => null);
+    if (hb && (BROKER_TFS as string[]).includes(tf)) {
+      let inst: Instrument | null = null;
+      if (prefix === "NSEIDX") inst = { kind: "index", symbol: code.toUpperCase(), token: null, isin: null, breezeCode: null };
+      else {
+        const [i] = await sql<{ token: string; isin: string | null; breeze_code: string; name: string }[]>`
+          SELECT token, isin, breeze_code, name FROM instruments WHERE exchange = 'NSE' AND symbol = ${code.toUpperCase()} AND active LIMIT 1`;
+        if (i) inst = { kind: "stock", symbol: code.toUpperCase(), token: i.token, isin: i.isin, breezeCode: i.breeze_code };
+      }
+      if (inst) {
+        try {
+          const r = await brokerHistory(userId, inst, tf as Tf);
+          if (r && r.bars.length) {
+            const name = await displayName(sql, prefix, code);
+            return { symbol: `${prefix}:${code.toUpperCase()}`, name, source: `${BROKER_BY_ID[r.broker].name} (your account)`, delayed: null, tf, tfs: [...BROKER_TFS], bars: r.bars };
+          }
+          notice = `${BROKER_BY_ID[hb.broker].name} returned no data for this view; showing end-of-day data.`;
+        } catch (e) {
+          notice = `${BROKER_BY_ID[hb.broker].name}: ${(e as Error).message} Showing end-of-day data.`;
+        }
+      }
+    }
+  }
+  if (!(EOD_TFS as readonly string[]).includes(tf)) tf = "1D";
   const rows = await sql<{ d: Date; o: number; h: number; l: number; c: number; v: number }[]>`
     SELECT d, o, h, l, c, v FROM candles WHERE series = ${prefix + ":" + code.toUpperCase()} ORDER BY d DESC LIMIT 2500`;
   let bars: Bar[] = rows.reverse().map((r) => ({ t: Math.floor(r.d.getTime() / 1000), o: r.o, h: r.h, l: r.l, c: r.c, v: r.v }));
   if (tf === "1W" || tf === "1M") bars = resample(bars, tf === "1W" ? "W" : "M");
 
-  let name = code;
+  const name = await displayName(sql, prefix, code);
+  return { symbol: `${prefix}:${code.toUpperCase()}`, name, source: "NSE end-of-day files", delayed: "End of day", tf, tfs: [...EOD_TFS], bars, notice };
+}
+
+async function displayName(sql: Awaited<ReturnType<typeof db>>, prefix: string, code: string): Promise<string> {
   if (prefix === "NSEIDX") {
     const [m] = await sql<{ name: string }[]>`SELECT name FROM market_indices WHERE key = ${code.toUpperCase()}`;
-    name = m?.name ?? code;
-  } else {
-    const [m] = await sql<{ name: string }[]>`SELECT name FROM instruments WHERE exchange = 'NSE' AND symbol = ${code.toUpperCase()} AND active LIMIT 1`;
-    name = m?.name ?? code;
+    return m?.name ?? code;
   }
-  return { symbol: `${prefix}:${code.toUpperCase()}`, name, source: "NSE end-of-day files", delayed: "End of day", tf, bars };
+  const [m] = await sql<{ name: string }[]>`SELECT name FROM instruments WHERE exchange = 'NSE' AND symbol = ${code.toUpperCase()} AND active LIMIT 1`;
+  return m?.name ?? code;
 }
 
 export async function searchChartSymbols(q: string): Promise<ChartSymbol[]> {

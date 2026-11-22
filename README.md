@@ -6,6 +6,10 @@ Built in phases per the *TradestXPro Master Blueprint & SOP* (v1.0).
 **Live:** P1 Foundation (landing page, pricing, email-OTP signup, login, sessions, dashboard).
 **Live (P3, early):** an in-house canvas chart engine (candles, Heikin-Ashi, bars, line and area; zoom, pan, crosshair; trend line, horizontal line, rectangle and Fibonacci drawing tools), a 22-indicator technical-analysis library, **XScript Lab** (a sandboxed scripting language for custom indicators and signals, with scripts saved per user), a Markets page with an index chart for all ~169 NSE indices, and a Stock Screener with presets. Data: NSE end-of-day files (indices and equities, about 14 months of history, refreshed daily) and Delta Exchange public data (crypto and tokenised US stocks, intraday).
 
+**Broker Connect (new):** users connect their own ICICI Direct (Breeze), Kotak Neo or Dhan account. Zerodha, Upstox, Angel One and Fyers are in beta and need platform app keys. Charts for NSE stocks and the main indices then use the user's own broker data, including intraday timeframes. Credentials are AES-256-GCM encrypted (`BROKER_ENC_KEY`). TOTP and MPIN are never stored. Order placement is not enabled.
+
+**Algo trading waitlist:** `/algo-trading` explains algo trading with worked XScript strategy examples and collects interest. Admins (`ADMIN_EMAILS`) see counts and a CSV export at `/admin/waitlist`.
+
 **In progress:** P2 Market data. Done so far: the instrument master (NSE/BSE equities, NFO/BFO futures and options) loaded daily from ICICI Direct's public security master, instrument search, instrument pages, an F&O contract explorer with an option-chain grid, and per-user watchlists. No prices are shown until a licensed feed or the Breeze relay is connected.
 
 ## Stack

@@ -168,6 +168,39 @@ CREATE TABLE IF NOT EXISTS screener_snapshot (
   has_derivatives    BOOLEAN     NOT NULL DEFAULT false
 );
 
+-- Algo-trading interest waitlist (public sign-up).
+CREATE TABLE IF NOT EXISTS algo_waitlist (
+  id                 BIGSERIAL PRIMARY KEY,
+  email              TEXT        NOT NULL UNIQUE,
+  name               TEXT        NOT NULL,
+  phone              TEXT,
+  broker             TEXT,
+  experience         TEXT,
+  interests          TEXT[]      NOT NULL DEFAULT '{}',
+  capital            TEXT,
+  notes              TEXT,
+  user_id            BIGINT      REFERENCES users(id) ON DELETE SET NULL,
+  ip                 TEXT,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Broker connections: credentials and session tokens are AES-256-GCM encrypted (BROKER_ENC_KEY).
+CREATE TABLE IF NOT EXISTS broker_connections (
+  id                 BIGSERIAL PRIMARY KEY,
+  user_id            BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  broker             TEXT        NOT NULL,
+  status             TEXT        NOT NULL DEFAULT 'pending',   -- pending | connected | expired | error
+  account_label      TEXT,                                     -- e.g. client id / name shown to the user
+  credentials_enc    TEXT,                                     -- user-supplied app keys (encrypted JSON)
+  session_enc        TEXT,                                     -- session tokens (encrypted JSON)
+  oauth_state        TEXT,
+  expires_at         TIMESTAMPTZ,
+  last_error         TEXT,
+  connected_at       TIMESTAMPTZ,
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, broker)
+);
+
 -- Short leases for background jobs (expire on their own if a run is killed).
 CREATE TABLE IF NOT EXISTS job_locks (
   name               TEXT        PRIMARY KEY,

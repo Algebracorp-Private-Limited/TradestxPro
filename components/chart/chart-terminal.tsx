@@ -55,10 +55,9 @@ export function ChartTerminal() {
   const params = useSearchParams();
   const symbol = params.get("symbol") || "NSEIDX:NIFTY 50";
   const isLive = symbol.startsWith("DELTA:");
-  const tfs = isLive ? LIVE_TFS : EOD_TFS;
-  const tfParam = params.get("tf") ?? (isLive ? "1h" : "1D");
-  const tf = tfs.includes(tfParam) ? tfParam : tfs[0];
+  const tf = params.get("tf") ?? (isLive ? "1h" : "1D");
   const data = useBars(symbol, tf);
+  const tfs = data.tfs.length ? data.tfs : isLive ? LIVE_TFS : EOD_TFS;
 
   const [layout, setLayout] = useState<Layout>(DEFAULT_LAYOUT);
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
@@ -173,6 +172,7 @@ export function ChartTerminal() {
         <span className="max-w-[40ch] truncate text-xs text-soft" title={data.name}>{data.name}</span>
         <span className={`rounded px-1.5 py-0.5 text-[10px] ${data.delayed ? "bg-gold/15 text-gold" : "bg-up/15 text-up"}`}>{data.delayed ?? "Live · refreshes 30s"}</span>
         <IndicatorChips items={layout.indicators} onChange={setIndicators} />
+        {data.notice && <span className="text-xs text-gold">{data.notice}</span>}
         {tool !== "none" && <span className="text-xs text-gold">{tool === "hline" ? "Click the chart to place a line" : "Click two points on the chart"}</span>}
         {savedNote && <span role="status" className="text-xs text-up">{savedNote}</span>}
       </div>
@@ -185,7 +185,7 @@ export function ChartTerminal() {
               style={layout.style}
               indicators={layout.indicators}
               scripts={results}
-              intraday={isLive && !["1D", "1W"].includes(tf)}
+              intraday={!["1D", "1W", "1M"].includes(tf)}
               tool={tool}
               onToolDone={() => setTool("none")}
               drawings={layout.drawings}
