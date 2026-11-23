@@ -7,21 +7,25 @@ import { MODULES } from "@/lib/catalog";
 export const LIVE_LINKS: { href: string; label: string; icon: string; sub?: boolean }[] = [
   { href: "/dashboard", label: "Dashboard", icon: "◧" },
   { href: "/markets", label: "Markets", icon: "▤" },
+  { href: "/markets/indices", label: "Indices", icon: "≡", sub: true },
   { href: "/charts", label: "Charts", icon: "⌇" },
   { href: "/screener", label: "Screener", icon: "⌕" },
   { href: "/watchlists", label: "Watchlists", icon: "☆" },
   { href: "/options", label: "Options", icon: "⋮" },
   { href: "/options/strategies", label: "Strategies", icon: "∑", sub: true },
+  { href: "/options/screener", label: "Option screener", icon: "⌕", sub: true },
   { href: "/derivatives", label: "F&O", icon: "⇄" },
   { href: "/brokers", label: "Brokers", icon: "⛓" },
 ];
 
-const LIVE_SLUGS = new Set(["strategy-lab", "dashboard", "markets", "watchlists", "charts", "screener", "xscript", "brokers", "options"]);
+const LIVE_SLUGS = new Set(["strategy-lab", "options-screener", "futures", "ai", "dashboard", "markets", "watchlists", "charts", "screener", "xscript", "brokers", "options"]);
 
 export function TerminalNav() {
   const path = usePathname();
   const active = (href: string) =>
-    href === "/options" ? path === "/options" : path === href || path.startsWith(href + "/") || (href === "/markets" && path.startsWith("/instrument"));
+    href === "/options" ? path === "/options"
+    : href === "/markets" ? path === "/markets" || path.startsWith("/instrument")
+    : path === href || path.startsWith(href + "/");
   return (
     <>
       {/* Desktop sidebar */}

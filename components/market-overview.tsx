@@ -73,7 +73,12 @@ export function MarketOverview() {
           const pct = t.live ? t.live.changePct : t.eod?.changePct ?? null;
           const up = (pct ?? 0) >= 0;
           return (
-            <div key={t.key} className="group relative rounded-xl border border-line bg-panel transition hover:border-white/20">
+            <div
+              key={t.key}
+              className={`group relative rounded-xl border transition ${
+                pct === null ? "border-line bg-panel hover:border-white/20" : up ? "border-up/40 bg-up/10 hover:border-up/70" : "border-down/40 bg-down/10 hover:border-down/70"
+              }`}
+            >
               <Link href={`/charts?symbol=${encodeURIComponent(t.chartSymbol)}`} className="block p-4">
                 <p className="flex items-center justify-between gap-2 text-xs text-muted">
                   <span className="truncate">{t.name}</span>

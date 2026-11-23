@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { AiAnalysis } from "@/components/ai-analysis";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getInstrument, getUnderlying } from "@/lib/market-data";
@@ -60,6 +61,8 @@ export default async function UnderlyingPage({ params, searchParams }: Props) {
         <span aria-hidden>/</span>
         <span>{d.underlying}</span>
       </nav>
+
+      <AiAnalysis scope="options" target={d.underlying} />
 
       <section className="flex flex-wrap items-end justify-between gap-4">
         <div>

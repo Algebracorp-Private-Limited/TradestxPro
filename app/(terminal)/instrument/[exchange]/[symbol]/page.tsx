@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { AiAnalysis } from "@/components/ai-analysis";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getInstrument } from "@/lib/market-data";
@@ -81,6 +82,8 @@ export default async function InstrumentPage({ params }: Props) {
         </div>
         <AddToWatchlist instrumentId={inst.id} />
       </section>
+
+      <AiAnalysis scope="stock" target={inst.symbol} />
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5" aria-label="Price">
         {cards.map(([label, value, cls]) => (

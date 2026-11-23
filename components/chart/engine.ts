@@ -4,7 +4,7 @@
 import type { Bar } from "@/lib/ta/catalog";
 
 export type PlotStyle = "line" | "histogram" | "dots" | "area";
-export type PlotSeries = { label: string; values: number[]; color: string; style?: PlotStyle; width?: number; scaleLabel?: boolean };
+export type PlotSeries = { label: string; values: number[]; color: string; style?: PlotStyle; width?: number; scaleLabel?: boolean; fill?: { other: number[]; up: string; down: string } };
 export type PaneSpec = { id: string; title: string; series: PlotSeries[]; levels?: number[]; range?: [number, number] };
 export type Marker = { index: number; text: string; color: string; position: "above" | "below" };
 export type ChartType = "candles" | "bars" | "line" | "area";
@@ -646,6 +646,7 @@ export class ChartEngine {
       }
       const series = k === 0 ? this.data.overlays : (L.spec?.series ?? []);
       if (k === 0) {
+        for (const s of series) if (s.fill) this.drawFill(s, L, from, to);
         this.drawMain(L, from, to);
         for (const s of series) this.drawSeries(s, L, from, to);
         this.drawMarkers(L, from, to);
@@ -661,6 +662,7 @@ export class ChartEngine {
           ctx.stroke();
           ctx.setLineDash([]);
         }
+        for (const s of series) if (s.fill) this.drawFill(s, L, from, to);
         for (const s of series) this.drawSeries(s, L, from, to);
       }
       ctx.restore();
@@ -819,6 +821,39 @@ export class ChartEngine {
     }
   }
 
+  /** Shades between a series and its partner, switching colour where the two lines cross. */
+  private drawFill(s: PlotSeries, L: PaneLayout, from: number, to: number) {
+    const f = s.fill!;
+    const { ctx } = this;
+    const a = s.values;
+    const b = f.other;
+    const ok = (v: number) => Number.isFinite(v) && !(L.log && v <= 0);
+    const quad = (pts: [number, number][], color: string) => {
+      ctx.beginPath();
+      pts.forEach(([x, y], k) => (k ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+      ctx.closePath();
+      ctx.fillStyle = color;
+      ctx.fill();
+    };
+    // Series may run past the last bar (e.g. the projected Ichimoku cloud).
+    const end = Math.min(Math.max(to + 1, Math.ceil(this.endIndex) + 1), a.length - 1, b.length - 1);
+    for (let i = Math.max(0, from - 1); i < end; i++) {
+      const a0 = a[i], a1 = a[i + 1], b0 = b[i], b1 = b[i + 1];
+      if (!ok(a0) || !ok(a1) || !ok(b0) || !ok(b1)) continue;
+      const x0 = this.xOf(i), x1 = this.xOf(i + 1);
+      const d0 = a0 - b0, d1 = a1 - b1;
+      if (d0 * d1 >= 0) {
+        quad([[x0, this.yOf(a0, L)], [x1, this.yOf(a1, L)], [x1, this.yOf(b1, L)], [x0, this.yOf(b0, L)]], d0 + d1 >= 0 ? f.up : f.down);
+      } else {
+        const t = d0 / (d0 - d1);
+        const xc = x0 + (x1 - x0) * t;
+        const yc = this.yOf(a0 + (a1 - a0) * t, L);
+        quad([[x0, this.yOf(a0, L)], [xc, yc], [x0, this.yOf(b0, L)]], d0 > 0 ? f.up : f.down);
+        quad([[xc, yc], [x1, this.yOf(a1, L)], [x1, this.yOf(b1, L)]], d1 > 0 ? f.up : f.down);
+      }
+    }
+  }
+
   private drawSeries(s: PlotSeries, L: PaneLayout, from: number, to: number) {
     const { ctx } = this;
     const style = s.style ?? "line";
@@ -855,7 +890,7 @@ export class ChartEngine {
     ctx.lineWidth = s.width ?? 1.4;
     ctx.beginPath();
     let pen = false;
-    for (let i = Math.max(0, from - 1); i <= Math.min(to + 1, s.values.length - 1); i++) {
+    for (let i = Math.max(0, from - 1); i <= Math.min(Math.max(to + 1, Math.ceil(this.endIndex) + 1), s.values.length - 1); i++) {
       const v = s.values[i];
       if (!Number.isFinite(v) || (L.log && v <= 0)) {
         pen = false;

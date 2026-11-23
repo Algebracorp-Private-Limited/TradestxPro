@@ -78,3 +78,14 @@ test("F&O bhavcopy aggregation", async () => {
   assert.equal(n.premium_turnover, 10 * 65 * 100 + 4 * 65 * 50);
   assert.equal(rows.length, 2);
 });
+
+test("F&O bhavcopy option contracts", async () => {
+  const { parseFoContracts } = await import("../lib/eod-parse.ts");
+  const csv = `TradDt,FinInstrmTp,TckrSymb,XpryDt,StrkPric,OptnTp,ClsPric,LastPric,PrvsClsgPric,UndrlygPric,OpnIntrst,ChngInOpnIntrst,TtlTradgVol,NewBrdLotQty
+2026-11-20,IDO,NIFTY,2026-11-25,26000,CE,120.5,121,100,25950,65000,13000,500,65
+2026-11-20,IDO,NIFTY,2026-11-25,27000,PE,0,0,0,25950,0,0,0,65
+2026-11-20,STF,TCS,2026-11-25,,,2400,2400,2390,2398,1750,0,3,175`;
+  const rows = parseFoContracts(csv);
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0], { underlying: "NIFTY", inst: "IDO", expiry: "2026-11-25", strike: 26000, opt: "CE", close: 120.5, prev_close: 100, underlying_px: 25950, oi_qty: 65000, oi_chg_qty: 13000, contracts: 500, lot: 65 });
+});

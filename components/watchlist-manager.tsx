@@ -159,14 +159,14 @@ export function WatchlistManager() {
                 {adding ? "Done" : "＋ Add symbol"}
               </button>
               <button onClick={() => setIndexPick(true)} className="rounded-lg border border-line px-3 py-1.5 text-sm hover:bg-white/5">＋ Add index stocks</button>
-              <button onClick={() => setRenaming(active.name)} className="rounded-lg border border-line px-3 py-1.5 text-sm text-soft hover:bg-white/5">Rename</button>
+              <button onClick={() => setRenaming(active.name)} className="rounded-lg border border-line px-3 py-1.5 text-sm text-soft hover:bg-white/5" title="Rename list">✎ Rename</button>
               <button
                 onClick={() => {
                   if (confirm(`Delete watchlist “${active.name}”?`)) run(() => call(`/api/watchlists/${active.id}`, "DELETE"));
                 }}
                 className="rounded-lg border border-line px-3 py-1.5 text-sm text-rose-300 hover:bg-down/10"
               >
-                Delete
+                🗑 Delete
               </button>
             </div>
           </div>

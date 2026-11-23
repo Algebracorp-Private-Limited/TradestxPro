@@ -13,13 +13,37 @@ export const CONSTITUENT_FILES: Record<string, string> = {
   "NIFTY CONSUMER DURABLES": "niftyconsumerdurables", "NIFTY OIL & GAS": "niftyoilgas",
 };
 
-export const hasConstituents = (key: string) => Object.hasOwn(CONSTITUENT_FILES, key.toUpperCase());
+// BSE does not publish a downloadable list we can reach, so the 30 SENSEX members are kept here
+// (NSE symbols; BSE reviews them in June and December).
+export const SENSEX_MEMBERS = [
+  "ADANIPORTS", "ASIANPAINT", "AXISBANK", "BAJFINANCE", "BAJAJFINSV", "BEL", "BHARTIARTL", "ETERNAL", "HCLTECH", "HDFCBANK",
+  "HINDUNILVR", "ICICIBANK", "INFY", "ITC", "KOTAKBANK", "LT", "M&M", "MARUTI", "NTPC", "POWERGRID",
+  "RELIANCE", "SBIN", "SUNPHARMA", "TMPV", "TATASTEEL", "TCS", "TECHM", "TITAN", "TRENT", "ULTRACEMCO",
+];
+
+export const hasConstituents = (key: string) => key.toUpperCase() === "SENSEX" || Object.hasOwn(CONSTITUENT_FILES, key.toUpperCase());
+
+async function sensexConstituents(): Promise<Constituent[]> {
+  const sql = await db();
+  const meta = await sql<{ symbol: string; name: string; isin: string | null }[]>`
+    SELECT DISTINCT ON (symbol) symbol, name, isin FROM instruments WHERE exchange = 'NSE' AND active AND symbol IN ${sql(SENSEX_MEMBERS)}`;
+  const ind = await sql<{ symbol: string; industry: string | null }[]>`
+    SELECT DISTINCT ON (symbol) symbol, industry FROM index_constituents WHERE symbol IN ${sql(SENSEX_MEMBERS)} AND industry IS NOT NULL`;
+  const m = new Map(meta.map((r) => [r.symbol, r]));
+  const i = new Map(ind.map((r) => [r.symbol, r.industry]));
+  return SENSEX_MEMBERS.map((symbol) => ({ symbol, name: m.get(symbol)?.name ?? symbol, industry: i.get(symbol) ?? null, isin: m.get(symbol)?.isin ?? null }))
+    .sort((a, b) => a.symbol.localeCompare(b.symbol));
+}
 
 export type Constituent = { symbol: string; name: string; industry: string | null; isin: string | null };
 
 /** Returns the constituents of an NSE index, refreshing from NSE when older than 3 days. */
 export async function getConstituents(indexKey: string): Promise<Constituent[]> {
   const key = indexKey.toUpperCase();
+  if (key === "SENSEX") {
+    await getConstituents("NIFTY 500").catch(() => []); // loads industries
+    return sensexConstituents();
+  }
   const file = CONSTITUENT_FILES[key];
   if (!file) return [];
   const sql = await db();

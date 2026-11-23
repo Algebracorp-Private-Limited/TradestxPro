@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { listUnderlyings } from "@/lib/market-data";
+import { AiAnalysis } from "@/components/ai-analysis";
 import { UnderlyingFilter } from "@/components/underlying-filter";
 
 export const metadata: Metadata = { title: "F&O Contracts" };
@@ -18,6 +19,8 @@ export default async function Derivatives() {
           Every index and stock with listed futures &amp; options. Pick one for its futures (live prices, OI, basis) and its option chain.
         </p>
       </div>
+
+      <AiAnalysis scope="options" target="NIFTY" />
 
       <section aria-labelledby="idx">
         <h2 id="idx" className="mb-3 text-sm font-medium text-soft">Index derivatives</h2>

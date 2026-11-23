@@ -167,6 +167,8 @@ CREATE TABLE IF NOT EXISTS screener_snapshot (
   bars               INTEGER,
   has_derivatives    BOOLEAN     NOT NULL DEFAULT false
 );
+ALTER TABLE screener_snapshot ADD COLUMN IF NOT EXISTS beta DOUBLE PRECISION;
+ALTER TABLE screener_snapshot ADD COLUMN IF NOT EXISTS corr DOUBLE PRECISION;
 
 -- Algo-trading interest waitlist (public sign-up).
 CREATE TABLE IF NOT EXISTS algo_waitlist (
@@ -269,5 +271,37 @@ CREATE TABLE IF NOT EXISTS watchlist_items (
   position           INTEGER     NOT NULL DEFAULT 0,
   added_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (watchlist_id, instrument_id)
+);
+
+-- Latest session's option contracts (NSE F&O bhavcopy) for the option screener.
+CREATE TABLE IF NOT EXISTS fo_contracts (
+  d                  DATE        NOT NULL,
+  underlying         TEXT        NOT NULL,
+  inst               TEXT        NOT NULL,
+  expiry             DATE        NOT NULL,
+  strike             DOUBLE PRECISION NOT NULL,
+  opt                TEXT        NOT NULL,
+  close              DOUBLE PRECISION NOT NULL,
+  prev_close         DOUBLE PRECISION,
+  underlying_px      DOUBLE PRECISION,
+  oi_qty             DOUBLE PRECISION NOT NULL,
+  oi_chg_qty         DOUBLE PRECISION NOT NULL,
+  contracts          DOUBLE PRECISION NOT NULL,
+  lot                DOUBLE PRECISION NOT NULL,
+  PRIMARY KEY (underlying, expiry, strike, opt)
+);
+
+-- Watchlist sections for indices, futures and options (stocks live in watchlists/watchlist_items).
+CREATE TABLE IF NOT EXISTS watch_items (
+  id                 BIGSERIAL PRIMARY KEY,
+  user_id            BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  section            TEXT        NOT NULL CHECK (section IN ('index', 'future', 'option')),
+  exchange           TEXT        NOT NULL,
+  key                TEXT        NOT NULL,
+  label              TEXT        NOT NULL,
+  meta               JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  position           INTEGER     NOT NULL DEFAULT 0,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, section, exchange, key)
 );
 `;

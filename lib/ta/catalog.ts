@@ -9,6 +9,8 @@ export type Output = {
   values: number[];
   color: string;
   style?: "line" | "histogram" | "dots" | "area";
+  /** Shade the area between this line and `other`: `up` where this line is above, `down` where below. */
+  fill?: { other: number[]; up: string; down: string };
 };
 
 /** Every parameter is stored as a number: selects store the option index, checkboxes store 0/1. */
@@ -87,7 +89,7 @@ export const INDICATORS: IndicatorDef[] = [
     compute: (b, p) => {
       const r = ta.bollinger(cols(b).c, p.length, p.mult);
       return [
-        { key: "upper", label: "Upper", values: r.upper, color: "#a78bfa" },
+        { key: "upper", label: "Upper", values: r.upper, color: "#a78bfa", fill: { other: r.lower, up: "rgba(167,139,250,0.10)", down: "rgba(167,139,250,0.10)" } },
         { key: "mid", label: `BB ${p.length}`, values: r.mid, color: "#f5c451" },
         { key: "lower", label: "Lower", values: r.lower, color: "#a78bfa" },
       ];
@@ -99,7 +101,7 @@ export const INDICATORS: IndicatorDef[] = [
       const x = cols(b);
       const r = ta.keltner(x.h, x.l, x.c, p.length, p.mult, p.atr);
       return [
-        { key: "upper", label: "Upper", values: r.upper, color: "#34d399" },
+        { key: "upper", label: "Upper", values: r.upper, color: "#34d399", fill: { other: r.lower, up: "rgba(52,211,153,0.09)", down: "rgba(52,211,153,0.09)" } },
         { key: "mid", label: `KC ${p.length}`, values: r.mid, color: "#f5c451" },
         { key: "lower", label: "Lower", values: r.lower, color: "#34d399" },
       ];
@@ -111,7 +113,7 @@ export const INDICATORS: IndicatorDef[] = [
       const x = cols(b);
       const r = ta.donchian(x.h, x.l, p.length);
       return [
-        { key: "upper", label: `DC ${p.length} upper`, values: r.upper, color: "#60a5fa" },
+        { key: "upper", label: `DC ${p.length} upper`, values: r.upper, color: "#60a5fa", fill: { other: r.lower, up: "rgba(96,165,250,0.09)", down: "rgba(96,165,250,0.09)" } },
         { key: "mid", label: "Mid", values: r.mid, color: "#8b95a7" },
         { key: "lower", label: "Lower", values: r.lower, color: "#60a5fa" },
       ];
@@ -123,8 +125,8 @@ export const INDICATORS: IndicatorDef[] = [
       const x = cols(b);
       const r = ta.supertrend(x.h, x.l, x.c, p.length, p.mult);
       return [
-        { key: "up", label: `ST ${p.length},${p.mult} ▲`, values: r.line.map((v, i) => (r.dir[i] === 1 ? v : NaN)), color: "#22c55e" },
-        { key: "down", label: "▼", values: r.line.map((v, i) => (r.dir[i] === -1 ? v : NaN)), color: "#f43f5e" },
+        { key: "up", label: `ST ${p.length},${p.mult} ▲`, values: r.line.map((v, i) => (r.dir[i] === 1 ? v : NaN)), color: "#22c55e", fill: { other: x.c, up: "rgba(34,197,94,0.12)", down: "rgba(34,197,94,0.12)" } },
+        { key: "down", label: "▼", values: r.line.map((v, i) => (r.dir[i] === -1 ? v : NaN)), color: "#f43f5e", fill: { other: x.c, up: "rgba(244,63,94,0.12)", down: "rgba(244,63,94,0.12)" } },
       ];
     },
   },
@@ -164,10 +166,12 @@ export const INDICATORS: IndicatorDef[] = [
       ([1, 2, 3] as const).forEach((k, i) => {
         if (!p[`band${k}`]) return;
         const m = p[`mult${k}`];
-        outs.push({ key: `up${k}`, label: `Upper #${k}`, values: band(m, 1), color: bandColors[i] });
-        outs.push({ key: `lo${k}`, label: `Lower #${k}`, values: band(m, -1), color: bandColors[i] });
+        const lo = band(m, -1);
+        outs.push({ key: `up${k}`, label: `Upper #${k}`, values: band(m, 1), color: bandColors[i], fill: k === 1 ? { other: lo, up: "rgba(76,175,80,0.08)", down: "rgba(76,175,80,0.08)" } : undefined });
+        outs.push({ key: `lo${k}`, label: `Lower #${k}`, values: lo, color: bandColors[i] });
       });
-      return outs.map((o) => ({ ...o, values: ta.shift(o.values, Math.round(p.offset)) }));
+      const sh = Math.round(p.offset);
+      return outs.map((o) => ({ ...o, values: ta.shift(o.values, sh), fill: o.fill && { ...o.fill, other: ta.shift(o.fill.other, sh) } }));
     },
   },
   {
@@ -179,8 +183,9 @@ export const INDICATORS: IndicatorDef[] = [
       return [
         { key: "tenkan", label: "Tenkan", values: r.tenkan, color: "#38bdf8" },
         { key: "kijun", label: "Kijun", values: r.kijun, color: "#f43f5e" },
-        { key: "spanA", label: "Span A", values: r.spanA, color: "#22c55e" },
-        { key: "spanB", label: "Span B", values: r.spanB, color: "#fb923c" },
+        // The cloud: green while Span A is above Span B (bullish), red while below (bearish).
+        { key: "spanA", label: "Span A", values: [...r.spanA, ...r.futureA], color: "#22c55e", fill: { other: [...r.spanB, ...r.futureB], up: "rgba(34,197,94,0.18)", down: "rgba(244,63,94,0.18)" } },
+        { key: "spanB", label: "Span B", values: [...r.spanB, ...r.futureB], color: "#f43f5e" },
       ];
     },
   },

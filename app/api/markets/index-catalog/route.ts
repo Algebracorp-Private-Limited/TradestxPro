@@ -18,7 +18,7 @@ export const GET = userHandler(async () => {
     ok: true,
     groups: [
       { group: "NSE", items: rows.map((r) => ({ key: r.key, name: r.name, group: "NSE", available: true, constituents: hasConstituents(r.key) })) },
-      { group: "BSE", items: BSE_INDICES.map((b) => ({ ...b, constituents: false })) },
+      { group: "BSE", items: BSE_INDICES.map((b) => ({ ...b, constituents: hasConstituents(b.key) })) },
       { group: "MCX", items: MCX_ITEMS.map((m) => ({ ...m, constituents: false })) },
     ],
   });

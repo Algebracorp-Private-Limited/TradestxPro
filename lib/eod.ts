@@ -2,7 +2,8 @@ import "server-only";
 import { unzipSync } from "fflate";
 import { db } from "./db";
 import { istToday } from "./instrument-map.ts";
-import { nseEquityUrl, nseFoUrl, nseIndexUrl, parseEquityBhavcopy, parseFoBhavcopy, parseIndexFile, recentWeekdays, type EodBar } from "./eod-parse.ts";
+import { betaCorr } from "./stats.ts";
+import { nseEquityUrl, nseFoUrl, nseIndexUrl, parseEquityBhavcopy, parseFoBhavcopy, parseFoContracts, parseIndexFile, recentWeekdays, type EodBar } from "./eod-parse.ts";
 import * as ta from "./ta/indicators.ts";
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
@@ -77,15 +78,43 @@ export async function ingestFoDay(sql: Sql, d: string): Promise<number | null> {
   }
   const files = unzipSync(new Uint8Array(buf));
   const csv = Object.values(files)[0];
-  const rows = csv ? parseFoBhavcopy(new TextDecoder().decode(csv)) : [];
+  const text = csv ? new TextDecoder().decode(csv) : "";
+  const rows = text ? parseFoBhavcopy(text) : [];
   await sql.begin(async (tx) => {
     await tx`DELETE FROM fo_activity WHERE d = ${d}`;
     for (let i = 0; i < rows.length; i += 1000) {
       await tx`INSERT INTO fo_activity ${tx(rows.slice(i, i + 1000).map((r) => ({ d, ...r })))}`;
     }
   });
+  // Contract-level rows are kept for the newest session only (option screener).
+  const [{ cur }] = await sql<{ cur: Date | null }[]>`SELECT max(d) AS cur FROM fo_contracts`;
+  if (text && (!cur || cur.toISOString().slice(0, 10) <= d)) await storeFoContracts(sql, d, text);
   await mark(sql, "fo", d, "ok", rows.length);
   return rows.length;
+}
+
+async function storeFoContracts(sql: Sql, d: string, text: string) {
+  const rows = parseFoContracts(text);
+  if (!rows.length) return;
+  await sql.begin(async (tx) => {
+    await tx`DELETE FROM fo_contracts`;
+    for (let i = 0; i < rows.length; i += 2000) {
+      await tx`INSERT INTO fo_contracts ${tx(rows.slice(i, i + 2000).map((r) => ({ d, ...r })))} ON CONFLICT DO NOTHING`;
+    }
+  });
+}
+
+/** Loads contract-level option data for the newest F&O session when the screener table is behind. */
+export async function ensureFoContracts(sql: Sql): Promise<void> {
+  const [{ last }] = await sql<{ last: Date | null }[]>`SELECT max(d) AS last FROM eod_days WHERE exchange = 'NSE' AND kind = 'fo' AND status = 'ok'`;
+  if (!last) return;
+  const [{ cur }] = await sql<{ cur: Date | null }[]>`SELECT max(d) AS cur FROM fo_contracts`;
+  const d = last.toISOString().slice(0, 10);
+  if (cur && cur.toISOString().slice(0, 10) >= d) return;
+  const buf = await download(nseFoUrl(d));
+  if (!buf) return;
+  const csv = Object.values(unzipSync(new Uint8Array(buf)))[0];
+  if (csv) await storeFoContracts(sql, d, new TextDecoder().decode(csv));
 }
 
 /** Today's file is published after market close; only try it after 18:30 IST. */
@@ -140,12 +169,14 @@ export async function runEod(budgetMs = 150_000): Promise<EodRunResult> {
         await mark(sql, "fo", d, "error", 0, String(e).slice(0, 300));
       }
     }
+    if (Date.now() - t0 < budgetMs + 30_000) await ensureFoContracts(sql).catch((e) => console.error("fo contracts", e));
     let snapshot: number | undefined;
     const [{ n, snapD }] = await sql<{ n: number; snapD: Date | null }[]>`
       SELECT count(*)::int AS n, max(d) AS "snapD" FROM screener_snapshot`;
     const [{ lastD }] = await sql<{ lastD: Date | null }[]>`
       SELECT max(d) AS "lastD" FROM eod_days WHERE exchange = 'NSE' AND kind = 'equity' AND status = 'ok'`;
-    const stale = n === 0 || !snapD || (lastD && snapD.getTime() < lastD.getTime());
+    const [{ nb }] = await sql<{ nb: number }[]>`SELECT count(*)::int AS nb FROM screener_snapshot WHERE beta IS NOT NULL`;
+    const stale = n === 0 || nb === 0 || !snapD || (lastD && snapD.getTime() < lastD.getTime());
     if (remaining === 0 && stale && Date.now() - t0 < 200_000) snapshot = await buildSnapshot(sql);
     return { processed, remaining, snapshot };
   } finally {
@@ -164,18 +195,20 @@ export async function buildSnapshot(sql: Sql): Promise<number> {
   const meta = await sql<{ symbol: string; name: string; has_derivatives: boolean }[]>`
     SELECT symbol, name, has_derivatives FROM instruments WHERE exchange = 'NSE' AND active`;
   const metaBy = new Map(meta.map((m) => [m.symbol, m]));
+  const bench = await sql<{ d: Date; c: number }[]>`SELECT d, c FROM candles WHERE series = 'NSEIDX:NIFTY 50' AND d >= ${from}`;
+  const benchBy = new Map(bench.map((b) => [b.d.toISOString().slice(0, 10), b.c]));
 
   const rows: Record<string, unknown>[] = [];
   const list = symbols.map((s) => s.series);
   for (let i = 0; i < list.length; i += 400) {
     const chunk = list.slice(i, i + 400);
-    const bars = await sql<{ series: string; h: number; l: number; c: number; v: number }[]>`
-      SELECT series, h, l, c, v FROM candles WHERE series IN ${sql(chunk)} AND d >= ${from} ORDER BY series, d`;
-    const by = new Map<string, { h: number[]; l: number[]; c: number[]; v: number[] }>();
+    const bars = await sql<{ series: string; d: Date; h: number; l: number; c: number; v: number }[]>`
+      SELECT series, d, h, l, c, v FROM candles WHERE series IN ${sql(chunk)} AND d >= ${from} ORDER BY series, d`;
+    const by = new Map<string, { d: string[]; h: number[]; l: number[]; c: number[]; v: number[] }>();
     for (const b of bars) {
       let s = by.get(b.series);
-      if (!s) by.set(b.series, (s = { h: [], l: [], c: [], v: [] }));
-      s.h.push(b.h); s.l.push(b.l); s.c.push(b.c); s.v.push(b.v);
+      if (!s) by.set(b.series, (s = { d: [], h: [], l: [], c: [], v: [] }));
+      s.d.push(b.d.toISOString().slice(0, 10)); s.h.push(b.h); s.l.push(b.l); s.c.push(b.c); s.v.push(b.v);
     }
     for (const [series, s] of by) {
       const n = s.c.length;
@@ -189,6 +222,7 @@ export async function buildSnapshot(sql: Sql): Promise<number> {
       const st = ta.supertrend(s.h, s.l, s.c, 10, 3);
       const symbol = series.slice(4);
       const info = metaBy.get(symbol);
+      const bc = betaCorr(s.c.map((c, k) => ({ d: s.d[k], c })), benchBy);
       rows.push({
         symbol, d: lastD, name: info?.name ?? symbol,
         close: s.c[last], change_pct: (s.c[last] / s.c[last - 1] - 1) * 100, volume: s.v[last],
@@ -200,6 +234,7 @@ export async function buildSnapshot(sql: Sql): Promise<number> {
         atr_pct: (() => { const a = ta.atr(s.h, s.l, s.c, 14)[last]; return Number.isFinite(a) ? (a / s.c[last]) * 100 : null; })(),
         supertrend_dir: Number.isFinite(st.dir[last]) ? st.dir[last] : null,
         ret5: ret(5), ret20: ret(20), ret60: ret(60), bars: n, has_derivatives: info?.has_derivatives ?? false,
+        beta: bc.beta, corr: bc.corr,
       });
     }
   }

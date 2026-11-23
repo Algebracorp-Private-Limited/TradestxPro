@@ -19,6 +19,7 @@
   },
   "homepage": "https://github.com/Algebracorp-Private-Limited/tradestxpro#readme",
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.12.0",
     "fflate": "^0.8.3",
     "next": "^16.1.6",
     "postgres": "^3.4.9",

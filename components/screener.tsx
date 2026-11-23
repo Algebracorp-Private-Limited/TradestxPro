@@ -145,12 +145,21 @@ export function Screener() {
     setMsg(d.updated ? `Updated “${name}”.` : `Saved “${name}”.`);
     loadSaved();
   };
+  const goHome = () => {
+    applyPreset(PRESETS[0].id);
+    setMsg(null);
+  };
   const remove = async () => {
     if (!savedId || !confirm(`Delete the screener “${title}”?`)) return;
-    await fetch(`/api/screens/${savedId}`, { method: "DELETE" });
-    setSavedId(null);
-    setMsg(`Deleted “${title}”.`);
-    setTitle("Custom screener");
+    const name = title;
+    const r = await fetch(`/api/screens/${savedId}`, { method: "DELETE" });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      return setMsg(d.error ?? "Could not delete this screener.");
+    }
+    setSaved((list) => list.filter((x) => x.id !== savedId));
+    applyPreset(PRESETS[0].id); // back to the screener home
+    setMsg(`Deleted “${name}”. Showing ${PRESETS[0].name}.`);
     loadSaved();
   };
   const chips = describe(filters);
@@ -174,6 +183,9 @@ export function Screener() {
           </select>
         </label>
         <div className="ml-auto flex gap-2">
+          {(view === "build" || preset !== PRESETS[0].id) && (
+            <button onClick={goHome} className="rounded-lg border border-line px-3 py-1.5 text-sm hover:bg-white/5">⌂ Screener home</button>
+          )}
           {view === "results" ? (
             <button onClick={() => setView("build")} className="rounded-lg bg-white px-3 py-1.5 text-sm font-semibold text-slate-950 hover:bg-slate-200">＋ Build / edit screener</button>
           ) : (

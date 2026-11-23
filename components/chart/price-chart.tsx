@@ -77,7 +77,7 @@ export function PriceChart({ bars, style, indicators, onIndicatorsChange, script
         series = def.compute(bars, ind.params, { intraday: !!intraday }).flatMap((o) => {
           const st = ind.styles?.[o.key] ?? {};
           if (st.visible === false) return [];
-          return [{ label: o.label, values: o.values, color: st.color ?? o.color, style: o.style, width: st.width, scaleLabel: ind.scaleLabels !== false }];
+          return [{ label: o.label, values: o.values, color: st.color ?? o.color, style: o.style, width: st.width, scaleLabel: ind.scaleLabels !== false, fill: o.fill }];
         });
       } catch {}
       const paneId = placement === "overlay" ? "main" : ind.uid;

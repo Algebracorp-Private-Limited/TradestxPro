@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense } from "react";
+import { AiAnalysis } from "@/components/ai-analysis";
 import { StrategyBuilder } from "@/components/options/strategy-builder";
 
 export const metadata: Metadata = { title: "Option strategies" };
@@ -15,6 +16,7 @@ export default function StrategiesPage() {
         </div>
         <Link href="/options" className="rounded-lg border border-line px-3 py-2 text-sm hover:bg-white/5">← Option chain</Link>
       </div>
+      <AiAnalysis scope="options" target="NIFTY" />
       <Suspense fallback={<p className="text-sm text-muted">Loading…</p>}>
         <StrategyBuilder />
       </Suspense>

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { AiAnalysis } from "@/components/ai-analysis";
 import { InstrumentSearch } from "@/components/instrument-search";
 import { IndexChart, IndicesTable } from "@/components/index-chart";
 import { listIndices } from "@/lib/chart-data";
@@ -17,8 +18,13 @@ export default async function Markets() {
           <h1 className="text-2xl font-semibold tracking-tight">Markets</h1>
           <p className="mt-1 text-sm text-muted">NSE indices and every NSE/BSE listed equity. Live when a broker is connected, otherwise end of day.</p>
         </div>
-        <Link href="/screener" className="rounded-lg border border-line px-3 py-2 text-sm hover:bg-white/5">Open Stock Screener →</Link>
+        <div className="flex flex-wrap gap-2">
+          <Link href="/markets/indices" className="rounded-lg border border-accent/40 bg-accent/10 px-3 py-2 text-sm text-accent hover:bg-accent/20">Index components →</Link>
+          <Link href="/screener" className="rounded-lg border border-line px-3 py-2 text-sm hover:bg-white/5">Open Stock Screener →</Link>
+        </div>
       </div>
+
+      <AiAnalysis scope="market" target="NIFTY 50" />
 
       {indices.length ? (
         <IndexChart indices={indices} />

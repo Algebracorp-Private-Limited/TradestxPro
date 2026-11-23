@@ -337,7 +337,9 @@ export function ichimoku(h: Series, l: Series, conv = 9, base = 26, spanB = 52, 
   const b = mid(spanB);
   // Leading spans are plotted `displacement` bars ahead; aligned here so value at i came from i - displacement.
   const shift = (s: Series) => s.map((_, i) => (i >= displacement ? s[i - displacement] : NaN));
-  return { tenkan, kijun, spanA: shift(a), spanB: shift(b) };
+  // The cloud also extends `displacement` bars past the last bar: that forward part is the projection.
+  const ahead = (s: Series) => s.slice(Math.max(0, s.length - displacement));
+  return { tenkan, kijun, spanA: shift(a), spanB: shift(b), futureA: ahead(a), futureB: ahead(b) };
 }
 
 /** Parabolic SAR. */
