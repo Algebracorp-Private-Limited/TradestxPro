@@ -4,22 +4,24 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { MODULES } from "@/lib/catalog";
 
-export const LIVE_LINKS = [
+export const LIVE_LINKS: { href: string; label: string; icon: string; sub?: boolean }[] = [
   { href: "/dashboard", label: "Dashboard", icon: "◧" },
   { href: "/markets", label: "Markets", icon: "▤" },
   { href: "/charts", label: "Charts", icon: "⌇" },
   { href: "/screener", label: "Screener", icon: "⌕" },
   { href: "/watchlists", label: "Watchlists", icon: "☆" },
   { href: "/options", label: "Options", icon: "⋮" },
+  { href: "/options/strategies", label: "Strategies", icon: "∑", sub: true },
   { href: "/derivatives", label: "F&O", icon: "⇄" },
   { href: "/brokers", label: "Brokers", icon: "⛓" },
 ];
 
-const LIVE_SLUGS = new Set(["dashboard", "markets", "watchlists", "charts", "screener", "xscript", "brokers", "options"]);
+const LIVE_SLUGS = new Set(["strategy-lab", "dashboard", "markets", "watchlists", "charts", "screener", "xscript", "brokers", "options"]);
 
 export function TerminalNav() {
   const path = usePathname();
-  const active = (href: string) => path === href || path.startsWith(href + "/") || (href === "/markets" && path.startsWith("/instrument"));
+  const active = (href: string) =>
+    href === "/options" ? path === "/options" : path === href || path.startsWith(href + "/") || (href === "/markets" && path.startsWith("/instrument"));
   return (
     <>
       {/* Desktop sidebar */}
@@ -30,7 +32,7 @@ export function TerminalNav() {
               <Link
                 href={l.href}
                 aria-current={active(l.href) ? "page" : undefined}
-                className={`flex items-center gap-2.5 rounded-lg px-2 py-2 text-sm ${active(l.href) ? "bg-white/[0.07] text-white" : "text-soft hover:bg-white/[0.04] hover:text-white"}`}
+                className={`flex items-center gap-2.5 rounded-lg px-2 py-2 text-sm ${l.sub ? "ml-5 py-1.5 text-[13px]" : ""} ${active(l.href) ? "bg-white/[0.07] text-white" : "text-soft hover:bg-white/[0.04] hover:text-white"}`}
               >
                 <span className="w-5 text-center font-mono text-xs text-accent" aria-hidden>{l.icon}</span>
                 {l.label}

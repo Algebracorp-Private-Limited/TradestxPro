@@ -8,6 +8,8 @@ import { BROKER_BY_ID } from "./brokers/catalog";
 import { BROKER_TFS, INDEX_IDS, type Instrument, type Tf } from "./brokers/common";
 import { isVaultConfigured } from "./brokers/vault";
 import { BSE_INDICES } from "./index-catalog";
+import { getQuotes } from "./brokers/quotes";
+import { mergeLiveCandle } from "./live-candle.ts";
 
 export type ChartSymbol = { symbol: string; name: string; kind: "index" | "stock" | "crypto"; exchange: string };
 export type BarsResponse = { symbol: string; name: string; source: string; delayed: string | null; tf: string; tfs: string[]; bars: Bar[]; notice?: string };
@@ -50,7 +52,15 @@ export async function getBars(symbol: string, tf: string, userId?: number): Prom
           const r = await brokerHistory(userId, inst, tf as Tf);
           if (r && r.bars.length) {
             const name = await displayName(sql, prefix, code);
-            return { symbol: `${prefix}:${code.toUpperCase()}`, name, source: `${BROKER_BY_ID[r.broker].name} (your account)`, delayed: null, tf, tfs: [...BROKER_TFS], bars: r.bars };
+            let bars = r.bars;
+            if (tf === "1D" || tf === "1W") {
+              // Brokers' daily history stops at the previous session: add today's candle from a live quote.
+              const key = inst.kind === "index" ? inst.symbol : inst.symbol;
+              const q = await getQuotes(userId, [{ key, kind: inst.kind === "index" ? "index" : "stock", symbol: inst.symbol, token: inst.token, breezeCode: inst.breezeCode }]).catch(() => null);
+              const lq = q?.quotes[key];
+              if (lq) bars = mergeLiveCandle(bars, { ltp: lq.ltp, open: lq.open, high: lq.high, low: lq.low, volume: lq.volume }, tf);
+            }
+            return { symbol: `${prefix}:${code.toUpperCase()}`, name, source: `${BROKER_BY_ID[r.broker].name} (your account)`, delayed: null, tf, tfs: [...BROKER_TFS], bars };
           }
           notice = `${BROKER_BY_ID[hb.broker].name} returned no data for this view; showing end-of-day data.`;
         } catch (e) {

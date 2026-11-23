@@ -3,7 +3,11 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getInstrument } from "@/lib/market-data";
 import { AddToWatchlist } from "@/components/add-to-watchlist";
-import { Dash, FeedBanner } from "@/components/feed-banner";
+import { getSessionUser } from "@/lib/auth";
+import { getQuotes } from "@/lib/brokers/quotes";
+import { isVaultConfigured } from "@/lib/brokers/vault";
+import { db } from "@/lib/db";
+import { AutoRefresh } from "@/components/auto-refresh";
 
 type Props = { params: Promise<{ exchange: string; symbol: string }> };
 
@@ -17,6 +21,25 @@ export default async function InstrumentPage({ params }: Props) {
   const inst = await getInstrument(exchange, decodeURIComponent(symbol));
   if (!inst) notFound();
   const other = await getInstrument(inst.exchange === "NSE" ? "BSE" : "NSE", inst.symbol);
+  const user = (await getSessionUser())!;
+  const live = inst.exchange === "NSE" && isVaultConfigured()
+    ? await getQuotes(user.id, [{ key: "q", kind: "stock", symbol: inst.symbol, token: inst.token, breezeCode: inst.breezeCode }]).catch(() => null)
+    : null;
+  const q = live?.quotes.q ?? null;
+  const sql = await db();
+  const [eod] = await sql<{ close: number; change_pct: number; volume: number; d: Date; high52: number; low52: number }[]>`
+    SELECT close, change_pct, volume, d, high52, low52 FROM screener_snapshot WHERE symbol = ${inst.symbol}`;
+  const f = (v: number | null | undefined) => (v === null || v === undefined ? "—" : v.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+  const fv = (v: number | null | undefined) => (!v ? "—" : v >= 1e7 ? (v / 1e7).toFixed(2) + " Cr" : v >= 1e5 ? (v / 1e5).toFixed(2) + " L" : v.toLocaleString("en-IN"));
+  const price = q?.ltp ?? eod?.close ?? null;
+  const pct = q ? q.changePct : eod?.change_pct ?? null;
+  const cards: [string, string, string?][] = [
+    ["Last price", f(price), pct === null ? undefined : pct >= 0 ? "text-up" : "text-down"],
+    ["Change", pct === null ? "—" : `${q?.change !== null && q?.change !== undefined ? `${q.change >= 0 ? "+" : ""}${f(q.change)} ` : ""}(${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%)`, pct === null ? undefined : pct >= 0 ? "text-up" : "text-down"],
+    ["Day range", q?.low && q?.high ? `${f(q.low)} – ${f(q.high)}` : "—"],
+    ["Volume", fv(q?.volume ?? eod?.volume)],
+    ["52-week range", eod ? `${f(eod.low52)} – ${f(eod.high52)}` : "—"],
+  ];
 
   const facts: [string, React.ReactNode][] = [
     ["Exchange", inst.exchange],
@@ -31,8 +54,11 @@ export default async function InstrumentPage({ params }: Props) {
 
   return (
     <>
-      <nav aria-label="Breadcrumb" className="text-sm text-muted">
-        <Link href="/markets" className="hover:text-white">Markets</Link> <span aria-hidden>/</span> {inst.symbol}
+      <AutoRefresh seconds={20} enabled={Boolean(q)} />
+      <nav aria-label="Breadcrumb" className="flex flex-wrap items-center gap-2 text-sm text-muted">
+        <Link href="/markets" className="rounded-md border border-line px-2.5 py-1 hover:bg-white/5 hover:text-white">← Markets</Link>
+        {inst.hasDerivatives && <Link href="/derivatives" className="rounded-md border border-line px-2.5 py-1 hover:bg-white/5 hover:text-white">← F&amp;O</Link>}
+        <span aria-hidden>/</span> {inst.symbol}
       </nav>
 
       <section className="flex flex-wrap items-start justify-between gap-4">
@@ -56,16 +82,19 @@ export default async function InstrumentPage({ params }: Props) {
         <AddToWatchlist instrumentId={inst.id} />
       </section>
 
-      <FeedBanner compact />
-
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Price">
-        {["Last price", "Change", "Day range", "Volume"].map((label) => (
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5" aria-label="Price">
+        {cards.map(([label, value, cls]) => (
           <div key={label} className="rounded-xl border border-line bg-panel p-4">
             <p className="text-xs text-muted">{label}</p>
-            <p className="mt-2 font-mono text-xl"><Dash /></p>
+            <p className={`mt-2 truncate font-mono text-lg ${cls ?? ""}`} title={value}>{value}</p>
           </div>
         ))}
       </section>
+      <p className="text-xs text-muted">
+        {q ? `Live from ${live?.brokerName}, refreshes every 20 s.` : eod ? `End-of-day close for ${eod.d.toISOString().slice(0, 10)}. Connect a broker for live prices.` : "Connect a broker for live prices."}
+        {" "}<Link href={`/charts?symbol=NSE:${encodeURIComponent(inst.symbol)}`} className="text-accent hover:underline">Open chart →</Link>
+        {inst.hasDerivatives && <> · <Link href={`/options?u=${encodeURIComponent(inst.symbol)}`} className="text-accent hover:underline">Option chain →</Link></>}
+      </p>
 
       <section aria-labelledby="ref" className="rounded-2xl border border-line bg-panel">
         <h2 id="ref" className="border-b border-line px-5 py-3 text-sm font-medium text-soft">Reference data</h2>
@@ -81,7 +110,6 @@ export default async function InstrumentPage({ params }: Props) {
 
       <section className="grid gap-3 md:grid-cols-3">
         {[
-          ["Advanced chart", "P3"],
           ["AI scenario analysis", "P5"],
           ["Corporate actions & news", "P5"],
         ].map(([t, p]) => (

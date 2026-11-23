@@ -2,7 +2,7 @@ import "server-only";
 import { unzipSync } from "fflate";
 import { db } from "./db";
 import { istToday } from "./instrument-map.ts";
-import { nseEquityUrl, nseIndexUrl, parseEquityBhavcopy, parseIndexFile, recentWeekdays, type EodBar } from "./eod-parse.ts";
+import { nseEquityUrl, nseFoUrl, nseIndexUrl, parseEquityBhavcopy, parseFoBhavcopy, parseIndexFile, recentWeekdays, type EodBar } from "./eod-parse.ts";
 import * as ta from "./ta/indicators.ts";
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
@@ -68,6 +68,26 @@ export async function ingestDay(sql: Sql, d: string): Promise<{ index: number | 
   return result;
 }
 
+/** Loads one day's F&O bhavcopy into fo_activity. */
+export async function ingestFoDay(sql: Sql, d: string): Promise<number | null> {
+  const buf = await download(nseFoUrl(d));
+  if (!buf) {
+    await mark(sql, "fo", d, "no_data", 0);
+    return null;
+  }
+  const files = unzipSync(new Uint8Array(buf));
+  const csv = Object.values(files)[0];
+  const rows = csv ? parseFoBhavcopy(new TextDecoder().decode(csv)) : [];
+  await sql.begin(async (tx) => {
+    await tx`DELETE FROM fo_activity WHERE d = ${d}`;
+    for (let i = 0; i < rows.length; i += 1000) {
+      await tx`INSERT INTO fo_activity ${tx(rows.slice(i, i + 1000).map((r) => ({ d, ...r })))}`;
+    }
+  });
+  await mark(sql, "fo", d, "ok", rows.length);
+  return rows.length;
+}
+
 /** Today's file is published after market close; only try it after 18:30 IST. */
 function latestTradingCandidate(now = new Date()): string {
   const ist = new Date(now.getTime() + 5.5 * 3600_000);
@@ -108,6 +128,18 @@ export async function runEod(budgetMs = 150_000): Promise<EodRunResult> {
       }
     }
     const remaining = todo.length - processed.length;
+    // F&O activity: keep the last 10 sessions loaded.
+    const foDone = await sql<{ d: Date }[]>`SELECT d FROM eod_days WHERE exchange = 'NSE' AND kind = 'fo' AND status IN ('ok', 'no_data') AND d >= ${candidates[Math.min(9, candidates.length - 1)]}`;
+    const foSet = new Set(foDone.map((r) => r.d.toISOString().slice(0, 10)));
+    for (const d of candidates.slice(0, 10)) {
+      if (Date.now() - t0 > budgetMs + 30_000) break;
+      if (foSet.has(d)) continue;
+      try {
+        await ingestFoDay(sql, d);
+      } catch (e) {
+        await mark(sql, "fo", d, "error", 0, String(e).slice(0, 300));
+      }
+    }
     let snapshot: number | undefined;
     const [{ n, snapD }] = await sql<{ n: number; snapD: Date | null }[]>`
       SELECT count(*)::int AS n, max(d) AS "snapD" FROM screener_snapshot`;

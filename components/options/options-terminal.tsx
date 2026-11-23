@@ -24,16 +24,17 @@ const fi = (v: number | null | undefined) => (v === null || v === undefined || !
 const fd = (iso: string) => new Date(iso + "T00:00:00Z").toLocaleDateString("en-IN", { day: "2-digit", month: "short", timeZone: "UTC" });
 const tone = (v: number | null | undefined) => (v === null || v === undefined ? "text-muted" : v >= 0 ? "text-up" : "text-down");
 
-// ---------------- Left: underlyings ----------------
-function Underlyings({ current, onPick }: { current: string; onPick: (u: U) => void }) {
+// ---------------- Underlying picker (dropdown) ----------------
+function UnderlyingPicker({ current, onPick }: { current: string; onPick: (u: U) => void }) {
+  const [open, setOpen] = useState(false);
   const [data, setData] = useState<{ indices: U[]; stocks: U[] } | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [members, setMembers] = useState<Record<string, { stocks: U[]; withoutOptions: number } | "loading">>({});
   const [q, setQ] = useState("");
 
   useEffect(() => {
-    fetch("/api/options/underlyings").then((r) => r.json()).then((d) => d.ok && setData(d)).catch(() => {});
-  }, []);
+    if (open && !data) fetch("/api/options/underlyings").then((r) => r.json()).then((d) => d.ok && setData(d)).catch(() => {});
+  }, [open, data]);
 
   const expand = (sym: string) => {
     setExpanded((e) => (e === sym ? null : sym));
@@ -42,60 +43,68 @@ function Underlyings({ current, onPick }: { current: string; onPick: (u: U) => v
       fetch(`/api/options/underlyings?index=${encodeURIComponent(sym)}`).then((r) => r.json()).then((d) => setMembers((m) => ({ ...m, [sym]: d.ok ? d : { stocks: [], withoutOptions: 0 } })));
     }
   };
-
-  const stocks = useMemo(() => {
-    const t = q.trim().toUpperCase();
-    return (data?.stocks ?? []).filter((s) => !t || s.symbol.includes(t) || s.name.toUpperCase().includes(t));
-  }, [data, q]);
-
-  const item = (u: U, indent = false) => (
-    <button
-      key={u.symbol + (indent ? "-m" : "")}
-      onClick={() => onPick(u)}
-      aria-current={current === u.symbol ? "true" : undefined}
-      className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-xs ${indent ? "pl-5" : ""} ${current === u.symbol ? "bg-accent/15 text-accent" : "text-soft hover:bg-white/5"}`}
-      title={u.name}
-    >
-      <span className="truncate font-mono">{u.symbol}</span>
+  const pick = (u: U) => {
+    onPick(u);
+    setOpen(false);
+    setQ("");
+  };
+  const t = q.trim().toUpperCase();
+  const stocks = (data?.stocks ?? []).filter((s) => !t || s.symbol.includes(t) || s.name.toUpperCase().includes(t));
+  const row = (u: U, indent = false) => (
+    <button key={u.symbol + (indent ? "-m" : "")} onClick={() => pick(u)} title={u.name}
+      className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-xs ${indent ? "pl-6" : ""} ${current === u.symbol ? "bg-accent/15 text-accent" : "hover:bg-white/5"}`}>
+      <span className="truncate"><span className="font-mono font-semibold">{u.symbol}</span> <span className="text-muted">{u.name}</span></span>
       <span className="text-[9px] text-muted">{u.exchange}</span>
     </button>
   );
 
   return (
-    <aside aria-label="Option underlyings" className="flex min-h-0 flex-col border-r border-line bg-panel">
-      <p className="px-3 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-wider text-muted">Indices</p>
-      <ul className="px-1.5">
-        {(data?.indices ?? []).map((u) => {
-          const m = members[u.symbol];
-          return (
-            <li key={u.symbol}>
-              <div className="flex items-center" onDoubleClick={() => u.hasMembers && expand(u.symbol)}>
-                {u.hasMembers ? (
-                  <button onClick={() => expand(u.symbol)} aria-label={`${expanded === u.symbol ? "Hide" : "Show"} ${u.symbol} stocks`} aria-expanded={expanded === u.symbol} className="w-5 text-xs text-muted hover:text-white">
-                    {expanded === u.symbol ? "▾" : "▸"}
-                  </button>
-                ) : <span className="w-5" />}
-                <div className="min-w-0 flex-1">{item(u)}</div>
-              </div>
-              {expanded === u.symbol && (
-                <div className="mb-1 border-l border-line pl-1 ml-2.5">
-                  {m === "loading" || !m ? <p className="px-3 py-1 text-[11px] text-muted">Loading constituents…</p> : (
-                    <>
-                      {m.stocks.map((s) => item(s, true))}
-                      {m.withoutOptions > 0 && <p className="px-3 py-1 text-[10px] text-muted">{m.withoutOptions} member{m.withoutOptions > 1 ? "s have" : " has"} no listed options</p>}
-                    </>
-                  )}
-                </div>
+    <div className="relative">
+      <button onClick={() => setOpen((o) => !o)} aria-haspopup="dialog" aria-expanded={open}
+        className="flex items-center gap-2 rounded-lg border border-line bg-ink px-3 py-1.5 text-left hover:border-white/25">
+        <span className="font-mono text-base font-semibold">{current}</span>
+        <span className="text-xs text-muted">▾ Change</span>
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} aria-hidden />
+          <div role="dialog" aria-label="Choose underlying" className="absolute left-0 top-full z-50 mt-1 flex max-h-[70vh] w-[min(92vw,420px)] flex-col overflow-hidden rounded-xl border border-line bg-panel shadow-2xl">
+            <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Escape" && setOpen(false)} placeholder="Search index or stock"
+              aria-label="Search underlying" className="border-b border-line bg-ink px-3 py-2.5 text-sm focus:outline-none" />
+            <div className="min-h-0 flex-1 overflow-auto p-1.5">
+              {!data && <p className="p-2 text-xs text-muted">Loading…</p>}
+              {data && !t && (
+                <>
+                  <p className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-muted">Index options</p>
+                  {data.indices.map((u) => {
+                    const m = members[u.symbol];
+                    return (
+                      <div key={u.symbol}>
+                        <div className="flex items-center">
+                          <div className="min-w-0 flex-1">{row(u)}</div>
+                          {u.hasMembers && (
+                            <button onClick={() => expand(u.symbol)} aria-expanded={expanded === u.symbol} className="shrink-0 rounded px-2 py-1 text-[10px] text-accent hover:bg-white/5">
+                              {expanded === u.symbol ? "Hide stocks" : "Stocks ▸"}
+                            </button>
+                          )}
+                        </div>
+                        {expanded === u.symbol && (m === "loading" || !m ? <p className="px-6 py-1 text-[11px] text-muted">Loading…</p> : m.stocks.map((x) => row(x, true)))}
+                      </div>
+                    );
+                  })}
+                </>
               )}
-            </li>
-          );
-        })}
-      </ul>
-      <p className="px-3 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-wider text-muted">Stock options ({data?.stocks.length ?? 0})</p>
-      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter stocks" aria-label="Filter option stocks" className="mx-2 mb-1 rounded-md border border-line bg-ink px-2 py-1 text-xs" />
-      <div className="min-h-0 flex-1 overflow-auto px-1.5 pb-3">{stocks.map((s) => item(s))}</div>
-      <p className="border-t border-line px-3 py-2 text-[10px] leading-4 text-muted">Click an index for its chain. Double-click (or ▸) to list its stocks.</p>
-    </aside>
+              {data && (
+                <>
+                  <p className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted">Stock options ({stocks.length})</p>
+                  {stocks.slice(0, t ? 60 : 300).map((u) => row(u))}
+                </>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -131,14 +140,7 @@ function Detail({ chain, sel, onSelect }: { chain: Chain; sel: Sel | null; onSel
     return all.sort((a, b) => b.vol - a.vol).slice(0, 6);
   }, [chain.rows]);
 
-  if (!leg || !row || !sel) {
-    return (
-      <aside className="space-y-4 border-l border-line bg-panel p-4 text-sm">
-        <p className="text-muted">Click any call or put price in the chain to see its details, Greeks and market depth.</p>
-        <TopTraded top={top} onSelect={onSelect} />
-      </aside>
-    );
-  }
+  if (!leg || !row || !sel) return null;
 
   const spot = chain.spot;
   const intrinsic = spot !== null ? Math.max(0, sel.side === "CE" ? spot - row.strike : row.strike - spot) : null;
@@ -155,7 +157,7 @@ function Detail({ chain, sel, onSelect }: { chain: Chain; sel: Sel | null; onSel
   );
 
   return (
-    <aside aria-label="Contract details" className="min-h-0 space-y-4 overflow-auto border-l border-line bg-panel p-4 text-xs">
+    <div aria-label="Contract details" className="space-y-4 text-xs">
       <div>
         <p className="font-mono text-sm font-semibold">{title}</p>
         <div className="mt-1 flex items-baseline gap-2 font-mono">
@@ -230,7 +232,7 @@ function Detail({ chain, sel, onSelect }: { chain: Chain; sel: Sel | null; onSel
       </section>
 
       <TopTraded top={top} onSelect={onSelect} />
-    </aside>
+    </div>
   );
 }
 
@@ -271,7 +273,7 @@ export function OptionsTerminal() {
   const [loading, setLoading] = useState(true);
   const [sel, setSel] = useState<Sel | null>(null);
   const [range, setRange] = useState(15);
-  const atmRef = useRef<HTMLTableRowElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const loadRef = useRef<() => void>(() => {});
 
@@ -305,7 +307,9 @@ export function OptionsTerminal() {
   }, [load]);
 
   useEffect(() => {
-    atmRef.current?.scrollIntoView({ block: "center" });
+    const box = scrollRef.current;
+    const row = box?.querySelector<HTMLTableRowElement>("tr[data-atm]");
+    if (box && row) box.scrollTop = row.offsetTop - box.clientHeight / 2 + row.clientHeight / 2;
   }, [chain?.underlying, chain?.expiry, chain?.atm]);
 
   const nav = (next: { u?: string; expiry?: string; exchange?: string }) => {
@@ -350,41 +354,71 @@ export function OptionsTerminal() {
     return side === "CE" ? cellsCE : [...cellsCE].reverse();
   };
 
-  return (
-    <div className="-m-4 grid h-[calc(100dvh-53px-64px)] grid-cols-1 sm:-m-6 lg:h-[calc(100dvh-53px)] lg:grid-cols-[210px_minmax(0,1fr)_300px]">
-      <div className="hidden min-h-0 lg:flex lg:flex-col"><Underlyings current={u} onPick={(x) => nav({ u: x.symbol, exchange: x.exchange })} /></div>
+  // Live contracts traded today (broker volume is in units; divide by lot size).
+  const traded = useMemo(() => {
+    if (!chain) return null;
+    const lot = chain.lotSize || 1;
+    let ce = 0;
+    let pe = 0;
+    let ceOi = 0;
+    let peOi = 0;
+    for (const r of chain.rows) {
+      ce += r.ce?.volume ?? 0;
+      pe += r.pe?.volume ?? 0;
+      ceOi += r.ce?.oi ?? 0;
+      peOi += r.pe?.oi ?? 0;
+    }
+    if (!ce && !pe) return null;
+    return { ce: ce / lot, pe: pe / lot, total: (ce + pe) / lot, pcrVol: ce ? pe / ce : null, ceOi, peOi };
+  }, [chain]);
 
-      <section aria-label="Option chain" className="flex min-h-0 min-w-0 flex-col">
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line bg-panel px-3 py-2">
-          <div>
-            <h1 className="font-mono text-lg font-semibold leading-tight">{chain?.underlying ?? u}</h1>
-            <p className="text-[11px] text-muted">{chain?.name}</p>
-          </div>
-          <div className="font-mono">
-            <span className="text-lg">{f(chain?.spot)}</span>
-            <span className="ml-1.5 text-[10px] text-muted">{chain?.spotSource}</span>
-          </div>
-          <dl className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
-            <div className="flex items-center gap-1"><dt className="flex items-center text-muted">PCR<Info term="PCR" place="bottom" /></dt><dd className="font-mono">{f(chain?.pcr)}</dd></div>
-            <div className="flex items-center gap-1"><dt className="flex items-center text-muted">Max pain<Info term="Max pain" place="bottom" /></dt><dd className="font-mono">{f(chain?.maxPain, 0)}</dd></div>
-            <div className="flex items-center gap-1"><dt className="flex items-center text-muted">ATM<Info term="ATM" place="bottom" /></dt><dd className="font-mono">{f(chain?.atm, 0)}</dd></div>
-            <div className="flex items-center gap-1"><dt className="flex items-center text-muted">Lot<Info term="Lot" place="bottom" /></dt><dd className="font-mono">{chain?.lotSize ?? "—"}</dd></div>
-            <div className="flex items-center gap-1"><dt className="flex items-center text-muted">DTE<Info term="DTE" place="bottom" /></dt><dd className="font-mono">{chain?.daysToExpiry ?? "—"}</dd></div>
-          </dl>
-          <span className={`ml-auto rounded-full px-2 py-0.5 text-[10px] ${chain?.broker ? "bg-up/15 text-up" : "bg-gold/15 text-gold"}`}>
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-3 rounded-2xl border border-line bg-panel px-4 py-3">
+        <UnderlyingPicker current={chain?.underlying ?? u} onPick={(x) => nav({ u: x.symbol, exchange: x.exchange })} />
+        <div className="min-w-0">
+          <p className="truncate text-xs text-muted">{chain?.name}</p>
+          <p className="font-mono">
+            <span className="text-xl font-semibold">{f(chain?.spot)}</span>
+            <span className="ml-1.5 font-sans text-[10px] text-muted">{chain?.spotSource}</span>
+          </p>
+        </div>
+        <dl className="flex flex-wrap gap-x-5 gap-y-1 text-xs">
+          <div className="flex items-center gap-1"><dt className="flex items-center text-muted">ATM<Info term="ATM" place="bottom" /></dt><dd className="font-mono">{f(chain?.atm, 0)}</dd></div>
+          <div className="flex items-center gap-1"><dt className="flex items-center text-muted">Lot<Info term="Lot" place="bottom" /></dt><dd className="font-mono">{chain?.lotSize ?? "—"}</dd></div>
+          <div className="flex items-center gap-1"><dt className="flex items-center text-muted">DTE<Info term="DTE" place="bottom" /></dt><dd className="font-mono">{chain?.daysToExpiry ?? "—"}</dd></div>
+        </dl>
+        <div className="ml-auto flex items-center gap-2">
+          <Link href={`/options/strategies?u=${encodeURIComponent(chain?.underlying ?? u)}`} className="rounded-lg border border-line px-3 py-1.5 text-xs hover:bg-white/5">Strategy builder →</Link>
+          <span className={`rounded-full px-2 py-0.5 text-[10px] ${chain?.broker ? "bg-up/15 text-up" : "bg-gold/15 text-gold"}`}>
             {chain?.broker ? `Live · ${chain.broker} · 15s` : <Link href="/brokers" className="underline">Connect a broker for live prices</Link>}
           </span>
         </div>
+      </div>
 
-        <div className="flex items-center gap-2 border-b border-line px-3 py-1.5">
-          <label className="lg:hidden">
-            <span className="sr-only">Underlying</span>
-            <input defaultValue={u} onKeyDown={(e) => e.key === "Enter" && nav({ u: (e.target as HTMLInputElement).value.toUpperCase() })} className="w-28 rounded-md border border-line bg-ink px-2 py-1 font-mono text-xs" aria-label="Underlying symbol" />
-          </label>
+      {/* Contracts traded today (live) */}
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        {[
+          ["Call contracts today", traded ? fi(traded.ce) : "—", "text-up"],
+          ["Put contracts today", traded ? fi(traded.pe) : "—", "text-down"],
+          ["Total contracts today", traded ? fi(traded.total) : "—", ""],
+          ["Expiry", chain?.expiry ? fd(chain.expiry) : "—", ""],
+        ].map(([k, v, cls]) => (
+          <div key={k} className="rounded-xl border border-line bg-panel px-4 py-2.5">
+            <p className="text-[11px] text-muted">{k}{k.includes("contracts") && <Info term="Volume" place="bottom" />}</p>
+            <p className={`mt-0.5 truncate font-mono text-lg ${cls}`}>{v}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Chain */}
+      <section aria-label="Option chain" className="overflow-hidden rounded-2xl border border-line bg-panel">
+        <div className="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2">
           <nav aria-label="Expiries" className="flex min-w-0 flex-1 gap-1 overflow-x-auto">
             {chain?.expiries.map((e) => (
               <button key={e} onClick={() => nav({ expiry: e })} aria-current={e === chain.expiry ? "true" : undefined}
-                className={`shrink-0 rounded-md px-2 py-1 text-xs ${e === chain.expiry ? "bg-white text-slate-950" : "bg-white/5 text-soft hover:bg-white/10"}`}>
+                className={`shrink-0 rounded-md px-2.5 py-1 text-xs ${e === chain.expiry ? "bg-white text-slate-950" : "bg-white/5 text-soft hover:bg-white/10"}`}>
                 {fd(e)}
               </button>
             ))}
@@ -396,11 +430,9 @@ export function OptionsTerminal() {
             <option value={999}>All strikes</option>
           </select>
         </div>
-
         {(err || chain?.error) && <p role="alert" className="border-b border-line bg-gold/10 px-3 py-1.5 text-xs text-gold">{err ?? chain?.error}</p>}
-
-        <div className={`min-h-0 flex-1 overflow-auto ${loading ? "opacity-60" : ""}`}>
-          <table className="w-full min-w-[760px] text-xs">
+        <div ref={scrollRef} className={`max-h-[62vh] overflow-auto ${loading ? "opacity-60" : ""}`}>
+          <table className="w-full min-w-[820px] text-xs">
             <thead className="sticky top-0 z-10 bg-panel text-[10px] text-muted">
               <tr>
                 <th colSpan={6} className="border-b border-line py-1 text-center font-semibold text-up">CALLS</th>
@@ -417,7 +449,7 @@ export function OptionsTerminal() {
                 const isAtm = chain?.atm === r.strike;
                 const spot = chain?.spot ?? NaN;
                 return (
-                  <tr key={r.strike} ref={isAtm ? atmRef : undefined} className={isAtm ? "border-y-2 border-accent/50" : ""}>
+                  <tr key={r.strike} data-atm={isAtm ? "1" : undefined} className={isAtm ? "border-y-2 border-accent/50" : ""}>
                     {cell(r.ce, "CE", r.strike, r.strike < spot)}
                     <td className={`bg-panel-2 px-2 py-1.5 text-center font-mono font-semibold ${isAtm ? "text-accent" : ""}`}>{r.strike.toLocaleString("en-IN")}</td>
                     {cell(r.pe, "PE", r.strike, r.strike > spot)}
@@ -428,18 +460,116 @@ export function OptionsTerminal() {
           </table>
           {!loading && chain && rows.length === 0 && <p className="p-6 text-center text-sm text-muted">No strikes for this expiry.</p>}
         </div>
-        <p className="border-t border-line bg-panel px-3 py-1 text-[10px] text-muted">
-          Shaded cells are in the money. Greeks: from your broker when supplied, otherwise Black-Scholes from the option&apos;s price (r = 6.5%). Research tool only, not investment advice.
+        <p className="border-t border-line px-3 py-1.5 text-[10px] text-muted">
+          Click any call or put to open its details. Shaded cells are in the money. Greeks come from your broker when supplied, otherwise Black-Scholes (r = 6.5%).
         </p>
       </section>
 
-      <div className="hidden min-h-0 lg:block">{chain && <Detail chain={chain} sel={sel} onSelect={setSel} />}</div>
+      {/* Put-call ratio */}
+      <section aria-labelledby="pcr" className="grid gap-3 md:grid-cols-4">
+        <h2 id="pcr" className="sr-only">Put-call ratio</h2>
+        {[
+          ["PCR (open interest)", f(chain?.pcr), "PCR"],
+          ["PCR (volume, today)", f(traded?.pcrVol ?? null), "PCR"],
+          ["Max pain", f(chain?.maxPain, 0), "Max pain"],
+          ["Call OI / Put OI", traded ? `${fi(traded.ceOi)} / ${fi(traded.peOi)}` : "—", "OI"],
+        ].map(([k, v, term]) => (
+          <div key={k} className="rounded-xl border border-line bg-panel px-4 py-3">
+            <p className="flex items-center text-[11px] text-muted">{k}<Info term={term} /></p>
+            <p className="mt-1 font-mono text-xl">{v}</p>
+          </div>
+        ))}
+      </section>
+
+      <Activity underlying={chain?.underlying ?? u} />
+
       {chain && sel && (
-        <div className="fixed inset-x-0 bottom-16 z-30 max-h-[60vh] overflow-auto border-t border-line bg-panel shadow-2xl lg:hidden">
-          <button onClick={() => setSel(null)} className="sticky top-0 w-full bg-panel py-1 text-center text-xs text-muted">Close ✕</button>
-          <Detail chain={chain} sel={sel} onSelect={setSel} />
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-3" onClick={() => setSel(null)}>
+          <div role="dialog" aria-modal="true" aria-label="Contract details" onClick={(e) => e.stopPropagation()} className="max-h-[90vh] w-full max-w-lg overflow-auto rounded-2xl border border-line bg-panel p-5 shadow-2xl">
+            <div className="mb-2 flex justify-end"><button onClick={() => setSel(null)} aria-label="Close" className="rounded px-2 py-1 text-muted hover:bg-white/5">✕</button></div>
+            <Detail chain={chain} sel={sel} onSelect={setSel} />
+          </div>
         </div>
       )}
     </div>
+  );
+}
+
+// ---------------- Previous-session activity ----------------
+type ActivityData = {
+  d: string | null;
+  totals?: Record<string, { contracts: number; ce: number; pe: number; premium: number; pcrOi: number | null }>;
+  underlying?: { symbol: string; rows: { inst: string; contracts: number; ce: number; pe: number; pcrOi: number | null }[] } | null;
+  top?: { underlying: string; contracts: number; ce: number; pe: number }[];
+  sectors?: { industry: string; options: number; futures: number; pcrOi: number | null }[];
+};
+
+function Activity({ underlying }: { underlying: string }) {
+  const [a, setA] = useState<ActivityData | null>(null);
+  useEffect(() => {
+    let alive = true;
+    fetch(`/api/options/activity?u=${encodeURIComponent(underlying)}`).then((r) => r.json()).then((d) => alive && d.ok && setA(d)).catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [underlying]);
+  if (!a) return null;
+  if (!a.d) return <p className="text-xs text-muted">Previous-session F&amp;O activity loads after the next end-of-day update.</p>;
+  const label: Record<string, string> = { IDO: "Index options", STO: "Stock options", IDF: "Index futures", STF: "Stock futures" };
+  const maxSector = Math.max(1, ...(a.sectors ?? []).map((s) => s.options));
+  return (
+    <section aria-labelledby="activity" className="space-y-3">
+      <h2 id="activity" className="text-sm font-semibold">F&amp;O activity — {fd(a.d)} session <span className="font-normal text-muted">(NSE, contracts traded)</span></h2>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {(["IDO", "STO", "IDF", "STF"] as const).map((k) => {
+          const t = a.totals?.[k];
+          return (
+            <div key={k} className="rounded-xl border border-line bg-panel px-4 py-3">
+              <p className="text-[11px] text-muted">{label[k]} — all NSE</p>
+              <p className="mt-1 font-mono text-lg">{fi(t?.contracts)}</p>
+              {t && (k === "IDO" || k === "STO") && <p className="text-[11px] text-muted">CE {fi(t.ce)} · PE {fi(t.pe)} · PCR(OI) {f(t.pcrOi)}</p>}
+            </div>
+          );
+        })}
+      </div>
+      {a.underlying && a.underlying.rows.length > 0 && (
+        <div className="rounded-xl border border-line bg-panel px-4 py-3 text-sm">
+          <p className="mb-1 text-[11px] text-muted">{a.underlying.symbol} in that session</p>
+          <div className="flex flex-wrap gap-x-6 gap-y-1 font-mono text-xs">
+            {a.underlying.rows.map((r) => (
+              <span key={r.inst}>{label[r.inst]}: <strong>{fi(r.contracts)}</strong>{r.ce || r.pe ? ` (CE ${fi(r.ce)} · PE ${fi(r.pe)} · PCR ${f(r.pcrOi)})` : ""}</span>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="grid gap-3 lg:grid-cols-2">
+        <div className="overflow-hidden rounded-xl border border-line bg-panel">
+          <p className="border-b border-line px-4 py-2 text-xs font-medium">Most active stock options</p>
+          <table className="w-full text-xs">
+            <thead className="text-[10px] text-muted"><tr><th className="px-4 py-1.5 text-left font-normal">Stock</th><th className="px-4 py-1.5 text-right font-normal">Contracts</th><th className="px-4 py-1.5 text-right font-normal">CE / PE</th></tr></thead>
+            <tbody className="divide-y divide-line">
+              {(a.top ?? []).map((t) => (
+                <tr key={t.underlying}>
+                  <td className="px-4 py-1.5"><Link href={`/options?u=${encodeURIComponent(t.underlying)}`} className="font-mono hover:text-accent">{t.underlying}</Link></td>
+                  <td className="px-4 py-1.5 text-right font-mono">{fi(t.contracts)}</td>
+                  <td className="px-4 py-1.5 text-right font-mono text-muted">{fi(t.ce)} / {fi(t.pe)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="overflow-hidden rounded-xl border border-line bg-panel">
+          <p className="border-b border-line px-4 py-2 text-xs font-medium">Contracts traded by sector (stock options)</p>
+          <ul className="max-h-80 divide-y divide-line overflow-auto">
+            {(a.sectors ?? []).map((s) => (
+              <li key={s.industry} className="px-4 py-1.5 text-xs">
+                <div className="flex justify-between gap-3"><span className="truncate">{s.industry}</span><span className="font-mono">{fi(s.options)} <span className="text-muted">· PCR {f(s.pcrOi)}</span></span></div>
+                <div className="mt-1 h-1.5 rounded-full bg-white/5"><div className="h-full rounded-full bg-accent/60" style={{ width: `${(s.options / maxSector) * 100}%` }} /></div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </section>
   );
 }

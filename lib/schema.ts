@@ -219,6 +219,34 @@ CREATE TABLE IF NOT EXISTS user_prefs (
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Daily F&O activity per underlying (from NSE's F&O bhavcopy).
+CREATE TABLE IF NOT EXISTS fo_activity (
+  d                  DATE        NOT NULL,
+  underlying         TEXT        NOT NULL,
+  inst               TEXT        NOT NULL,          -- IDF | IDO | STF | STO
+  contracts          BIGINT      NOT NULL DEFAULT 0,
+  ce_contracts       BIGINT      NOT NULL DEFAULT 0,
+  pe_contracts       BIGINT      NOT NULL DEFAULT 0,
+  oi_qty             BIGINT      NOT NULL DEFAULT 0,
+  ce_oi_qty          BIGINT      NOT NULL DEFAULT 0,
+  pe_oi_qty          BIGINT      NOT NULL DEFAULT 0,
+  premium_turnover   DOUBLE PRECISION NOT NULL DEFAULT 0,
+  notional_turnover  DOUBLE PRECISION NOT NULL DEFAULT 0,
+  PRIMARY KEY (d, underlying, inst)
+);
+
+-- User-saved stock screeners.
+CREATE TABLE IF NOT EXISTS saved_screens (
+  id                 BIGSERIAL PRIMARY KEY,
+  user_id            BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name               TEXT        NOT NULL,
+  filters            JSONB       NOT NULL,
+  sort               TEXT,
+  dir                TEXT,
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS saved_screens_user_idx ON saved_screens (user_id);
+
 -- Short leases for background jobs (expire on their own if a run is killed).
 CREATE TABLE IF NOT EXISTS job_locks (
   name               TEXT        PRIMARY KEY,

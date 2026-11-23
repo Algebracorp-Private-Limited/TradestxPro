@@ -67,7 +67,7 @@ export function MarketOverview() {
       </div>
       {err && <p role="alert" className="mb-2 text-xs text-rose-300">{err}</p>}
       {s?.error && <p className="mb-2 text-xs text-gold">{s.error}</p>}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6">
         {(s?.tiles ?? []).map((t) => {
           const price = t.live?.ltp ?? t.eod?.close ?? null;
           const pct = t.live ? t.live.changePct : t.eod?.changePct ?? null;
@@ -79,8 +79,8 @@ export function MarketOverview() {
                   <span className="truncate">{t.name}</span>
                   <span className="text-[9px]">{t.group}</span>
                 </p>
-                <p className="mt-2 font-mono text-xl">{f2(price)}</p>
-                <p className={`mt-0.5 font-mono text-xs ${pct === null ? "text-muted" : up ? "text-up" : "text-down"}`}>
+                <p className="mt-2 truncate font-mono text-lg tabular-nums 2xl:text-xl" title={f2(price)}>{f2(price)}</p>
+                <p className={`mt-0.5 truncate whitespace-nowrap font-mono text-[11px] ${pct === null ? "text-muted" : up ? "text-up" : "text-down"}`}>
                   {pct === null
                     ? "—"
                     : t.live?.change !== null && t.live?.change !== undefined

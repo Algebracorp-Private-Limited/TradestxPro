@@ -62,3 +62,19 @@ test("contract mapping: index option, stock future, expired", () => {
   assert.equal(sensex?.underlying, "SENSEX");
   assert.equal(sensex?.exchange, "BFO");
 });
+
+test("F&O bhavcopy aggregation", async () => {
+  const { parseFoBhavcopy } = await import("../lib/eod-parse.ts");
+  const csv = `TradDt,FinInstrmTp,TckrSymb,OptnTp,ClsPric,OpnIntrst,TtlTradgVol,TtlTrfVal,NewBrdLotQty
+2026-11-20,IDO,NIFTY,CE,100,6500,10,1000000,65
+2026-11-20,IDO,NIFTY,PE,50,13000,4,500000,65
+2026-11-20,STF,TCS,,2400,1750,3,12600000,175
+2026-11-20,FUTCOM,GOLD,,1,1,1,1,1`;
+  const rows = parseFoBhavcopy(csv);
+  const n = rows.find((r) => r.underlying === "NIFTY")!;
+  assert.equal(n.contracts, 14);
+  assert.equal(n.ce_contracts, 10);
+  assert.equal(n.pe_oi_qty, 13000);
+  assert.equal(n.premium_turnover, 10 * 65 * 100 + 4 * 65 * 50);
+  assert.equal(rows.length, 2);
+});

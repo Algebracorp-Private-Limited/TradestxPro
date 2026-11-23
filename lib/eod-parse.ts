@@ -77,3 +77,50 @@ export function recentWeekdays(fromIso: string, days: number): string[] {
   }
   return out;
 }
+
+export type FoAgg = {
+  underlying: string;
+  inst: "IDF" | "IDO" | "STF" | "STO";
+  contracts: number;
+  ce_contracts: number;
+  pe_contracts: number;
+  oi_qty: number;
+  ce_oi_qty: number;
+  pe_oi_qty: number;
+  premium_turnover: number;
+  notional_turnover: number;
+};
+
+/** BhavCopy_NSE_FO_0_0_0_YYYYMMDD_F_0000.csv → per-underlying activity (contracts traded, OI, turnover). */
+export function parseFoBhavcopy(text: string): FoAgg[] {
+  const by = new Map<string, FoAgg>();
+  for (const r of parseCsv(text)) {
+    const inst = r.FinInstrmTp as FoAgg["inst"];
+    if (!["IDF", "IDO", "STF", "STO"].includes(inst)) continue;
+    const u = r.TckrSymb?.trim();
+    if (!u) continue;
+    const key = `${u}|${inst}`;
+    let a = by.get(key);
+    if (!a) by.set(key, (a = { underlying: u, inst, contracts: 0, ce_contracts: 0, pe_contracts: 0, oi_qty: 0, ce_oi_qty: 0, pe_oi_qty: 0, premium_turnover: 0, notional_turnover: 0 }));
+    const contracts = num(r.TtlTradgVol) ?? 0;
+    const oi = num(r.OpnIntrst) ?? 0;
+    const lot = num(r.NewBrdLotQty) ?? 0;
+    const px = num(r.ClsPric) ?? 0;
+    a.contracts += contracts;
+    a.oi_qty += oi;
+    a.notional_turnover += num(r.TtlTrfVal) ?? 0;
+    a.premium_turnover += contracts * lot * px;
+    if (r.OptnTp === "CE") {
+      a.ce_contracts += contracts;
+      a.ce_oi_qty += oi;
+    } else if (r.OptnTp === "PE") {
+      a.pe_contracts += contracts;
+      a.pe_oi_qty += oi;
+    }
+  }
+  return [...by.values()];
+}
+
+export function nseFoUrl(iso: string): string {
+  return `https://nsearchives.nseindia.com/content/fo/BhavCopy_NSE_FO_0_0_0_${iso.replaceAll("-", "")}_F_0000.csv.zip`;
+}

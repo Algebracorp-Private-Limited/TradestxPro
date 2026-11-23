@@ -267,6 +267,7 @@ export const INDICATORS: IndicatorDef[] = [
     id: "volume", name: "Volume", short: "Vol", pane: "separate", category: "Volume", params: [len("length", 20, "MA length")],
     compute: (b, p) => {
       const v = cols(b).v;
+      if (!v.some((x) => x > 0)) return []; // indices have no volume
       return [
         { key: "vol", label: "Volume", values: v, color: "#8b95a7", style: "histogram" },
         { key: "ma", label: `MA ${p.length}`, values: ta.sma(v, p.length), color: "#f5c451" },

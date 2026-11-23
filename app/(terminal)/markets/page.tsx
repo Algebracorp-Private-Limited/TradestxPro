@@ -15,7 +15,7 @@ export default async function Markets() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Markets</h1>
-          <p className="mt-1 text-sm text-muted">NSE indices and every NSE/BSE listed equity. End-of-day data.</p>
+          <p className="mt-1 text-sm text-muted">NSE indices and every NSE/BSE listed equity. Live when a broker is connected, otherwise end of day.</p>
         </div>
         <Link href="/screener" className="rounded-lg border border-line px-3 py-2 text-sm hover:bg-white/5">Open Stock Screener →</Link>
       </div>

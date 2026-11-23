@@ -6,8 +6,16 @@ import { BROKER_BY_ID, type BrokerId } from "./catalog";
 import { BrokerAuthError, INDEX_IDS, brokerMessage, getWithBody, httpJson, type Creds, type Session } from "./common";
 import { recordError } from "./store";
 
-export type QuoteReq = { key: string; kind: "index" | "stock"; symbol: string; token?: string | null; breezeCode?: string | null };
-export type Quote = { ltp: number; prevClose: number | null; change: number | null; changePct: number | null; open: number | null; high: number | null; low: number | null; volume: number | null; time: string | null };
+export type QuoteReq = {
+  key: string;
+  kind: "index" | "stock" | "future";
+  symbol: string;
+  token?: string | null;
+  breezeCode?: string | null;
+  /** Futures contract details (kind "future"). */
+  fut?: { exchange: "NFO" | "BFO"; expiry: string };
+};
+export type Quote = { ltp: number; prevClose: number | null; change: number | null; changePct: number | null; open: number | null; high: number | null; low: number | null; volume: number | null; time: string | null; oi?: number | null };
 export type QuoteResult = { broker: BrokerId | null; brokerName: string | null; quotes: Record<string, Quote>; error?: string };
 
 const QUOTE_PREFERENCE: BrokerId[] = ["dhan", "icici"];
@@ -28,10 +36,24 @@ const TTL = 12_000;
 // ---------- ICICI Breeze: signed v1 request, one instrument per call ----------
 const BREEZE_V1 = "https://api.icicidirect.com/breezeapi/api/v1/";
 async function breezeQuote(session: Session, creds: Creds, r: QuoteReq): Promise<Quote | null> {
+  try {
+    return await breezeQuoteOnce(session, creds, r);
+  } catch (e) {
+    if (e instanceof BrokerAuthError) throw e;
+    await new Promise((res) => setTimeout(res, 400)); // ICICI returns 503 when busy: retry once
+    return breezeQuoteOnce(session, creds, r);
+  }
+}
+
+async function breezeQuoteOnce(session: Session, creds: Creds, r: QuoteReq): Promise<Quote | null> {
   const ids = r.kind === "index" ? INDEX_IDS[r.symbol] : null;
   const stock = r.kind === "index" ? ids?.breeze : r.breezeCode;
   if (!stock) return null;
-  const body = JSON.stringify({ stock_code: stock, exchange_code: ids?.breezeExch ?? "NSE", expiry_date: "", product_type: "", right: "", strike_price: "" });
+  const body = JSON.stringify(
+    r.kind === "future" && r.fut
+      ? { stock_code: stock, exchange_code: r.fut.exchange, expiry_date: `${r.fut.expiry}T06:00:00.000Z`, product_type: "futures", right: "others", strike_price: "0" }
+      : { stock_code: stock, exchange_code: ids?.breezeExch ?? "NSE", expiry_date: "", product_type: "", right: "", strike_price: "" },
+  );
   const ts = new Date().toISOString().slice(0, 19) + ".000Z";
   const checksum = createHash("sha256").update(ts + body + creds.secretKey).digest("hex");
   const res = await getWithBody<{ Success?: Record<string, unknown>[] | null; Error?: string | null; Status?: number }>(
@@ -44,7 +66,7 @@ async function breezeQuote(session: Session, creds: Creds, r: QuoteReq): Promise
   if (!row) return null;
   const ltp = num(row.ltp);
   if (!ltp) return null;
-  return mk(ltp, num(row.previous_close), { open: num(row.open), high: num(row.high), low: num(row.low), volume: num(row.total_quantity_traded), time: row.ltt ? String(row.ltt) : null });
+  return mk(ltp, num(row.previous_close), { open: num(row.open), high: num(row.high), low: num(row.low), volume: num(row.total_quantity_traded), time: row.ltt ? String(row.ltt) : null, oi: num(row.open_interest) });
 }
 
 // ---------- Dhan: one bulk OHLC call for everything ----------
@@ -55,7 +77,7 @@ async function dhanQuotes(session: Session, reqs: QuoteReq[]): Promise<Record<st
     const ids = r.kind === "index" ? INDEX_IDS[r.symbol] : null;
     const id = r.kind === "index" ? ids?.dhan : r.token;
     if (!id) continue;
-    const seg = r.kind === "index" ? ids?.dhanSeg ?? "IDX_I" : "NSE_EQ";
+    const seg = r.kind === "index" ? ids?.dhanSeg ?? "IDX_I" : r.kind === "future" ? (r.fut?.exchange === "BFO" ? "BSE_FNO" : "NSE_FNO") : "NSE_EQ";
     (bySeg[seg] ??= new Set()).add(Number(id));
     lookup.push({ seg, id, key: r.key });
   }
@@ -105,21 +127,23 @@ export async function getQuotes(userId: number, reqs: QuoteReq[], opts: { maxCal
     else todo.push(r);
   }
   let error: string | undefined;
+  let failed = 0;
   try {
     if (qb.broker === "dhan") Object.assign(quotes, await dhanQuotes(qb.session, todo));
     else {
       // ICICI: one request per instrument; keep within its per-minute limit.
       const limit = opts.maxCalls ?? 25;
       const batch = todo.slice(0, limit);
-      for (let i = 0; i < batch.length; i += 5) {
-        const part = batch.slice(i, i + 5);
+      for (let i = 0; i < batch.length; i += 3) {
+        const part = batch.slice(i, i + 3);
         const res = await Promise.allSettled(part.map((r) => breezeQuote(qb.session, qb.creds, r)));
         res.forEach((x, k) => {
           if (x.status === "fulfilled" && x.value) quotes[part[k].key] = x.value;
           else if (x.status === "rejected" && x.reason instanceof BrokerAuthError) throw x.reason;
-          else if (x.status === "rejected" && !error) error = (x.reason as Error).message;
+          else if (x.status === "rejected") failed++;
         });
       }
+      if (failed) error = `${name} was busy and skipped ${failed} live price${failed > 1 ? "s" : ""}; showing the last close for those. It retries automatically.`;
       if (todo.length > limit) error = `${name} limits quote requests; showing live prices for the first ${limit} symbols.`;
     }
   } catch (e) {

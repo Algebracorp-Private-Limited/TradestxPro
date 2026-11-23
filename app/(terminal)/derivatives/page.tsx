@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { listUnderlyings } from "@/lib/market-data";
-import { FeedBanner } from "@/components/feed-banner";
 import { UnderlyingFilter } from "@/components/underlying-filter";
 
 export const metadata: Metadata = { title: "F&O Contracts" };
@@ -16,10 +15,9 @@ export default async function Derivatives() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">F&amp;O Contracts</h1>
         <p className="mt-1 text-sm text-muted">
-          Every currently listed future and option, from the exchange master. Only underlyings with listed contracts appear here.
+          Every index and stock with listed futures &amp; options. Pick one for its futures (live prices, OI, basis) and its option chain.
         </p>
       </div>
-      <FeedBanner compact />
 
       <section aria-labelledby="idx">
         <h2 id="idx" className="mb-3 text-sm font-medium text-soft">Index derivatives</h2>

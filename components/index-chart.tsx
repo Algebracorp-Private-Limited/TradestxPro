@@ -68,14 +68,20 @@ export function IndexChart({ indices }: { indices: IndexRow[] }) {
             <option key={i.key} value={i.key}>{i.name}</option>
           ))}
         </select>
-        {row && (
-          <div className="flex items-baseline gap-2 font-mono">
-            <span className="text-xl font-semibold">{n2(row.close)}</span>
-            <span className={`text-sm ${(row.changePct ?? 0) >= 0 ? "text-up" : "text-down"}`}>
-              {(row.changePct ?? 0) >= 0 ? "+" : ""}{n2(row.changePct)}%
-            </span>
-          </div>
-        )}
+        {(() => {
+          // Header follows the chart's latest bar (live today when a broker is connected).
+          const b = data.bars;
+          const lastC = b.length ? b[b.length - 1].c : row?.close ?? null;
+          const prevC = b.length > 1 ? b[b.length - 2].c : null;
+          const pct = lastC !== null && prevC ? ((lastC - prevC) / prevC) * 100 : row?.changePct ?? null;
+          return lastC !== null ? (
+            <div className="flex items-baseline gap-2 font-mono">
+              <span className="text-xl font-semibold">{n2(lastC)}</span>
+              <span className={`text-sm ${(pct ?? 0) >= 0 ? "text-up" : "text-down"}`}>{(pct ?? 0) >= 0 ? "+" : ""}{n2(pct)}%</span>
+              {!data.delayed && <span className="rounded-full bg-up/15 px-1.5 py-0.5 font-sans text-[10px] text-up">Live</span>}
+            </div>
+          ) : null;
+        })()}
         {row && (
           <dl className="flex gap-3 text-xs text-muted">
             <div><dt className="inline">P/E </dt><dd className="inline text-soft">{n2(row.pe)}</dd></div>
