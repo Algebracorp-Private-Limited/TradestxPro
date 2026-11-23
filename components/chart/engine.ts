@@ -2,10 +2,26 @@
 // overlays, indicator panes, crosshair, zoom/pan (both axes), log/auto price scale and
 // editable drawings. Colours follow the site theme (CSS variables).
 import type { Bar } from "@/lib/ta/catalog";
+import { contrastText, fillPolys, futureTime, histTone } from "@/lib/chart/geometry";
 
 export type PlotStyle = "line" | "histogram" | "dots" | "area";
-export type PlotSeries = { label: string; values: number[]; color: string; style?: PlotStyle; width?: number; scaleLabel?: boolean; fill?: { other: number[]; up: string; down: string } };
-export type PaneSpec = { id: string; title: string; series: PlotSeries[]; levels?: number[]; range?: [number, number] };
+/** Shading between a series and `other` (series or constant); colours are final CSS colours. */
+export type PlotFill = { other: number[] | number; up: string; down: string; only?: "up" | "down" };
+export type PlotSeries = {
+  label: string;
+  values: number[];
+  color: string;
+  style?: PlotStyle;
+  width?: number;
+  opacity?: number;
+  dash?: "solid" | "dashed" | "dotted";
+  scaleLabel?: boolean;
+  precision?: number;
+  fills?: PlotFill[];
+  /** Histogram colours: "trend" = [pos↑, pos↓, neg↓, neg↑]; "candle" = [up bar, down bar]. */
+  hist?: { mode: "trend" | "candle"; colors: string[] };
+};
+export type PaneSpec = { id: string; title: string; series: PlotSeries[]; levels?: number[]; bands?: { from: number; to: number; color: string }[]; range?: [number, number] };
 export type Marker = { index: number; text: string; color: string; position: "above" | "below" };
 export type ChartType = "candles" | "bars" | "line" | "area";
 
@@ -22,13 +38,15 @@ export type ChartData = {
   panes: PaneSpec[];
   markers?: Marker[];
   intraday?: boolean;
+  /** Bars of space past the last candle that series extend into (e.g. the projected Ichimoku cloud). */
+  future?: number;
 };
 
 export type CrosshairInfo = { index: number; bar: Bar | null } | null;
 export type PaneBox = { id: string; top: number; height: number };
 export type ScaleState = { auto: boolean; log: boolean };
 
-type Theme = { bg: string; grid: string; axis: string; text: string; strong: string; up: string; down: string; cross: string; tag: string; tagText: string; line: string; draw: string; select: string };
+type Theme = { bg: string; grid: string; axis: string; text: string; strong: string; up: string; down: string; cross: string; tag: string; tagText: string; line: string; draw: string; select: string; level: string; zero: string; future: string };
 
 function readTheme(): Theme {
   const cs = getComputedStyle(document.documentElement);
@@ -48,6 +66,9 @@ function readTheme(): Theme {
     line: light ? "#0f172a" : "#e5e9f0",
     draw: light ? "#b45309" : "#f5c451",
     select: v("--color-accent", "#38bdf8"),
+    level: light ? "rgba(15,23,42,0.28)" : "rgba(226,232,240,0.22)",
+    zero: light ? "rgba(15,23,42,0.4)" : "rgba(226,232,240,0.35)",
+    future: light ? "rgba(15,23,42,0.025)" : "rgba(255,255,255,0.018)",
   };
 }
 
@@ -71,6 +92,14 @@ export function fmtPrice(v: number, step = 0): string {
   const dp = step > 0 ? Math.max(0, Math.min(6, -Math.floor(Math.log10(step)) + 1)) : abs >= 1 ? 2 : 4;
   return v.toLocaleString("en-IN", { minimumFractionDigits: Math.min(dp, 2), maximumFractionDigits: dp });
 }
+
+/** Value text honouring an indicator's precision setting (decimal places). */
+export function fmtValue(v: number, precision?: number): string {
+  if (precision === undefined || precision === null || !Number.isFinite(v)) return fmtPrice(v);
+  return v.toLocaleString("en-IN", { minimumFractionDigits: precision, maximumFractionDigits: precision });
+}
+
+const withOpacity = (c: string) => (c.startsWith("#") && c.length === 7 ? c + "99" : c);
 
 const IST = 19800;
 function fmtTime(t: number, intraday: boolean, long = false): string {
@@ -206,7 +235,7 @@ export class ChartEngine {
     const n = this.data.bars.length;
     const visible = Math.min(n, Math.max(30, Math.floor(this.plotW() / 8)));
     this.spacing = Math.max(2, Math.min(40, this.plotW() / Math.max(visible, 1)));
-    this.endIndex = n - 1 + 3;
+    this.endIndex = n - 1 + 3 + Math.min(this.future(), visible * 0.35);
     this.scale.auto = true;
     this.emitScale();
     this.invalidate();
@@ -506,10 +535,22 @@ export class ChartEngine {
     this.invalidate();
   }
 
+  private future() {
+    return Math.max(0, this.data.future ?? 0);
+  }
+
   private clampView() {
     const n = this.data.bars.length;
     const visible = this.plotW() / this.spacing;
-    this.endIndex = Math.min(n - 1 + visible * 0.6, Math.max(Math.min(visible * 0.3, n - 1), this.endIndex));
+    this.endIndex = Math.min(n - 1 + Math.max(visible * 0.6, this.future() + 3), Math.max(Math.min(visible * 0.3, n - 1), this.endIndex));
+  }
+
+  /** Time label for any index, including empty space past the last bar. */
+  private timeLabelAt(i: number, long = false): string | null {
+    const b = this.data.bars;
+    if (i < 0 || !b.length) return null;
+    if (i < b.length) return fmtTime(b[i].t, !!this.data.intraday, long);
+    return fmtTime(futureTime(b.map((x) => x.t), i - (b.length - 1), !!this.data.intraday), !!this.data.intraday, long);
   }
 
   private invalidate() {
@@ -538,6 +579,16 @@ export class ChartEngine {
         if (!b) continue;
         min = Math.min(min, T(lineOnly ? b.c : b.l));
         max = Math.max(max, T(lineOnly ? b.c : b.h));
+        for (const s of this.data.overlays) {
+          const v = s.values[i];
+          if (Number.isFinite(v) && (!log || v > 0)) {
+            min = Math.min(min, T(v));
+            max = Math.max(max, T(v));
+          }
+        }
+      }
+      // Overlays that continue past the last bar (projected cloud) stay in view too.
+      for (let i = Math.max(to + 1, bars.length); i <= Math.ceil(this.endIndex); i++) {
         for (const s of this.data.overlays) {
           const v = s.values[i];
           if (Number.isFinite(v) && (!log || v > 0)) {
@@ -616,17 +667,31 @@ export class ChartEngine {
     ctx.moveTo(pw + 0.5, 0);
     ctx.lineTo(pw + 0.5, this.h);
     ctx.stroke();
+    // Empty space to the right of the last candle (where projections are drawn) is tinted slightly.
+    if (bars.length) {
+      const xLast = this.xOf(bars.length - 1) + this.spacing / 2;
+      if (xLast < pw) {
+        ctx.fillStyle = th.future;
+        ctx.fillRect(Math.max(0, xLast), 0, pw - Math.max(0, xLast), timeY);
+      }
+    }
     const labelEvery = Math.max(1, Math.ceil(90 / this.spacing));
     ctx.fillStyle = th.text;
     ctx.textAlign = "center";
-    for (let i = Math.ceil(from / labelEvery) * labelEvery; i <= to; i += labelEvery) {
+    const lastIdx = Math.floor(this.endIndex);
+    for (let i = Math.ceil(from / labelEvery) * labelEvery; i <= lastIdx; i += labelEvery) {
       const x = this.xOf(i);
+      if (x > pw - 20) break;
       ctx.strokeStyle = th.grid;
       ctx.beginPath();
       ctx.moveTo(Math.round(x) + 0.5, 0);
       ctx.lineTo(Math.round(x) + 0.5, timeY);
       ctx.stroke();
-      if (bars[i]) ctx.fillText(fmtTime(bars[i].t, !!this.data.intraday), x, timeY + TIME_H / 2);
+      const label = this.timeLabelAt(i);
+      if (label) {
+        ctx.fillStyle = i >= bars.length ? withOpacity(th.text) : th.text;
+        ctx.fillText(label, x, timeY + TIME_H / 2);
+      }
     }
 
     const tags: { y: number; text: string; color: string }[] = [];
@@ -646,23 +711,30 @@ export class ChartEngine {
       }
       const series = k === 0 ? this.data.overlays : (L.spec?.series ?? []);
       if (k === 0) {
-        for (const s of series) if (s.fill) this.drawFill(s, L, from, to);
+        for (const s of series) for (const f of s.fills ?? []) this.drawFill(s, f, L, from);
         this.drawMain(L, from, to);
         for (const s of series) this.drawSeries(s, L, from, to);
         this.drawMarkers(L, from, to);
         this.drawDrawings(L);
       } else if (L.spec) {
+        for (const b of L.spec.bands ?? []) {
+          const y1 = this.yOf(Math.max(b.from, b.to), L);
+          const y2 = this.yOf(Math.min(b.from, b.to), L);
+          ctx.fillStyle = b.color;
+          ctx.fillRect(0, y1, pw, y2 - y1);
+        }
         for (const lv of L.spec.levels ?? []) {
           const y = Math.round(this.yOf(lv, L)) + 0.5;
-          ctx.setLineDash([4, 4]);
-          ctx.strokeStyle = th.axis;
+          // Zero line solid; other levels dashed.
+          ctx.setLineDash(lv === 0 ? [] : [4, 4]);
+          ctx.strokeStyle = lv === 0 ? th.zero : th.level;
           ctx.beginPath();
           ctx.moveTo(0, y);
           ctx.lineTo(pw, y);
           ctx.stroke();
           ctx.setLineDash([]);
         }
-        for (const s of series) if (s.fill) this.drawFill(s, L, from, to);
+        for (const s of series) for (const f of s.fills ?? []) this.drawFill(s, f, L, from);
         for (const s of series) this.drawSeries(s, L, from, to);
       }
       ctx.restore();
@@ -681,7 +753,7 @@ export class ChartEngine {
         while (j >= 0 && !Number.isFinite(s.values[j])) j--;
         if (j < 0) continue;
         const y = this.yOf(s.values[j], L);
-        if (y >= L.top && y <= L.top + L.height) tags.push({ y, text: fmtPrice(s.values[j]), color: s.color });
+        if (y >= L.top && y <= L.top + L.height) tags.push({ y, text: fmtValue(s.values[j], s.precision), color: s.color });
       }
     });
 
@@ -702,7 +774,8 @@ export class ChartEngine {
         tags.push({ y, text: fmtPrice(last.c), color: col });
       }
     }
-    for (const t of tags) this.axisTag(t.y, t.text, t.color, "#fff");
+    // Keep overlapping tags readable: later (more important) tags win; the last price is drawn last.
+    for (const t of tags) this.axisTag(t.y, t.text, t.color, contrastText(t.color));
 
     // Scale mode badge.
     if (main) {
@@ -821,36 +894,26 @@ export class ChartEngine {
     }
   }
 
-  /** Shades between a series and its partner, switching colour where the two lines cross. */
-  private drawFill(s: PlotSeries, L: PaneLayout, from: number, to: number) {
-    const f = s.fill!;
+  /** Shades between a series and its partner (series or level), switching colour exactly where they cross. */
+  private drawFill(s: PlotSeries, f: PlotFill, L: PaneLayout, from: number) {
     const { ctx } = this;
-    const a = s.values;
-    const b = f.other;
-    const ok = (v: number) => Number.isFinite(v) && !(L.log && v <= 0);
-    const quad = (pts: [number, number][], color: string) => {
-      ctx.beginPath();
-      pts.forEach(([x, y], k) => (k ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-      ctx.closePath();
-      ctx.fillStyle = color;
-      ctx.fill();
-    };
     // Series may run past the last bar (e.g. the projected Ichimoku cloud).
-    const end = Math.min(Math.max(to + 1, Math.ceil(this.endIndex) + 1), a.length - 1, b.length - 1);
-    for (let i = Math.max(0, from - 1); i < end; i++) {
-      const a0 = a[i], a1 = a[i + 1], b0 = b[i], b1 = b[i + 1];
-      if (!ok(a0) || !ok(a1) || !ok(b0) || !ok(b1)) continue;
-      const x0 = this.xOf(i), x1 = this.xOf(i + 1);
-      const d0 = a0 - b0, d1 = a1 - b1;
-      if (d0 * d1 >= 0) {
-        quad([[x0, this.yOf(a0, L)], [x1, this.yOf(a1, L)], [x1, this.yOf(b1, L)], [x0, this.yOf(b0, L)]], d0 + d1 >= 0 ? f.up : f.down);
-      } else {
-        const t = d0 / (d0 - d1);
-        const xc = x0 + (x1 - x0) * t;
-        const yc = this.yOf(a0 + (a1 - a0) * t, L);
-        quad([[x0, this.yOf(a0, L)], [xc, yc], [x0, this.yOf(b0, L)]], d0 > 0 ? f.up : f.down);
-        quad([[xc, yc], [x1, this.yOf(a1, L)], [x1, this.yOf(b1, L)]], d1 > 0 ? f.up : f.down);
+    const end = Math.max(this.visibleRange()[1] + 1, Math.ceil(this.endIndex) + 1);
+    const polys = fillPolys(s.values, f.other, Math.max(0, from - 1), end, f.only);
+    const ok = (v: number) => !(L.log && v <= 0);
+    // One path per colour: neighbouring segments merge into a single seamless shape.
+    for (const up of [true, false]) {
+      ctx.beginPath();
+      let any = false;
+      for (const poly of polys) {
+        if (poly.up !== up || !poly.pts.every(([, v]) => ok(v))) continue;
+        poly.pts.forEach(([i, v], k) => (k ? ctx.lineTo(this.xOf(i), this.yOf(v, L)) : ctx.moveTo(this.xOf(i), this.yOf(v, L))));
+        ctx.closePath();
+        any = true;
       }
+      if (!any) continue;
+      ctx.fillStyle = up ? f.up : f.down;
+      ctx.fill("nonzero");
     }
   }
 
@@ -865,12 +928,12 @@ export class ChartEngine {
         if (!Number.isFinite(v)) continue;
         const y = this.yOf(v, L);
         const prev = s.values[i - 1];
+        const h = s.hist;
+        const bar = this.data.bars[i];
         ctx.fillStyle =
-          s.label === "Volume" && this.data.bars[i]
-            ? this.data.bars[i].c >= this.data.bars[i].o ? "rgba(34,197,94,0.55)" : "rgba(244,63,94,0.55)"
-            : v >= 0
-              ? Number.isFinite(prev) && v < prev ? "rgba(34,197,94,0.45)" : "rgba(34,197,94,0.85)"
-              : Number.isFinite(prev) && v > prev ? "rgba(244,63,94,0.45)" : "rgba(244,63,94,0.85)";
+          h?.mode === "candle" && bar ? (bar.c >= bar.o ? h.colors[0] : h.colors[1])
+          : h?.mode === "trend" ? h.colors[histTone(v, prev)]
+          : s.color;
         ctx.fillRect(Math.round(this.xOf(i)) - Math.floor(w / 2), Math.min(y, zero), w, Math.max(1, Math.abs(zero - y)));
       }
       return;
@@ -888,6 +951,9 @@ export class ChartEngine {
     }
     ctx.strokeStyle = s.color;
     ctx.lineWidth = s.width ?? 1.4;
+    ctx.globalAlpha = s.opacity ?? 1;
+    ctx.lineJoin = "round";
+    ctx.setLineDash(s.dash === "dashed" ? [6, 4] : s.dash === "dotted" ? [1.5, 3] : []);
     ctx.beginPath();
     let pen = false;
     for (let i = Math.max(0, from - 1); i <= Math.min(Math.max(to + 1, Math.ceil(this.endIndex) + 1), s.values.length - 1); i++) {
@@ -904,6 +970,8 @@ export class ChartEngine {
     }
     ctx.stroke();
     ctx.lineWidth = 1;
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([]);
   }
 
   private drawMarkers(L: PaneLayout, from: number, to: number) {
@@ -1004,11 +1072,17 @@ export class ChartEngine {
 
   private axisTag(y: number, text: string, bg: string, fg: string) {
     const { ctx } = this;
+    const x = this.plotW() + 2;
+    const w = AXIS_W - 4;
+    const top = Math.max(1, Math.min(this.h - TIME_H - 19, y - 9));
     ctx.fillStyle = bg;
-    ctx.fillRect(this.plotW() + 1, y - 9, AXIS_W - 2, 18);
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, top, w, 18, 3);
+    else ctx.rect(x, top, w, 18);
+    ctx.fill();
     ctx.fillStyle = fg;
     ctx.textAlign = "left";
-    ctx.fillText(text, this.plotW() + 6, y);
+    ctx.fillText(text, x + 4, top + 9);
   }
 
   private drawCrosshair() {
@@ -1019,7 +1093,7 @@ export class ChartEngine {
       return;
     }
     const { ctx } = this;
-    const i = Math.max(0, Math.min(bars.length - 1, Math.round(this.indexAt(m.x))));
+    const i = Math.max(0, Math.min(bars.length - 1 + this.future(), Math.round(this.indexAt(m.x))));
     const x = Math.round(this.xOf(i)) + 0.5;
     const y = Math.round(m.y) + 0.5;
     ctx.setLineDash([3, 3]);
@@ -1036,7 +1110,7 @@ export class ChartEngine {
       const span = L.log ? Math.exp(L.max) - Math.exp(L.min) : L.max - L.min;
       this.axisTag(m.y, fmtPrice(this.priceAt(m.y, L), span / 50), this.theme.tag, this.theme.tagText);
     }
-    const label = fmtTime(bars[i].t, !!this.data.intraday, true);
+    const label = this.timeLabelAt(i, true) ?? "";
     ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
     const tw = ctx.measureText(label).width + 12;
     ctx.fillStyle = this.theme.tag;
@@ -1044,6 +1118,6 @@ export class ChartEngine {
     ctx.fillStyle = this.theme.tagText;
     ctx.textAlign = "center";
     ctx.fillText(label, x, this.h - TIME_H / 2);
-    this.cb.onCrosshair?.({ index: i, bar: bars[i] });
+    this.cb.onCrosshair?.({ index: i, bar: bars[i] ?? null });
   }
 }

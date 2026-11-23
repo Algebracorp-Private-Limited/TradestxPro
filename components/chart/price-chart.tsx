@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChartEngine, fmtPrice, type ChartData, type ChartType, type CrosshairInfo, type Drawing, type DrawingTool, type PaneBox, type PaneSpec, type PlotSeries, type ScaleState } from "./engine";
+import { ChartEngine, fmtPrice, fmtValue, type ChartData, type ChartType, type CrosshairInfo, type Drawing, type DrawingTool, type PaneBox, type PaneSpec, type PlotSeries, type ScaleState } from "./engine";
 import { INDICATOR_BY_ID, heikinAshi, type Bar } from "@/lib/ta/catalog";
-import { ALL_VISIBLE, inputSummary, tfBucket, type ActiveIndicator } from "@/lib/ta/indicator-settings";
+import { ALL_VISIBLE, inputSummary, resolveIndicator, tfBucket, type ActiveIndicator } from "@/lib/ta/indicator-settings";
 import type { XResult } from "@/lib/xscript/xscript";
 import { IndicatorSettingsDialog } from "./indicator-settings";
 
@@ -27,6 +27,7 @@ type Props = {
 };
 
 const fmt = (v: number | undefined) => (v !== undefined && Number.isFinite(v) ? fmtPrice(v) : "—");
+const fmtLegend = (v: number | undefined, precision?: number) => (v !== undefined && Number.isFinite(v) ? fmtValue(v, precision) : "—");
 
 type Group = { uid: string; title: string; series: PlotSeries[]; pane: string; indicator?: ActiveIndicator };
 
@@ -73,18 +74,16 @@ export function PriceChart({ bars, style, indicators, onIndicatorsChange, script
       const visibleHere = (ind.visibility ?? ALL_VISIBLE)[bucket] !== false;
       const placement = ind.placement ?? def.pane;
       let series: PlotSeries[] = [];
+      let resolved: ReturnType<typeof resolveIndicator> = null;
       try {
-        series = def.compute(bars, ind.params, { intraday: !!intraday }).flatMap((o) => {
-          const st = ind.styles?.[o.key] ?? {};
-          if (st.visible === false) return [];
-          return [{ label: o.label, values: o.values, color: st.color ?? o.color, style: o.style, width: st.width, scaleLabel: ind.scaleLabels !== false, fill: o.fill }];
-        });
+        resolved = resolveIndicator(ind, bars, { intraday: !!intraday });
+        series = resolved?.series ?? [];
       } catch {}
       const paneId = placement === "overlay" ? "main" : ind.uid;
       groups.push({ uid: ind.uid, title: def.short, series, pane: paneId, indicator: ind });
       if (ind.hidden || !visibleHere) continue;
       if (placement === "overlay") overlays.push(...series);
-      else paneSpecs.push({ id: ind.uid, title: def.short, series, levels: def.levels, range: def.range });
+      else paneSpecs.push({ id: ind.uid, title: def.short, series, levels: resolved?.levels, bands: resolved?.bands, range: resolved?.range });
     }
     const markers = [];
     for (const s of scripts) {
@@ -95,7 +94,9 @@ export function PriceChart({ bars, style, indicators, onIndicatorsChange, script
       groups.push({ uid: id, title: s.title, series, pane: s.overlay ? "main" : id });
       markers.push(...s.markers);
     }
-    const data: ChartData = { bars: shown, type: style === "heikin" ? "candles" : style, overlays, panes: paneSpecs, markers, intraday };
+    // Space past the last bar that overlays extend into (projected Ichimoku cloud).
+    const future = overlays.reduce((m, s) => Math.max(m, s.values.length - shown.length), 0);
+    const data: ChartData = { bars: shown, type: style === "heikin" ? "candles" : style, overlays, panes: paneSpecs, markers, intraday, future };
     return { data, groups };
   }, [bars, style, indicators, scripts, intraday, bucket]);
 
@@ -113,8 +114,9 @@ export function PriceChart({ bars, style, indicators, onIndicatorsChange, script
   }, [drawings]);
 
   const idx = cross?.index ?? bars.length - 1;
-  const bar = bars[idx];
-  const prev = bars[idx - 1];
+  const projected = idx > bars.length - 1;
+  const bar = bars[Math.min(idx, bars.length - 1)];
+  const prev = bars[Math.min(idx, bars.length - 1) - 1];
   const chg = bar && prev ? ((bar.c - prev.c) / prev.c) * 100 : NaN;
   const update = (next: ActiveIndicator) => onIndicatorsChange?.(indicators.map((i) => (i.uid === next.uid ? next : i)));
   const editingInd = indicators.find((i) => i.uid === editing);
@@ -123,18 +125,19 @@ export function PriceChart({ bars, style, indicators, onIndicatorsChange, script
     const ind = g.indicator;
     const hidden = ind?.hidden;
     return (
-      <div key={g.uid} className="group pointer-events-auto flex max-w-full items-center gap-1.5 rounded px-1 hover:bg-panel/80">
+      <div key={g.uid} className="group pointer-events-auto flex max-w-full items-center gap-1.5 rounded-md bg-ink/60 px-1.5 backdrop-blur-[2px] hover:bg-panel/90">
+        <span aria-hidden className="h-2 w-2 shrink-0 rounded-full" style={{ background: g.series[0]?.hist?.colors[0] ?? g.series[0]?.color ?? "#64748b", opacity: hidden ? 0.3 : 1 }} />
         <button
           onClick={() => ind && setEditing(ind.uid)}
           disabled={!ind}
-          className={`truncate text-left ${hidden ? "text-muted/60 line-through" : "text-soft"} hover:text-white`}
+          className={`truncate text-left font-sans font-medium ${hidden ? "text-muted/60 line-through" : "text-soft"} hover:text-white`}
           title={ind ? "Settings" : g.title}
         >
           {g.title}
-          {ind && ind.statusInputs !== false && inputSummary(ind) ? <span className="text-muted"> {inputSummary(ind)}</span> : null}
+          {ind && ind.statusInputs !== false && inputSummary(ind) ? <span className="hidden font-mono font-normal text-muted sm:inline"> {inputSummary(ind)}</span> : null}
         </button>
         {!hidden && (ind?.statusValues ?? true) && g.series.slice(0, 7).map((s, k) => (
-          <span key={k} style={{ color: s.color }} className="shrink-0">{fmt(s.values[idx])}</span>
+          <span key={k} style={{ color: s.hist?.colors[0] ?? s.color }} className="hidden shrink-0 tabular-nums sm:inline" title={s.label}>{fmtLegend(s.values[idx], s.precision)}</span>
         ))}
         {ind && onIndicatorsChange && (
           <span className="flex shrink-0 items-center gap-0.5 opacity-60 group-hover:opacity-100">
@@ -156,12 +159,13 @@ export function PriceChart({ bars, style, indicators, onIndicatorsChange, script
         <div className="pointer-events-none absolute left-2 top-1.5 z-10 max-w-[calc(100%-90px)] space-y-0.5 font-mono text-[11px] leading-5">
           <div className="flex flex-wrap gap-x-2.5">
             {(["o", "h", "l", "c"] as const).map((k) => (
-              <span key={k} className="text-muted">
+              <span key={k} className={`text-muted ${k === "c" ? "" : "hidden sm:inline"}`}>
                 {k.toUpperCase()} <span className={bar.c >= bar.o ? "text-up" : "text-down"}>{fmt(bar[k])}</span>
               </span>
             ))}
             {Number.isFinite(chg) && <span className={chg >= 0 ? "text-up" : "text-down"}>{chg >= 0 ? "+" : ""}{chg.toFixed(2)}%</span>}
-            {bar.v > 0 && <span className="text-muted">V <span className="text-soft">{bar.v.toLocaleString("en-IN")}</span></span>}
+            {bar.v > 0 && <span className="hidden text-muted sm:inline">V <span className="text-soft">{bar.v.toLocaleString("en-IN")}</span></span>}
+            {projected && <span className="rounded bg-accent/15 px-1 font-sans text-[10px] text-accent">Projection · {idx - (bars.length - 1)} bars ahead</span>}
           </div>
           {groups.filter((g) => g.pane === "main").map(legendRow)}
         </div>
