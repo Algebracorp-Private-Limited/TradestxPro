@@ -5,8 +5,9 @@ import { useEffect, useMemo, useState } from "react";
 import { PriceChart, type ActiveIndicator, type ChartStyle } from "./chart/price-chart";
 import { useBars } from "./chart/use-bars";
 import { INDICATORS, INDICATOR_BY_ID, defaultParams } from "@/lib/ta/catalog";
+import { NSE_CATEGORIES } from "@/lib/index-catalog";
 
-export type IndexRow = { key: string; name: string; lastDate: string | null; close: number | null; changePct: number | null; pe: number | null; pb: number | null; divYield: number | null };
+export type IndexRow = { key: string; name: string; category: string; lastDate: string | null; close: number | null; changePct: number | null; pe: number | null; pb: number | null; divYield: number | null };
 
 const PRIORITY = ["NIFTY 50", "NIFTY BANK", "NIFTY NEXT 50", "NIFTY 100", "NIFTY 200", "NIFTY 500", "INDIA VIX", "NIFTY FINANCIAL SERVICES", "NIFTY MIDCAP 100", "NIFTY SMALLCAP 100", "NIFTY IT", "NIFTY AUTO", "NIFTY PHARMA", "NIFTY FMCG", "NIFTY METAL", "NIFTY REALTY", "NIFTY ENERGY", "NIFTY PSU BANK"];
 const n2 = (v: number | null, d = 2) => (v === null || !Number.isFinite(v) ? "—" : v.toLocaleString("en-IN", { minimumFractionDigits: d, maximumFractionDigits: d }));
@@ -64,9 +65,14 @@ export function IndexChart({ indices }: { indices: IndexRow[] }) {
           }}
           className="max-w-[260px] rounded-lg border border-line bg-ink px-3 py-2 text-sm font-semibold"
         >
-          {sorted.map((i) => (
-            <option key={i.key} value={i.key}>{i.name}</option>
-          ))}
+          {NSE_CATEGORIES.map((cat) => {
+            const list = sorted.filter((i) => i.category === cat);
+            return list.length ? (
+              <optgroup key={cat} label={cat}>
+                {list.map((i) => <option key={i.key} value={i.key}>{i.name}</option>)}
+              </optgroup>
+            ) : null;
+          })}
         </select>
         {(() => {
           // Header follows the chart's latest bar (live today when a broker is connected).
@@ -128,16 +134,22 @@ export function IndexChart({ indices }: { indices: IndexRow[] }) {
 export function IndicesTable({ indices }: { indices: IndexRow[] }) {
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<"name" | "chg">("chg");
+  const [cat, setCat] = useState<string>("all");
   const rows = useMemo(() => {
     const t = q.trim().toUpperCase();
-    const r = indices.filter((i) => !t || i.key.includes(t));
+    const r = indices.filter((i) => (!t || i.key.includes(t)) && (cat === "all" || i.category === cat));
     return sort === "chg" ? r.sort((a, b) => (b.changePct ?? -1e9) - (a.changePct ?? -1e9)) : r.sort((a, b) => a.key.localeCompare(b.key));
-  }, [indices, q, sort]);
+  }, [indices, q, sort, cat]);
+  const groups = NSE_CATEGORIES.map((c) => ({ c, rows: rows.filter((r) => r.category === c) })).filter((g) => g.rows.length);
   return (
     <section aria-labelledby="all-indices" className="overflow-hidden rounded-2xl border border-line bg-panel">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
         <h2 id="all-indices" className="text-sm font-medium text-soft">All NSE indices ({indices.length})</h2>
         <div className="flex gap-2">
+          <select value={cat} onChange={(e) => setCat(e.target.value)} aria-label="Index family" className="rounded-md border border-line bg-ink px-2 py-1.5 text-xs text-soft">
+            <option value="all">All families</option>
+            {NSE_CATEGORIES.map((c) => <option key={c} value={c}>{c} ({indices.filter((i) => i.category === c).length})</option>)}
+          </select>
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter" aria-label="Filter indices" className="w-40 rounded-md border border-line bg-ink px-2.5 py-1.5 text-xs" />
           <select value={sort} onChange={(e) => setSort(e.target.value as "name" | "chg")} aria-label="Sort" className="rounded-md border border-line bg-ink px-2 py-1.5 text-xs text-soft">
             <option value="chg">Sort: change %</option>
@@ -156,8 +168,12 @@ export function IndicesTable({ indices }: { indices: IndexRow[] }) {
               <th scope="col" className="hidden px-4 py-2 text-right font-medium sm:table-cell">P/B</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-line">
-            {rows.map((r) => (
+          {groups.map((g) => (
+          <tbody key={g.c} className="divide-y divide-line">
+            <tr className="bg-white/[0.03]">
+              <th scope="rowgroup" colSpan={5} className="px-4 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wider text-accent">{g.c} <span className="font-normal text-muted">({g.rows.length})</span></th>
+            </tr>
+            {g.rows.map((r) => (
               <tr key={r.key} className="hover:bg-white/[0.03]">
                 <td className="px-4 py-2">
                   <Link href={`/charts?symbol=${encodeURIComponent("NSEIDX:" + r.key)}`} className="hover:text-accent">{r.name}</Link>
@@ -169,6 +185,7 @@ export function IndicesTable({ indices }: { indices: IndexRow[] }) {
               </tr>
             ))}
           </tbody>
+          ))}
         </table>
       </div>
     </section>

@@ -7,7 +7,7 @@ import { brokerHistory, historyBroker } from "./brokers/store";
 import { BROKER_BY_ID } from "./brokers/catalog";
 import { BROKER_TFS, INDEX_IDS, type Instrument, type Tf } from "./brokers/common";
 import { isVaultConfigured } from "./brokers/vault";
-import { BSE_INDICES } from "./index-catalog";
+import { BSE_INDICES, indexCategory } from "./index-catalog";
 import { getQuotes } from "./brokers/quotes";
 import { mergeLiveCandle } from "./live-candle.ts";
 
@@ -120,13 +120,13 @@ export async function searchChartSymbols(q: string): Promise<ChartSymbol[]> {
   return out;
 }
 
-export type IndexRow = { key: string; name: string; lastDate: string | null; close: number | null; changePct: number | null; pe: number | null; pb: number | null; divYield: number | null };
+export type IndexRow = { key: string; name: string; category: string; lastDate: string | null; close: number | null; changePct: number | null; pe: number | null; pb: number | null; divYield: number | null };
 
 export async function listIndices(): Promise<IndexRow[]> {
   const sql = await db();
   const rows = await sql<{ key: string; name: string; last_d: Date | null; close: number | null; change_pct: number | null; pe: number | null; pb: number | null; div_yield: number | null }[]>`
     SELECT key, name, last_d, close, change_pct, pe, pb, div_yield FROM market_indices ORDER BY key`;
-  return rows.map((r) => ({ key: r.key, name: r.name, lastDate: r.last_d?.toISOString().slice(0, 10) ?? null, close: r.close, changePct: r.change_pct, pe: r.pe, pb: r.pb, divYield: r.div_yield }));
+  return rows.map((r) => ({ key: r.key, name: r.name, category: indexCategory(r.key), lastDate: r.last_d?.toISOString().slice(0, 10) ?? null, close: r.close, changePct: r.change_pct, pe: r.pe, pb: r.pb, divYield: r.div_yield }));
 }
 
 /** Chart of a single futures/options contract, from the user's broker (ICICI or Dhan). */

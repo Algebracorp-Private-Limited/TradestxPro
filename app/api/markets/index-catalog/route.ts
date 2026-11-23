@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { BSE_INDICES, MCX_ITEMS } from "@/lib/index-catalog";
+import { BSE_INDICES, MCX_ITEMS, NSE_CATEGORIES, indexCategory } from "@/lib/index-catalog";
 import { hasConstituents } from "@/lib/constituents";
 import { json, userHandler } from "@/lib/api";
 
@@ -13,11 +13,12 @@ export const GET = userHandler(async () => {
     if (i >= 0) return i;
     return /G-SEC|GSEC|BOND|RATE|SDL|T-BILL|BHARAT BOND|CPSE ETF|CORPORATE BOND/i.test(k) ? 2000 : 1000;
   };
-  const rows = raw.sort((a, b) => rank(a.key) - rank(b.key) || a.key.localeCompare(b.key));
+  const cat = (k: string) => NSE_CATEGORIES.indexOf(indexCategory(k));
+  const rows = raw.sort((a, b) => cat(a.key) - cat(b.key) || rank(a.key) - rank(b.key) || a.key.localeCompare(b.key));
   return json({
     ok: true,
     groups: [
-      { group: "NSE", items: rows.map((r) => ({ key: r.key, name: r.name, group: "NSE", available: true, constituents: hasConstituents(r.key) })) },
+      { group: "NSE", items: rows.map((r) => ({ key: r.key, name: r.name, group: "NSE", category: indexCategory(r.key), available: true, constituents: hasConstituents(r.key) })) },
       { group: "BSE", items: BSE_INDICES.map((b) => ({ ...b, constituents: hasConstituents(b.key) })) },
       { group: "MCX", items: MCX_ITEMS.map((m) => ({ ...m, constituents: false })) },
     ],

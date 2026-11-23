@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { whenVisible } from "@/lib/client/visible";
 import { loadCatalog, type CatalogItem } from "./index-picker";
+import { NSE_CATEGORIES } from "@/lib/index-catalog";
 import { Info } from "./options/info";
 
 type Row = {
@@ -109,7 +110,10 @@ export function IndexComponents({ initial }: { initial: string }) {
           Index
           <select value={key} onChange={(e) => pick(e.target.value)} className="mt-1 block min-w-[240px] rounded-lg border border-line bg-panel px-3 py-2 text-sm text-white">
             {!catalog.length && <option value={key}>{key}</option>}
-            {nseItems.length > 0 && <optgroup label="NSE">{nseItems.map((c) => <option key={c.key} value={c.key}>{c.name}</option>)}</optgroup>}
+            {NSE_CATEGORIES.map((cat) => {
+              const list = nseItems.filter((c) => c.category === cat);
+              return list.length ? <optgroup key={cat} label={`NSE · ${cat}`}>{list.map((c) => <option key={c.key} value={c.key}>{c.name}</option>)}</optgroup> : null;
+            })}
             {bseItems.length > 0 && <optgroup label="BSE">{bseItems.map((c) => <option key={c.key} value={c.key}>{c.name}</option>)}</optgroup>}
           </select>
         </label>

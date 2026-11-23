@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-export type CatalogItem = { key: string; name: string; group: "NSE" | "BSE" | "MCX"; available: boolean; note?: string; constituents: boolean };
+export type CatalogItem = { key: string; name: string; group: "NSE" | "BSE" | "MCX"; category?: string; available: boolean; note?: string; constituents: boolean };
 type Group = { group: "NSE" | "BSE" | "MCX"; items: CatalogItem[] };
 
 let cached: Group[] | null = null;
@@ -73,10 +73,13 @@ export function IndexPicker({
                 className="sticky top-0 flex w-full items-center justify-between bg-panel px-4 py-2 text-[11px] font-semibold uppercase tracking-wider text-muted">
                 {GROUP_LABEL[g.group]} <span>{open[g.group] ? "▾" : "▸"} {g.items.length}</span>
               </button>
-              {open[g.group] && g.items.map((i) => {
+              {open[g.group] && g.items.map((i, n) => {
                 const on = selected.includes(i.key);
+                const head = i.category && i.category !== g.items[n - 1]?.category
+                  ? <p key={"h" + i.category} className="px-4 pb-1 pt-2.5 text-[11px] font-medium text-accent">{i.category}</p>
+                  : null;
                 const disabled = !i.available;
-                return mode === "multi" ? (
+                const row = mode === "multi" ? (
                   <label key={i.key} className={`flex items-center justify-between gap-3 px-4 py-1.5 text-sm ${disabled ? "text-muted/60" : "cursor-pointer hover:bg-white/[0.04]"}`}>
                     <span className="flex min-w-0 items-center gap-2.5">
                       <input type="checkbox" checked={on} disabled={disabled} onChange={(e) => onToggle?.(i.key, e.target.checked)} className="h-4 w-4 accent-sky-400" />
@@ -90,6 +93,7 @@ export function IndexPicker({
                     {i.note && <span className="text-[10px] text-muted">{i.note}</span>}
                   </button>
                 );
+                return head ? [head, row] : row;
               })}
             </section>
           ))}

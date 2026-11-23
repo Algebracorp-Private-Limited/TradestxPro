@@ -154,11 +154,13 @@ function IndicesTab({ onPick, current }: { onPick: (p: Pick) => void; current: s
           return (
             <section key={g.group}>
               <p className="sticky top-0 bg-panel px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted">{g.group}</p>
-              {items.map((i) => {
+              {items.map((i, n) => {
                 const m = members[i.key];
+                const head = i.category && i.category !== items[n - 1]?.category;
                 const on = current && (current.endsWith(":" + i.key) || current === INDEX_TO_UNDERLYING[i.key]);
                 return (
                   <div key={i.key}>
+                    {head && <p className="px-3 pb-0.5 pt-2 text-[10px] font-medium text-accent">{i.category}</p>}
                     <div className={`flex items-center ${on ? "bg-accent/15" : "hover:bg-white/[0.04]"}`}>
                       {i.constituents ? (
                         <button onClick={() => toggle(i.key)} aria-expanded={open === i.key} aria-label={`${open === i.key ? "Hide" : "Show"} ${i.name} stocks`} className="w-6 py-1.5 text-[10px] text-muted hover:text-white">
