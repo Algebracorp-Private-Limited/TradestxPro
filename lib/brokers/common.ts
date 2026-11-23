@@ -1,5 +1,7 @@
 import "server-only";
-import { request as httpsRequest } from "node:https";
+import { Agent, request as httpsRequest } from "node:https";
+
+const keepAlive = new Agent({ keepAlive: true, maxSockets: 16, keepAliveMsecs: 10_000 });
 import type { Bar } from "../ta/catalog";
 
 export type Tf = "1m" | "5m" | "15m" | "30m" | "1h" | "1D" | "1W";
@@ -91,7 +93,7 @@ export function getWithBody<T = unknown>(url: string, headers: Record<string, st
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     const req = httpsRequest(
-      { method: "GET", hostname: u.hostname, path: u.pathname + u.search, headers: { ...headers, "Content-Length": Buffer.byteLength(body) } },
+      { method: "GET", hostname: u.hostname, path: u.pathname + u.search, agent: keepAlive, headers: { ...headers, "Content-Length": Buffer.byteLength(body) } },
       (res) => {
         let buf = "";
         res.setEncoding("utf8");

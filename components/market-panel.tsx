@@ -1,5 +1,6 @@
 "use client";
 
+import { whenVisible } from "@/lib/client/visible";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { loadCatalog, type CatalogItem } from "./index-picker";
@@ -64,7 +65,7 @@ function WatchTab({ onPick, current }: { onPick: (p: Pick) => void; current: str
       fetch(`/api/watchlists/${list.id}/quotes`).then((r) => r.json()).then((d) => {
         if (!alive) return;
         setQuotes(d);
-        if (d.broker) t = setTimeout(tick, 20_000);
+        if (d.broker) t = setTimeout(() => whenVisible(tick), 20_000);
       }).catch(() => {});
     tick();
     return () => {

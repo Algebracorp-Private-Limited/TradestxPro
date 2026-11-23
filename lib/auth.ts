@@ -1,5 +1,6 @@
 import "server-only";
 import { cookies, headers } from "next/headers";
+import { cache } from "react";
 import { db, isDbConfigured } from "./db";
 import { generateOtp, newSessionToken, sha256 } from "./crypto";
 import { sendOtpEmail } from "./mail";
@@ -105,7 +106,8 @@ export async function destroySession(): Promise<void> {
   jar.delete(SESSION_COOKIE);
 }
 
-export async function getSessionUser(): Promise<SessionUser | null> {
+/** Memoised per request, so the layout and page share one lookup. */
+export const getSessionUser = cache(async function getSessionUser(): Promise<SessionUser | null> {
   if (!isDbConfigured()) return null;
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
   if (!token) return null;
@@ -124,4 +126,4 @@ export async function getSessionUser(): Promise<SessionUser | null> {
     trialEndsAt: row.trial_ends_at?.toISOString() ?? null,
     emailVerified: Boolean(row.email_verified_at),
   };
-}
+});

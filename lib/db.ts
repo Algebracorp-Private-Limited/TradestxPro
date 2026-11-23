@@ -1,6 +1,9 @@
 import "server-only";
 import postgres from "postgres";
+import { createHash } from "node:crypto";
 import { SCHEMA_SQL } from "./schema";
+
+const SCHEMA_VERSION = createHash("sha256").update(SCHEMA_SQL).digest("hex").slice(0, 16);
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -32,11 +35,24 @@ function client(): Sql {
   return g.__sql;
 }
 
-/** Returns a SQL client, applying the idempotent schema once per server instance. */
+/** Applies the idempotent schema only when it changed since it was last applied (one quick lookup otherwise). */
+async function ensureSchema(sql: Sql): Promise<void> {
+  try {
+    const [row] = await sql<{ v: string }[]>`SELECT version AS v FROM schema_meta WHERE version = ${SCHEMA_VERSION}`;
+    if (row) return;
+  } catch {
+    // schema_meta does not exist yet: fall through and create everything.
+  }
+  await sql.unsafe(SCHEMA_SQL);
+  await sql.unsafe(`CREATE TABLE IF NOT EXISTS schema_meta (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
+  await sql`INSERT INTO schema_meta (version) VALUES (${SCHEMA_VERSION}) ON CONFLICT DO NOTHING`;
+}
+
+/** Returns a SQL client, making sure the schema is current once per server instance. */
 export async function db(): Promise<Sql> {
   const sql = client();
   if (!g.__schemaReady) {
-    g.__schemaReady = sql.unsafe(SCHEMA_SQL).then(() => undefined);
+    g.__schemaReady = ensureSchema(sql);
     g.__schemaReady.catch(() => {
       g.__schemaReady = undefined;
     });

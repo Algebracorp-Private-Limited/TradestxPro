@@ -1,5 +1,6 @@
 "use client";
 
+import { whenVisible } from "@/lib/client/visible";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { InstrumentSearch, type SearchResult } from "./instrument-search";
@@ -70,7 +71,7 @@ export function WatchlistManager() {
         const d = await call(`/api/watchlists/${id}/quotes`);
         if (!alive) return;
         setQuotes(d);
-        if (d.broker) qTimer.current = setTimeout(tick, 20_000);
+        if (d.broker) qTimer.current = setTimeout(() => whenVisible(tick), 20_000);
       } catch {}
     };
     tick();

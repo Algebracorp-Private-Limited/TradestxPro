@@ -4,6 +4,7 @@ import { LogoutButton } from "@/components/logout-button";
 import { TerminalNav } from "@/components/terminal-nav";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { MarketPanel } from "@/components/market-panel";
+import { BrokerBanner } from "@/components/broker-banner";
 import { Suspense } from "react";
 import { getSessionUser } from "@/lib/auth";
 
@@ -23,6 +24,7 @@ export default async function TerminalLayout({ children }: { children: React.Rea
           <LogoutButton />
         </div>
       </header>
+      <BrokerBanner userId={user.id} />
       <div className="flex flex-1">
         <TerminalNav />
         <main className="min-w-0 flex-1 space-y-6 p-4 pb-24 sm:p-6 lg:pb-6">{children}</main>

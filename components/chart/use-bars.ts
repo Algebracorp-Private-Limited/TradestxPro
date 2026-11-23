@@ -1,5 +1,6 @@
 "use client";
 
+import { whenVisible } from "@/lib/client/visible";
 import { useEffect, useState } from "react";
 import type { Bar } from "@/lib/ta/catalog";
 
@@ -28,7 +29,7 @@ export function useBars(symbol: string, tf: string): BarsState {
         if (!alive) return;
         if (!res.ok) throw new Error(d.error ?? "Could not load chart data.");
         setState({ status: "ready", bars: d.bars, name: d.name, source: d.source, delayed: d.delayed, tfs: d.tfs ?? [], notice: d.notice });
-        if (!d.delayed) timer = setTimeout(() => load(false), 30_000);
+        if (!d.delayed) timer = setTimeout(() => whenVisible(() => load(false)), 30_000);
       } catch (e) {
         if (alive && first) setState((s) => ({ ...s, status: "error", error: (e as Error).message }));
       }

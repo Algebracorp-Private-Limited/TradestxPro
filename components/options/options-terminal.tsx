@@ -1,5 +1,6 @@
 "use client";
 
+import { whenVisible } from "@/lib/client/visible";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -285,7 +286,7 @@ export function OptionsTerminal() {
       if (!r.ok) throw new Error(d.error);
       setChain(d);
       setErr(null);
-      if (d.broker) timer.current = setTimeout(() => loadRef.current(), 15_000);
+      if (d.broker) timer.current = setTimeout(() => whenVisible(() => loadRef.current()), 15_000);
     } catch (e) {
       setErr((e as Error).message || "Could not load the option chain.");
     } finally {

@@ -1,5 +1,6 @@
 "use client";
 
+import { whenVisible } from "@/lib/client/visible";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { IndexPicker } from "./index-picker";
@@ -26,7 +27,7 @@ export function MarketOverview() {
       setS(d);
       setErr(null);
       // Poll while a broker is supplying live prices.
-      if (d.broker) timer.current = setTimeout(() => loadRef.current(), 15_000);
+      if (d.broker) timer.current = setTimeout(() => whenVisible(() => loadRef.current()), 15_000);
     } catch (e) {
       setErr((e as Error).message || "Could not load market overview.");
     }
