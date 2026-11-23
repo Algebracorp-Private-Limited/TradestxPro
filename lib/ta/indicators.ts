@@ -325,7 +325,14 @@ export function donchian(h: Series, l: Series, n = 20) {
   return { upper, lower, mid: upper.map((u, i) => (u + lower[i]) / 2) };
 }
 
-export function ichimoku(h: Series, l: Series, conv = 9, base = 26, spanB = 52, displacement = 26) {
+/**
+ * Ichimoku Kinko Hyo. Every output is aligned to the bar index it is plotted at:
+ * - Senkou spans are plotted `displacement` periods ahead counting the current bar as the first,
+ *   i.e. shifted forward by `displacement - 1` bars (the usual charting convention). Values that land
+ *   past the last bar are returned in `futureA` / `futureB` (index n + k).
+ * - The Chikou (lagging) span is the close plotted `displacement - 1` bars back.
+ */
+export function ichimoku(h: Series, l: Series, conv = 9, base = 26, spanB = 52, displacement = 26, c?: Series) {
   const mid = (n: number) => {
     const hh = highest(h, n);
     const ll = lowest(l, n);
@@ -335,11 +342,12 @@ export function ichimoku(h: Series, l: Series, conv = 9, base = 26, spanB = 52, 
   const kijun = mid(base);
   const a = tenkan.map((t, i) => (t + kijun[i]) / 2);
   const b = mid(spanB);
-  // Leading spans are plotted `displacement` bars ahead; aligned here so value at i came from i - displacement.
-  const shift = (s: Series) => s.map((_, i) => (i >= displacement ? s[i - displacement] : NaN));
-  // The cloud also extends `displacement` bars past the last bar: that forward part is the projection.
-  const ahead = (s: Series) => s.slice(Math.max(0, s.length - displacement));
-  return { tenkan, kijun, spanA: shift(a), spanB: shift(b), futureA: ahead(a), futureB: ahead(b) };
+  const off = Math.max(0, Math.round(displacement) - 1);
+  const shift = (s: Series) => s.map((_, i) => (i >= off ? s[i - off] : NaN));
+  const ahead = (s: Series) => s.slice(Math.max(0, s.length - off));
+  const close = c ?? [];
+  const chikou = h.map((_, i) => (i + off < close.length ? close[i + off] : NaN));
+  return { tenkan, kijun, spanA: shift(a), spanB: shift(b), futureA: ahead(a), futureB: ahead(b), chikou, offset: off };
 }
 
 /** Parabolic SAR. */

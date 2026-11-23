@@ -116,18 +116,20 @@ export function ChartTerminal() {
   return (
     <div className="-m-4 flex h-[calc(100dvh-53px-64px)] flex-col sm:-m-6 lg:h-[calc(100dvh-53px)]">
       {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-line bg-panel px-3 py-2">
+      <div className="flex items-center gap-1.5 overflow-x-auto border-b border-line bg-panel px-2 py-1.5 sm:flex-wrap sm:gap-2 sm:overflow-visible sm:px-3 [&>*]:shrink-0">
         <SymbolSearch symbol={symbol} name={data.name} onPick={(s) => nav({ symbol: s })} />
-        <div role="group" aria-label="Timeframe" className="flex rounded-md border border-line p-0.5">
+        <span aria-hidden className="hidden h-5 w-px bg-line sm:block" />
+        <div role="group" aria-label="Timeframe" className="flex rounded-md bg-ink/60 p-0.5">
           {tfs.map((t) => (
-            <button key={t} onClick={() => nav({ tf: t })} aria-pressed={tf === t} className={`rounded px-2 py-1 font-mono text-xs ${tf === t ? "bg-white text-slate-950" : "text-soft hover:text-white"}`}>{t}</button>
+            <button key={t} onClick={() => nav({ tf: t })} aria-pressed={tf === t} className={`h-7 rounded px-2 font-mono text-xs transition-colors ${tf === t ? "bg-accent/20 font-semibold text-accent" : "text-soft hover:bg-white/5 hover:text-white"}`}>{t}</button>
           ))}
         </div>
+        <span aria-hidden className="hidden h-5 w-px bg-line sm:block" />
         <label className="sr-only" htmlFor="chart-style">Chart type</label>
-        <select id="chart-style" value={layout.style} onChange={(e) => setLayout((l) => ({ ...l, style: e.target.value as ChartStyle }))} className="rounded-md border border-line bg-ink px-2 py-1.5 text-xs text-soft">
+        <select id="chart-style" value={layout.style} onChange={(e) => setLayout((l) => ({ ...l, style: e.target.value as ChartStyle }))} className="h-8 rounded-md border border-line bg-ink px-2 text-xs text-soft hover:border-white/20">
           {STYLES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
         </select>
-        <button onClick={() => setPicker(true)} className="rounded-md border border-line px-2.5 py-1.5 text-xs hover:bg-white/5">ƒx Indicators</button>
+        <button onClick={() => setPicker(true)} className="h-8 rounded-md border border-line px-2.5 text-xs font-medium hover:border-white/20 hover:bg-white/5"><span className="font-serif italic text-accent">ƒx</span> Indicators{layout.indicators.length ? <span className="ml-1 rounded bg-white/10 px-1 text-[10px] text-muted">{layout.indicators.length}</span> : null}</button>
         <button
           onClick={() => {
             setLab((v) => {
@@ -136,11 +138,11 @@ export function ChartTerminal() {
             });
           }}
           aria-pressed={lab}
-          className={`rounded-md border px-2.5 py-1.5 text-xs ${lab ? "border-accent/60 bg-accent/10 text-accent" : "border-line hover:bg-white/5"}`}
+          className={`h-8 rounded-md border px-2.5 text-xs font-medium ${lab ? "border-accent/60 bg-accent/10 text-accent" : "border-line hover:border-white/20 hover:bg-white/5"}`}
         >
           {"{}"} XScript Lab
         </button>
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex items-center gap-0.5 rounded-md bg-ink/60 p-0.5">
           <button aria-label="Zoom in" onClick={() => engineRef.current?.zoom(1.25)} className="h-7 w-7 rounded-md text-soft hover:bg-white/5">＋</button>
           <button aria-label="Zoom out" onClick={() => engineRef.current?.zoom(0.8)} className="h-7 w-7 rounded-md text-soft hover:bg-white/5">－</button>
           <button aria-label="Reset view" onClick={() => engineRef.current?.fit()} className="h-7 rounded-md px-2 text-xs text-soft hover:bg-white/5">Reset</button>
@@ -159,10 +161,10 @@ export function ChartTerminal() {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 border-b border-line bg-ink px-3 py-1.5">
+      <div className="flex flex-wrap items-center gap-2 border-b border-line bg-ink px-3 py-1">
         <span className="max-w-[40ch] truncate text-xs text-soft" title={data.name}>{data.name}</span>
         <span className={`rounded px-1.5 py-0.5 text-[10px] ${data.delayed ? "bg-gold/15 text-gold" : "bg-up/15 text-up"}`}>{data.delayed ?? "Live · refreshes 30s"}</span>
-        <span className="text-[11px] text-muted">Click an indicator name on the chart for its settings.</span>
+        <span className="hidden text-[11px] text-muted sm:inline">Click an indicator name on the chart for its settings.</span>
         {data.notice && <span className="text-xs text-gold">{data.notice}</span>}
         {tool !== "none" && <span className="text-xs text-gold">{tool === "hline" ? "Click the chart to place a line" : "Click two points on the chart · Esc to cancel"}</span>}
         {savedNote && <span role="status" className="text-xs text-up">{savedNote}</span>}

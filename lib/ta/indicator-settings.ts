@@ -1,7 +1,12 @@
-// Per-indicator user settings: inputs, style overrides, placement and timeframe visibility.
-import { INDICATOR_BY_ID, defaultParams, type IndicatorDef } from "./catalog";
+// Per-indicator user settings: inputs, style overrides, placement, timeframe visibility and precision.
+// Everything here is optional so layouts saved by earlier versions load unchanged.
+import { INDICATOR_BY_ID, defaultParams, levelsOf, withDefaults, type Bar, type ComputeContext, type IndicatorDef } from "./catalog.ts";
+import { withAlpha } from "../chart/geometry.ts";
 
-export type OutputStyle = { color?: string; width?: number; visible?: boolean };
+export type LineDash = "solid" | "dashed" | "dotted";
+export type OutputStyle = { color?: string; width?: number; visible?: boolean; opacity?: number; dash?: LineDash; colors?: string[] };
+/** Fill or background-zone override. `color` is the "up" (or only) colour. */
+export type FillStyle = { visible?: boolean; color?: string; down?: string; opacity?: number };
 export type TfVisibility = { minutes: boolean; hours: boolean; days: boolean; weeks: boolean; months: boolean };
 
 export type ActiveIndicator = {
@@ -9,6 +14,10 @@ export type ActiveIndicator = {
   id: string;
   params: Record<string, number>;
   styles?: Record<string, OutputStyle>;
+  /** Keyed by fill id ("cloud", "bands", ...) or band id ("band", "obZone", ...). */
+  fills?: Record<string, FillStyle>;
+  /** Decimal places for values in the legend and price scale; undefined = automatic. */
+  precision?: number;
   placement?: "overlay" | "separate";
   visibility?: TfVisibility;
   hidden?: boolean;
@@ -46,6 +55,8 @@ export function newIndicator(def: IndicatorDef): ActiveIndicator {
     id: def.id,
     params: { ...defaultParams(def), ...(saved?.params ?? {}) },
     styles: saved?.styles ?? {},
+    fills: saved?.fills ?? {},
+    precision: saved?.precision,
     placement: saved?.placement,
     visibility: saved?.visibility ?? ALL_VISIBLE,
     scaleLabels: saved?.scaleLabels ?? true,
@@ -67,15 +78,78 @@ export function saveAsDefault(ind: ActiveIndicator) {
 
 export function factoryReset(ind: ActiveIndicator): ActiveIndicator {
   const def = INDICATOR_BY_ID[ind.id];
-  return { uid: ind.uid, id: ind.id, params: defaultParams(def), styles: {}, visibility: ALL_VISIBLE, scaleLabels: true, statusValues: true, statusInputs: true };
+  return { uid: ind.uid, id: ind.id, params: defaultParams(def), styles: {}, fills: {}, precision: undefined, visibility: ALL_VISIBLE, scaleLabels: true, statusValues: true, statusInputs: true };
 }
 
 export function inputSummary(ind: ActiveIndicator): string {
   const def = INDICATOR_BY_ID[ind.id];
   if (!def) return "";
+  const params = withDefaults(def, ind.params);
   return def.params
     .filter((p) => p.kind !== "bool")
-    .map((p) => (p.kind === "select" ? p.options?.[ind.params[p.key]] ?? "" : String(ind.params[p.key])))
+    .map((p) => (p.kind === "select" ? p.options?.[params[p.key]] ?? "" : String(params[p.key])))
     .filter(Boolean)
     .join(", ");
+}
+
+// ---------- resolving an indicator into drawable series ----------
+
+export type ResolvedFill = { id: string; other: number[] | number; up: string; down: string; only?: "up" | "down" };
+export type ResolvedSeries = {
+  key: string;
+  label: string;
+  values: number[];
+  color: string;
+  style?: "line" | "histogram" | "dots" | "area";
+  width?: number;
+  opacity?: number;
+  dash?: LineDash;
+  scaleLabel?: boolean;
+  precision?: number;
+  fills?: ResolvedFill[];
+  hist?: { mode: "trend" | "candle"; colors: string[] };
+};
+export type ResolvedBand = { from: number; to: number; color: string };
+export type Resolved = { series: ResolvedSeries[]; levels?: number[]; bands: ResolvedBand[]; range?: [number, number] };
+
+/** Computes an indicator and applies the user's style, fill and precision settings. */
+export function resolveIndicator(ind: ActiveIndicator, bars: Bar[], ctx: ComputeContext): Resolved | null {
+  const def = INDICATOR_BY_ID[ind.id];
+  if (!def) return null;
+  const params = withDefaults(def, ind.params);
+  const outs = def.compute(bars, params, ctx);
+  const series: ResolvedSeries[] = [];
+  for (const o of outs) {
+    const st = ind.styles?.[o.key] ?? {};
+    if (st.visible === false) continue;
+    const opacity = st.opacity ?? o.opacity ?? 1;
+    const fills: ResolvedFill[] = [];
+    for (const f of o.fills ?? []) {
+      const fs = ind.fills?.[f.id] ?? {};
+      if ((fs.visible ?? f.visible ?? true) === false) continue;
+      const a = fs.opacity ?? f.opacity;
+      fills.push({ id: f.id, other: f.other, up: withAlpha(fs.color ?? f.up, a), down: withAlpha(fs.down ?? f.down, a), only: f.only });
+    }
+    series.push({
+      key: o.key,
+      label: o.label,
+      values: o.values,
+      color: st.color ?? o.color,
+      style: o.style,
+      width: st.width ?? o.width,
+      opacity: o.style === "histogram" ? 1 : opacity,
+      dash: st.dash,
+      scaleLabel: ind.scaleLabels !== false,
+      precision: ind.precision,
+      fills: fills.length ? fills : undefined,
+      hist: o.hist ? { mode: o.hist.mode, colors: o.hist.colors.map((c, k) => withAlpha(st.colors?.[k] ?? c, opacity)) } : undefined,
+    });
+  }
+  const bands: ResolvedBand[] = [];
+  for (const b of def.bands?.(params) ?? []) {
+    const fs = ind.fills?.[b.id] ?? {};
+    if ((fs.visible ?? b.visible ?? true) === false) continue;
+    bands.push({ from: b.from, to: b.to, color: withAlpha(fs.color ?? b.color, fs.opacity ?? b.opacity) });
+  }
+  return { series, levels: levelsOf(def, params), bands, range: def.range };
 }
