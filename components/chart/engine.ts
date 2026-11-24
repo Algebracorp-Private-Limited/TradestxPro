@@ -2,7 +2,7 @@
 // overlays, indicator panes, crosshair, zoom/pan (both axes), log/auto price scale and
 // editable drawings. Colours follow the site theme (CSS variables).
 import type { Bar } from "@/lib/ta/catalog";
-import { contrastText, fillPolys, futureTime, histTone } from "@/lib/chart/geometry";
+import { contrastText, fillPolys, futureTime, histTone } from "../../lib/chart/geometry.ts";
 
 export type PlotStyle = "line" | "histogram" | "dots" | "area";
 /** Shading between a series and `other` (series or constant); colours are final CSS colours. */
@@ -18,8 +18,10 @@ export type PlotSeries = {
   scaleLabel?: boolean;
   precision?: number;
   fills?: PlotFill[];
-  /** Histogram colours: "trend" = [pos↑, pos↓, neg↓, neg↑]; "candle" = [up bar, down bar]. */
-  hist?: { mode: "trend" | "candle"; colors: string[] };
+  /** Histogram colours: "trend" = [pos↑, pos↓, neg↓, neg↑]; "candle" = [up bar, down bar]; "sign" = [≥ 0, < 0]. */
+  hist?: { mode: "trend" | "candle" | "sign"; colors: string[] };
+  /** Line series drawn as an area: gradient from the line down to `baseline` (or the pane bottom). */
+  area?: { top: string; bottom: string; baseline?: number };
 };
 export type PaneSpec = { id: string; title: string; series: PlotSeries[]; levels?: number[]; bands?: { from: number; to: number; color: string }[]; range?: [number, number] };
 export type Marker = { index: number; text: string; color: string; position: "above" | "below" };
@@ -40,12 +42,19 @@ export type ChartData = {
   intraday?: boolean;
   /** Bars of space past the last candle that series extend into (e.g. the projected Ichimoku cloud). */
   future?: number;
+  /** Candle colours (default: theme up/down). */
+  candle?: { up?: string; down?: string; wickUp?: string; wickDown?: string };
 };
 
-export type CrosshairInfo = { index: number; bar: Bar | null } | null;
+/** Optional renderer settings (used by the XChart SDK; defaults match the terminal chart). */
+export type EngineOptions = { crosshair?: boolean; pricePrecision?: number; theme?: Partial<EngineTheme> | null; utcOffsetSeconds?: number };
+
+/** `price` is the main-pane price under the pointer (null over indicator panes). */
+export type CrosshairInfo = { index: number; bar: Bar | null; price?: number | null; time?: number } | null;
 export type PaneBox = { id: string; top: number; height: number };
 export type ScaleState = { auto: boolean; log: boolean };
 
+export type EngineTheme = Theme;
 type Theme = { bg: string; grid: string; axis: string; text: string; strong: string; up: string; down: string; cross: string; tag: string; tagText: string; line: string; draw: string; select: string; level: string; zero: string; future: string };
 
 function readTheme(): Theme {
@@ -102,8 +111,8 @@ export function fmtValue(v: number, precision?: number): string {
 const withOpacity = (c: string) => (c.startsWith("#") && c.length === 7 ? c + "99" : c);
 
 const IST = 19800;
-function fmtTime(t: number, intraday: boolean, long = false): string {
-  const d = new Date((t + (intraday ? IST : 0)) * 1000);
+function fmtTime(t: number, intraday: boolean, long = false, offset = IST): string {
+  const d = new Date((t + (intraday ? offset : 0)) * 1000);
   const mon = d.toLocaleString("en-GB", { month: "short", timeZone: "UTC" });
   const day = d.getUTCDate();
   if (!intraday) return long ? `${day} ${mon} ${d.getUTCFullYear()}` : `${day} ${mon}`;
@@ -148,7 +157,11 @@ export class ChartEngine {
   };
   private lastLayoutKey = "";
 
-  constructor(private container: HTMLElement, cb: ChartEngine["cb"] = {}) {
+  private container: HTMLElement;
+  private opts: { crosshair: boolean; pricePrecision?: number; theme: Partial<Theme> | null; utcOffsetSeconds?: number } = { crosshair: true, theme: null };
+
+  constructor(container: HTMLElement, cb: ChartEngine["cb"] = {}) {
+    this.container = container;
     this.cb = cb;
     this.theme = readTheme();
     this.canvas = document.createElement("canvas");
@@ -231,6 +244,60 @@ export class ChartEngine {
     this.zoomAt(factor, this.plotW() - 1);
   }
 
+  /** Renderer options (crosshair on/off, fixed price precision, theme colours). */
+  setOptions(o: EngineOptions) {
+    if (o.crosshair !== undefined) this.opts.crosshair = o.crosshair;
+    if ("pricePrecision" in o) this.opts.pricePrecision = o.pricePrecision;
+    if (o.utcOffsetSeconds !== undefined) this.opts.utcOffsetSeconds = o.utcOffsetSeconds;
+    if ("theme" in o) {
+      this.opts.theme = o.theme ?? null;
+      this.theme = { ...readTheme(), ...(this.opts.theme ?? {}) };
+    }
+    this.invalidate();
+  }
+
+  /** Visible window in fractional bar indices (from = left edge, to = right edge). */
+  getViewRange(): { from: number; to: number } {
+    // Bar-centre indices: inverse of setViewRange.
+    return { from: this.indexAt(0) + 0.5, to: this.endIndex };
+  }
+
+  /** Duration of the most recent canvas redraw, in milliseconds (diagnostics / benchmarks). */
+  lastDrawMs = 0;
+
+  /** Shows bar indices [from, to] across the plot width (to may lie past the last bar). */
+  setViewRange(from: number, to: number) {
+    if (!(to > from)) return;
+    this.spacing = Math.max(0.5, Math.min(60, this.plotW() / (to - from + 1)));
+    this.endIndex = to;
+    this.invalidate();
+  }
+
+  /** Scrolls by a number of bars (positive = towards newer bars). */
+  scrollBy(bars: number) {
+    this.endIndex += bars;
+    this.clampView();
+    this.invalidate();
+  }
+
+  /** Scrolls so the newest bar is at the right edge, keeping the zoom level. */
+  scrollToEnd() {
+    this.endIndex = this.data.bars.length - 1 + 3;
+    this.invalidate();
+  }
+
+  /**
+   * Redraw after the current ChartData was mutated in place. When `appended` bars were added and
+   * the newest bar was in view, the view follows the new bars (like a live chart).
+   */
+  refresh(appended = 0) {
+    if (appended > 0) {
+      const lastBefore = this.data.bars.length - 1 - appended;
+      if (this.endIndex >= lastBefore) this.endIndex += appended;
+    }
+    this.invalidate();
+  }
+
   fit = () => {
     const n = this.data.bars.length;
     const visible = Math.min(n, Math.max(30, Math.floor(this.plotW() / 8)));
@@ -299,15 +366,20 @@ export class ChartEngine {
 
   // ---------- events ----------
   private onTheme = () => {
-    this.theme = readTheme();
+    this.theme = { ...readTheme(), ...(this.opts.theme ?? {}) };
     this.invalidate();
   };
 
   private resize() {
     const r = this.container.getBoundingClientRect();
-    this.dpr = window.devicePixelRatio || 1;
-    this.w = Math.max(50, Math.floor(r.width));
-    this.h = Math.max(80, Math.floor(r.height));
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(50, Math.floor(r.width));
+    const h = Math.max(80, Math.floor(r.height));
+    // Re-assigning canvas.width clears it: skip when nothing changed (ResizeObserver fires on attach).
+    if (w === this.w && h === this.h && dpr === this.dpr && this.canvas.width === w * dpr) return;
+    this.dpr = dpr;
+    this.w = w;
+    this.h = h;
     this.canvas.width = this.w * this.dpr;
     this.canvas.height = this.h * this.dpr;
     this.canvas.style.width = this.w + "px";
@@ -549,8 +621,9 @@ export class ChartEngine {
   private timeLabelAt(i: number, long = false): string | null {
     const b = this.data.bars;
     if (i < 0 || !b.length) return null;
-    if (i < b.length) return fmtTime(b[i].t, !!this.data.intraday, long);
-    return fmtTime(futureTime(b.map((x) => x.t), i - (b.length - 1), !!this.data.intraday), !!this.data.intraday, long);
+    const off = this.opts.utcOffsetSeconds ?? IST;
+    if (i < b.length) return fmtTime(b[i].t, !!this.data.intraday, long, off);
+    return fmtTime(futureTime(b.slice(-60).map((x) => x.t), i - (b.length - 1), !!this.data.intraday), !!this.data.intraday, long, off);
   }
 
   private invalidate() {
@@ -577,8 +650,11 @@ export class ChartEngine {
       for (let i = from; i <= to; i++) {
         const b = bars[i];
         if (!b) continue;
-        min = Math.min(min, T(lineOnly ? b.c : b.l));
-        max = Math.max(max, T(lineOnly ? b.c : b.h));
+        // Gap bars (NaN prices: no candle at this time) only carry a timestamp.
+        if (Number.isFinite(b.c)) {
+          min = Math.min(min, T(lineOnly ? b.c : b.l));
+          max = Math.max(max, T(lineOnly ? b.c : b.h));
+        }
         for (const s of this.data.overlays) {
           const v = s.values[i];
           if (Number.isFinite(v) && (!log || v > 0)) {
@@ -641,6 +717,12 @@ export class ChartEngine {
   }
 
   private draw() {
+    const t0 = performance.now();
+    this.drawFrame();
+    this.lastDrawMs = performance.now() - t0;
+  }
+
+  private drawFrame() {
     const { ctx } = this;
     const th = this.theme;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
@@ -757,12 +839,14 @@ export class ChartEngine {
       }
     });
 
-    const last = bars[bars.length - 1];
+    let li = bars.length - 1;
+    while (li >= 0 && !Number.isFinite(bars[li].c)) li--;
+    const last = li >= 0 ? bars[li] : undefined;
     const main = this.layouts[0];
     if (last && main) {
       const y = this.yOf(last.c, main);
       if (y >= main.top && y <= main.top + main.height) {
-        const prev = bars[bars.length - 2];
+        const prev = li > 0 ? bars[li - 1] : undefined;
         const col = !prev || last.c >= prev.c ? th.up : th.down;
         ctx.setLineDash([2, 3]);
         ctx.strokeStyle = col;
@@ -771,7 +855,7 @@ export class ChartEngine {
         ctx.lineTo(pw, Math.round(y) + 0.5);
         ctx.stroke();
         ctx.setLineDash([]);
-        tags.push({ y, text: fmtPrice(last.c), color: col });
+        tags.push({ y, text: this.fmtAxis(last.c), color: col });
       }
     }
     // Keep overlapping tags readable: later (more important) tags win; the last price is drawn last.
@@ -827,7 +911,7 @@ export class ChartEngine {
     for (const t of ticks) {
       const y = this.yOf(t.v, L);
       if (y < L.top + 6 || y > L.top + L.height - 6 || taken.some((u) => Math.abs(u - y) < 12)) continue;
-      ctx.fillText(fmtPrice(t.v, t.step), this.plotW() + 6, y);
+      ctx.fillText(L === this.layouts[0] && this.opts.pricePrecision !== undefined ? this.fmtAxis(t.v) : fmtPrice(t.v, t.step), this.plotW() + 6, y);
     }
   }
 
@@ -839,11 +923,14 @@ export class ChartEngine {
     if (type === "line" || type === "area") {
       const path = () => {
         ctx.beginPath();
+        let pen = false;
         for (let i = from; i <= to; i++) {
+          if (!Number.isFinite(bars[i].c)) continue;
           const x = this.xOf(i);
           const y = this.yOf(bars[i].c, L);
-          if (i === from) ctx.moveTo(x, y);
+          if (!pen) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
+          pen = true;
         }
       };
       if (type === "area" && to >= from) {
@@ -865,11 +952,14 @@ export class ChartEngine {
       return;
     }
     const bodyW = Math.max(1, Math.floor(this.spacing * 0.7));
+    const cc = this.data.candle;
     for (let i = from; i <= to; i++) {
       const b = bars[i];
+      if (!Number.isFinite(b.c)) continue; // gap: no candle at this time
       const x = Math.round(this.xOf(i));
-      const col = b.c >= b.o ? th.up : th.down;
-      ctx.strokeStyle = col;
+      const upBar = b.c >= b.o;
+      const col = upBar ? cc?.up ?? th.up : cc?.down ?? th.down;
+      ctx.strokeStyle = (upBar ? cc?.wickUp : cc?.wickDown) ?? col;
       ctx.fillStyle = col;
       const yh = this.yOf(b.h, L);
       const yl = this.yOf(b.l, L);
@@ -917,6 +1007,39 @@ export class ChartEngine {
     }
   }
 
+  /** Gradient fill under a line series, down to its baseline value or the pane bottom; breaks at gaps. */
+  private drawArea(s: PlotSeries, L: PaneLayout, from: number) {
+    const { ctx } = this;
+    const a = s.area!;
+    const end = Math.min(Math.max(this.visibleRange()[1] + 1, Math.ceil(this.endIndex) + 1), s.values.length - 1);
+    const base = a.baseline !== undefined ? Math.max(L.top, Math.min(L.top + L.height, this.yOf(a.baseline, L))) : L.top + L.height;
+    const g = ctx.createLinearGradient(0, L.top, 0, base);
+    g.addColorStop(0, a.top);
+    g.addColorStop(1, a.bottom);
+    ctx.fillStyle = g;
+    let run: [number, number][] = [];
+    const flush = () => {
+      if (run.length > 1) {
+        ctx.beginPath();
+        ctx.moveTo(run[0][0], base);
+        for (const [x, y] of run) ctx.lineTo(x, y);
+        ctx.lineTo(run[run.length - 1][0], base);
+        ctx.closePath();
+        ctx.fill();
+      }
+      run = [];
+    };
+    for (let i = Math.max(0, from - 1); i <= end; i++) {
+      const v = s.values[i];
+      if (!Number.isFinite(v) || (L.log && v <= 0)) {
+        flush();
+        continue;
+      }
+      run.push([this.xOf(i), this.yOf(v, L)]);
+    }
+    flush();
+  }
+
   private drawSeries(s: PlotSeries, L: PaneLayout, from: number, to: number) {
     const { ctx } = this;
     const style = s.style ?? "line";
@@ -933,6 +1056,7 @@ export class ChartEngine {
         ctx.fillStyle =
           h?.mode === "candle" && bar ? (bar.c >= bar.o ? h.colors[0] : h.colors[1])
           : h?.mode === "trend" ? h.colors[histTone(v, prev)]
+          : h?.mode === "sign" ? (v >= 0 ? h.colors[0] : h.colors[1])
           : s.color;
         ctx.fillRect(Math.round(this.xOf(i)) - Math.floor(w / 2), Math.min(y, zero), w, Math.max(1, Math.abs(zero - y)));
       }
@@ -949,6 +1073,7 @@ export class ChartEngine {
       }
       return;
     }
+    if (s.area) this.drawArea(s, L, from);
     ctx.strokeStyle = s.color;
     ctx.lineWidth = s.width ?? 1.4;
     ctx.globalAlpha = s.opacity ?? 1;
@@ -1070,6 +1195,10 @@ export class ChartEngine {
     ctx.lineWidth = 1;
   }
 
+  private fmtAxis(v: number) {
+    return this.opts.pricePrecision !== undefined ? fmtValue(v, this.opts.pricePrecision) : fmtPrice(v);
+  }
+
   private axisTag(y: number, text: string, bg: string, fg: string) {
     const { ctx } = this;
     const x = this.plotW() + 2;
@@ -1092,8 +1221,16 @@ export class ChartEngine {
       this.cb.onCrosshair?.(null);
       return;
     }
+    const iHover = Math.max(0, Math.min(bars.length - 1 + this.future(), Math.round(this.indexAt(m.x))));
+    const mainL = this.layouts[0];
+    const overMain = mainL && m.y >= mainL.top && m.y <= mainL.top + mainL.height;
+    const info = { index: iHover, bar: bars[iHover] ?? null, price: overMain ? this.priceAt(m.y, mainL) : null, time: this.timeOfIndex(iHover) };
+    if (!this.opts.crosshair) {
+      this.cb.onCrosshair?.(info);
+      return;
+    }
     const { ctx } = this;
-    const i = Math.max(0, Math.min(bars.length - 1 + this.future(), Math.round(this.indexAt(m.x))));
+    const i = iHover;
     const x = Math.round(this.xOf(i)) + 0.5;
     const y = Math.round(m.y) + 0.5;
     ctx.setLineDash([3, 3]);
@@ -1108,7 +1245,7 @@ export class ChartEngine {
     const L = this.layouts[this.paneAt(m.y)];
     if (L) {
       const span = L.log ? Math.exp(L.max) - Math.exp(L.min) : L.max - L.min;
-      this.axisTag(m.y, fmtPrice(this.priceAt(m.y, L), span / 50), this.theme.tag, this.theme.tagText);
+      this.axisTag(m.y, L === this.layouts[0] ? (this.opts.pricePrecision !== undefined ? this.fmtAxis(this.priceAt(m.y, L)) : fmtPrice(this.priceAt(m.y, L), span / 50)) : fmtPrice(this.priceAt(m.y, L), span / 50), this.theme.tag, this.theme.tagText);
     }
     const label = this.timeLabelAt(i, true) ?? "";
     ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -1118,6 +1255,6 @@ export class ChartEngine {
     ctx.fillStyle = this.theme.tagText;
     ctx.textAlign = "center";
     ctx.fillText(label, x, this.h - TIME_H / 2);
-    this.cb.onCrosshair?.({ index: i, bar: bars[i] ?? null });
+    this.cb.onCrosshair?.(info);
   }
 }
