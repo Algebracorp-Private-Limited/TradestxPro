@@ -552,6 +552,8 @@ export class ChartEngine {
   }
   /** Index k (≥ 1) of the pane whose top separator is within 4 px of y, or -1. */
   private separatorAt(y: number) {
+    // Opt-in: only hosts that persist sizes (onPaneResize) get draggable separators.
+    if (!this.cb.onPaneResize) return -1;
     for (let k = 1; k < this.layouts.length; k++) if (Math.abs(y - this.layouts[k].top) <= 4) return k;
     return -1;
   }

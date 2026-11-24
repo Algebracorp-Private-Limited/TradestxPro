@@ -279,3 +279,17 @@ test("custom indicator errors are isolated: the chart and other indicators keep 
   assert.equal(ok.getValues().length, 36);
   assert.equal(a.last!.extraPanes!.length, 0); // failed indicators draw nothing
 });
+
+test("indicators sharing one chart (shared input cache) match indicators computed alone", () => {
+  const data = candles(400, 3);
+  const together = createChartWithAdapter(new Fake());
+  together.addCandlestickSeries().setData(data);
+  const specs: [string, Record<string, unknown>][] = [["sma", { source: "hl2", length: 9 }], ["ema", { length: 12 }], ["bb", { source: "ohlc4" }], ["rsi", {}], ["macd", {}], ["ichimoku", {}]];
+  const mine = specs.map(([t, c]) => together.addIndicator(t, c));
+  for (const [k, [t, c]] of specs.entries()) {
+    const alone = createChartWithAdapter(new Fake());
+    alone.addCandlestickSeries().setData(data);
+    const ref = alone.addIndicator(t, c);
+    assert.deepEqual(mine[k].getValues(), ref.getValues(), `${t} identical with a shared input`);
+  }
+});

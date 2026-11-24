@@ -585,6 +585,37 @@ test("browser: chart types draw distinct pixels; Heikin Ashi keeps real data; pl
   });
 });
 
+test("browser: engine used directly (terminal chart path) keeps its v0.2 behaviour", async (t) => {
+  await withPage(t, async (page) => {
+    const r = await page.evaluate(`(async () => {
+      const { ChartEngine } = await import("/components/chart/engine.ts");
+      const el = document.getElementById("a");
+      el.style.position = "relative";
+      const changes = [];
+      const eng = new ChartEngine(el, { onDrawingsChange: (d) => changes.push(d.length) });
+      const raw = mk(60).map((b) => ({ t: b.time, o: b.open, h: b.high, l: b.low, c: b.close, v: b.volume }));
+      eng.setData({ bars: raw, type: "candles", overlays: [], panes: [{ id: "rsi", title: "RSI", series: [{ label: "x", values: raw.map((b, i) => 50 + Math.sin(i) * 20), color: "#00ff00" }] }] });
+      await frame();
+      window.eng = eng;
+      return { panes: eng.getPanes() };
+    })()`);
+    const sepY = r.panes[1].top;
+    // Without onPaneResize the separator is not draggable: the press pans instead.
+    await page.mouse.move(300, sepY);
+    await page.mouse.down();
+    await page.mouse.move(300, sepY - 40, { steps: 4 });
+    await page.mouse.up();
+    const after = await page.evaluate(`eng.getPanes()`);
+    assert.deepEqual(after.map((p: { height: number }) => Math.round(p.height)), r.panes.map((p: { height: number }) => Math.round(p.height)), "pane sizes unchanged");
+    // The engine's own drawing tools still work.
+    await page.evaluate(`eng.setTool("trend")`);
+    await page.mouse.click(100, 100);
+    await page.mouse.click(300, 150);
+    const drawn = await page.evaluate(`(() => { const n = eng.drawings?.length ?? null; eng.destroy(); return n; })()`);
+    assert.equal(drawn, 1);
+  });
+});
+
 test("browser: benchmarks (1k / 10k / 50k candles)", { skip: process.env.XCHART_BENCH !== "1" && "set XCHART_BENCH=1 to run" }, async (t) => {
   const browser = await launch(t);
   if (!browser) return;
@@ -643,6 +674,62 @@ test("browser: benchmarks (1k / 10k / 50k candles)", { skip: process.env.XCHART_
       const f = (v: number) => `${v.toFixed(2)}`;
       const s = (o: { med: number; p95: number }) => `${f(o.med)}/${f(o.p95)}`;
       console.log(`    ${String(n).padStart(6)} candles | load 3 series ${f(r.load)} ms | first draw ${f(r.firstDraw)} | replace ${s(r.rep)} + draw ${s(r.repDraw)} | append ${s(r.app)} | +2 series update ${s(r.multi)} | zoom draw ${s(r.zoom)} | pan draw ${s(r.pan)} | destroy ${f(r.destroy)} | create+load+remove ${s(r.cycle)}  (ms, median/p95)`);
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
+test("browser: v0.3 benchmarks (1k / 10k / 50k / 100k candles × 5 / 10 / 20 indicators)", { skip: process.env.XCHART_BENCH !== "1" && "set XCHART_BENCH=1 to run" }, async (t) => {
+  const browser = await launch(t);
+  if (!browser) return;
+  try {
+    const { page } = await openPage(browser);
+    for (const n of [1000, 10_000, 50_000, 100_000]) {
+      for (const k of [5, 10, 20]) {
+        const r = await page.evaluate(`(async () => {
+          const el = document.getElementById("a");
+          const data = mk(${n}, 1600000000, 60);
+          const stats = (a) => { const b = [...a].sort((x, y) => x - y); return { med: b[b.length >> 1], p95: b[Math.min(b.length - 1, Math.floor(b.length * 0.95))] }; };
+          const chart = X.createChart(el, { followLatest: true });
+          const c = chart.addCandlestickSeries();
+          c.setData(data);
+          await frame();
+          const ids = chart.listIndicators().map((d) => d.id).filter((id) => id !== "volume");
+          const pick = ids.slice(0, ${k});
+          let t0 = performance.now();
+          for (const id of pick) chart.addIndicator(id);
+          await frame();
+          const addAll = performance.now() - t0;
+          const last = data[data.length - 1];
+          const tick = [], tickDraw = [];
+          for (let i = 0; i < 60; i++) {
+            const s = performance.now();
+            c.update({ ...last, close: last.close + (i % 5) * 0.1, high: last.high + 1, low: last.low - 1 });
+            await frame();
+            tick.push(performance.now() - s); tickDraw.push(chart.renderTimeMs());
+          }
+          const app = [];
+          for (let i = 1; i <= 30; i++) {
+            const s = performance.now();
+            c.update({ time: last.time + i * 60, open: 100, high: 101, low: 99, close: 100.5 });
+            await frame();
+            app.push(performance.now() - s);
+          }
+          const pan = [];
+          for (let i = 0; i < 30; i++) { chart.scrollBy(-7); await frame(); pan.push(chart.renderTimeMs()); }
+          for (let i = 0; i < 50; i++) chart.addDrawing({ type: i % 2 ? "trendline" : "fib-retracement", points: [{ time: data[data.length - 200 + i].time, price: 100 + i }, { time: data[data.length - 100 + i].time, price: 120 + i }] });
+          const draw50 = [];
+          for (let i = 0; i < 20; i++) { chart.scrollBy(i % 2 ? 3 : -3); await frame(); draw50.push(chart.renderTimeMs()); }
+          t0 = performance.now(); const layout = JSON.stringify(chart.saveLayout()); const save = performance.now() - t0;
+          t0 = performance.now(); chart.loadLayout(layout); await frame(); const load = performance.now() - t0;
+          t0 = performance.now(); chart.remove(); const destroy = performance.now() - t0;
+          return { addAll, tick: stats(tick), tickDraw: stats(tickDraw), app: stats(app), pan: stats(pan), draw50: stats(draw50), save, load, destroy };
+        })()`);
+        const f = (v: number) => v.toFixed(1);
+        const s = (o: { med: number; p95: number }) => `${f(o.med)}/${f(o.p95)}`;
+        console.log(`    ${String(n).padStart(6)} candles × ${String(k).padStart(2)} ind | add all ${f(r.addAll)} ms | tick→frame ${s(r.tick)} (draw ${s(r.tickDraw)}) | append→frame ${s(r.app)} | pan draw ${s(r.pan)} | +50 drawings draw ${s(r.draw50)} | layout save ${f(r.save)} load ${f(r.load)} | destroy ${f(r.destroy)}  (ms, median/p95)`);
+      }
     }
   } finally {
     await browser.close();

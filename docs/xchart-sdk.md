@@ -1,8 +1,28 @@
-# XChart SDK (v0.2.1)
+# XChart SDK (v0.3.0)
 
 A TypeScript API for building financial charts on top of TradestXPro's own canvas chart engine.
 It is **not published as an npm package**. It lives in `lib/xchart-sdk/` in this repository and is
 structured so it can later be published as `@tradestxpro/xchart`.
+
+## What's new in v0.3.0 (Advanced API)
+
+Detailed guides live in [`docs/xchart/`](xchart/README.md).
+
+| Area | API | Guide |
+|---|---|---|
+| Indicators | `chart.addIndicator(type, config)`, registries, custom definitions, 22 built-ins | [indicators.md](xchart/indicators.md) |
+| Clouds | `chart.addCloudSeries()` (two boundaries, colour switch at crossings, displacement) | [indicators.md](xchart/indicators.md#cloud-series) |
+| Drawings | 27 tools, `chart.addDrawing()`, interactive tools, undo/redo, serialisation | [drawings.md](xchart/drawings.md) |
+| Markers & price lines | `series.setMarkers()`, `series.createPriceLine()` | [drawings.md](xchart/drawings.md#markers) |
+| Scales & panes | percentage/indexed modes, overlay & left scales, margins, `chart.panes()` | [scales-and-panes.md](xchart/scales-and-panes.md) |
+| Sync & calendars | `syncCharts()`, `TradingCalendar`, session shading, IANA time zones | [sync-and-calendars.md](xchart/sync-and-calendars.md) |
+| Chart types | `chart.setChartType()` (11 time-based types), price-based calculations | [chart-types.md](xchart/chart-types.md) |
+| Layouts | `chart.saveLayout()` / `chart.loadLayout()` | [layouts.md](xchart/layouts.md) |
+| Plugins | `chart.use()` (trusted, not sandboxed) | [plugins.md](xchart/plugins.md) |
+| Events | `chart.on()`, `chart.once()` | [events.md](xchart/events.md) |
+| Performance | benchmarks and limits | [performance.md](xchart/performance.md) |
+
+Everything from v0.2.1 keeps working unchanged; see [migration](xchart/migration-v0.3.md).
 
 ## What changed in v0.2.1
 
@@ -324,25 +344,29 @@ raised before any state changes: a rejected call leaves the chart and its series
   * **`browser`**: installs Chromium with system dependencies and runs the browser tests in
     mandatory mode; any failure or unexpected skip fails the job.
   No secrets are used; the build needs no database or broker credentials.
-* Demo: `/xchart-demo` (synthetic data).
+* v0.3 suites: `tests/xchart-indicators.test.ts`, `tests/xchart-drawings.test.ts`,
+  `tests/xchart-scales-panes.test.ts`, `tests/xchart-advanced.test.ts`, plus Chromium tests for
+  indicators, clouds, drawings (real pointer), markers, price lines, overlay scales, panes,
+  synchronised charts, session shading, chart types, plugin layers and layout restore.
+* Demo: `/xchart-demo` (synthetic data) — basics plus v0.3 sections.
 
 
-## Known limitations (v0.2.1)
+## Known limitations (v0.3.0)
 
-* One candlestick series per chart (it is the engine's main series).
-* Bars are spaced by index, not wall-clock time (gaps collapse); no time-proportional spacing.
-* Line/area/histogram on the main pane share the candles' price scale; no left/right scales or
-  scale margins. Separate panes have their own auto-scaled axis.
-* No per-point colours; colours come from series options.
-* Minimum bar spacing is 0.5 px (at most ~2 bars per pixel in view).
-* Dark/light theme presets only; no custom palettes, fonts or grid options.
-* Markers, price lines, drawings and the indicator catalogue are in the engine but not exposed through the SDK.
-* Time labels use a fixed UTC offset (no DST-aware time zones).
-* Strict market-data validation rejects the whole dataset on one bad record; use tolerant mode
-  if a partial chart with a report is acceptable.
-* Browser tests run against Chromium only (no Firefox/WebKit runs yet).
+See [docs/xchart/README.md](xchart/README.md#known-limitations) for the full, current list. In short:
 
-## Migrating from v0.2
+* One candlestick series per chart; bars are spaced by index (gaps collapse).
+* Price-based chart types (Renko, Kagi, Point & Figure, Line Break, Range bars) are calculated
+  but not rendered (`UNSUPPORTED_CHART_TYPE`): they need a sequence axis, not a time axis.
+* Overlay price scales are linear and auto-fitted (`UNSUPPORTED_SCALE` for log/%/manual).
+* Recursive indicators (EMA, RSI, MACD, ATR, ADX, Supertrend, PSAR, OBV, VWAP, Ichimoku, Keltner)
+  are recalculated in full on live ticks; with 10–20 of them on 50k–100k candles a tick costs
+  ~100–400 ms in our benchmark environment (see [performance.md](xchart/performance.md)).
+* No exchange holiday lists are bundled; supply them with a `HolidayProvider`.
+* Plugins are trusted code and are not sandboxed.
+* Browser tests run on Chromium only.
+
+## Migrating from v0.2 (to v0.2.1)
 
 * `fromTradestxproBars()` **may now throw** `MarketDataError` where v0.2 silently clamped
   high/low, dropped duplicates/out-of-order/malformed rows, truncated fractional times and turned

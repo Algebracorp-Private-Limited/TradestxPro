@@ -109,7 +109,8 @@ function fibLevels(env: ToolEnv, d: DrawingData, x0: number, x1: number, items: 
       env.ctx.moveTo(x0, y);
       env.ctx.lineTo(x1, y);
     }, i === 0 || level === 1 ? 1.5 : 1);
-    if (d.style.showLabels !== false) label(env, d, `${(level * 100).toFixed(1)}%  ${env.fmt(price)}`, Math.min(x0, x1) + 4, y - 8);
+    // Keep labels readable when the drawing's left edge is scrolled out of view.
+    if (d.style.showLabels !== false) label(env, d, `${(level * 100).toFixed(1)}%  ${env.fmt(price)}`, Math.max(4, Math.min(x0, x1) + 4), y - 8);
   });
 }
 

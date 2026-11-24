@@ -46,6 +46,20 @@ function toBars(i: IndicatorInput, close: number[]): Bar[] {
   return out;
 }
 
+/**
+ * Catalogue bars per input object and source. A chart passes the SAME input object to every
+ * indicator for one data version, so the conversion (≈10 ms per 100k bars) happens once per
+ * version instead of once per indicator. WeakMap: entries go away with the input.
+ */
+const barCache = new WeakMap<IndicatorInput, Map<string, Bar[]>>();
+function barsFor(input: IndicatorInput, source: string, close: () => number[]): Bar[] {
+  let m = barCache.get(input);
+  if (!m) barCache.set(input, (m = new Map()));
+  let b = m.get(source);
+  if (!b) m.set(source, (b = toBars(input, close())));
+  return b;
+}
+
 function schema(p: ParamDef): ParamSchema {
   if (p.kind === "bool") return { key: p.key, label: p.label, type: "boolean", default: p.default === 1 };
   if (p.kind === "select") return { key: p.key, label: p.label, type: "select", default: p.options![p.default], options: p.options };
@@ -115,8 +129,8 @@ function wrap(def: IndicatorDef): BuiltinDefinition {
   if (SOURCE_BASED.has(def.id)) params.push({ key: "source", label: "Source", type: "source", default: "close" });
   const defaults = Object.fromEntries(params.map((p) => [p.key, p.default])) as IndicatorParams;
   const calc = (input: IndicatorInput, p: IndicatorParams): { result: IndicatorResult; outs: Output[] } => {
-    const close = SOURCE_BASED.has(def.id) ? sourceSeries(input, (p.source as IndicatorSource) ?? "close") : input.close;
-    const outs = def.compute(toBars(input, close), toCatalogParams(def, p), { intraday: input.intraday });
+    const src = SOURCE_BASED.has(def.id) ? ((p.source as IndicatorSource) ?? "close") : "close";
+    const outs = def.compute(barsFor(input, src, () => sourceSeries(input, src)), toCatalogParams(def, p), { intraday: input.intraday });
     const result: IndicatorResult = {};
     for (const o of outs) result[o.key] = o.values;
     return { result, outs };
