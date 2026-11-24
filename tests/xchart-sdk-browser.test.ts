@@ -65,7 +65,7 @@ const PAGE = `<!doctype html><html><body style="margin:0;background:#000">
   // Count pixels matching pred within [x0,x1)×[y0,y1).
   window.count = (img, pred, x0 = 0, x1 = img.width, y0 = 0, y1 = img.height) => {
     let n = 0; const d = img.data;
-    for (let y = Math.max(0, y0); y < Math.min(img.height, y1); y++) for (let x = Math.max(0, Math.floor(x0)); x < Math.min(img.width, Math.ceil(x1)); x++) {
+    for (let y = Math.max(0, Math.floor(y0)); y < Math.min(img.height, Math.ceil(y1)); y++) for (let x = Math.max(0, Math.floor(x0)); x < Math.min(img.width, Math.ceil(x1)); x++) {
       const i = (y * img.width + x) * 4; if (pred(d[i], d[i + 1], d[i + 2], d[i + 3])) n++;
     }
     return n;
@@ -399,6 +399,127 @@ test("browser: pointer creates and drags drawings without panning; projected cro
     assert.equal(last.c.projected, true);
     assert.ok(last.c.time > last.last);
     await page.evaluate(`chart.remove()`);
+  });
+});
+
+test("browser: overlay scale margins, percentage mode, left axis, panes (collapse, separator drag)", async (t) => {
+  await withPage(t, async (page) => {
+    const r = await page.evaluate(`(async () => {
+      const el = document.getElementById("a");
+      const chart = X.createChart(el, { theme: "dark" });
+      const c = chart.addCandlestickSeries({ upColor: "#808080", downColor: "#808080", wickUpColor: "#808080", wickDownColor: "#808080" });
+      const data = mk(40);
+      c.setData(data);
+      const vol = chart.addHistogramSeries({ pane: "main", priceScaleId: "vol", colorMode: "single", color: "#ff00ff", opacity: 1 });
+      vol.setData(data.map((d) => ({ time: d.time, value: d.volume })));
+      chart.priceScale("vol").applyOptions({ margins: { top: 0.8, bottom: 0 } });
+      chart.setVisibleRange({ from: data[0].time, to: data[39].time });
+      await frame();
+      const main = chart.pane("main").height();
+      let img = pixels(el).img;
+      const out = { main };
+      out.volTop = count(img, is.magenta, 0, 600, 0, main * 0.75);
+      out.volBottom = count(img, is.magenta, 0, 600, main * 0.78, main);
+      // Percentage mode: same data, the right axis now reads in %.
+      chart.priceScale().applyOptions({ mode: "percentage" });
+      await frame();
+      out.firstY = chart.priceToCoordinate(data[0].close);
+      out.badgeMode = chart.priceScale().options().mode;
+      // Left scale: a line on "left" gets axis labels on the left edge.
+      const left = chart.addLineSeries({ priceScaleId: "left", color: "#0000ff" });
+      left.setData(data.map((d, i) => ({ time: d.time, value: 5000 + i * 10 })));
+      await frame();
+      img = pixels(el).img;
+      out.leftLabels = count(img, (r, g, b) => r > 120 && g > 120 && b > 120 && Math.abs(r - g) < 40, 0, 40, 10, main - 10);
+      out.leftLine = count(img, is.blue, 0, 600, 0, main);
+      // Panes: an oscillator pane, collapse it, then drag its separator.
+      const osc = chart.addLineSeries({ pane: "osc", color: "#00ff00" });
+      osc.setData(data.map((d, i) => ({ time: d.time, value: Math.sin(i / 3) })));
+      await frame();
+      out.oscH = chart.pane("osc").height();
+      chart.pane("osc").collapse();
+      await frame();
+      out.collapsedH = chart.pane("osc").height();
+      out.collapsedGreen = count(pixels(el).img, is.green, 0, 600, chart.pane("main").height(), 374);
+      chart.pane("osc").expand();
+      await frame();
+      out.expandedH = chart.pane("osc").height();
+      window.resizes = [];
+      chart.on("paneResize", (e) => resizes.push(e));
+      window.chartA = chart;
+      return out;
+    })()`);
+    assert.ok(r.volBottom > 300, `volume on the overlay scale sits in the bottom margin band (${r.volBottom})`);
+    assert.equal(r.volTop, 0, "nothing of the volume overlay above its band");
+    assert.equal(r.badgeMode, "percentage");
+    assert.ok(Number.isFinite(r.firstY));
+    assert.ok(r.leftLabels > 40, `left axis labels drawn (${r.leftLabels})`);
+    assert.ok(r.leftLine > 200, `left-scale line drawn on its own range (${r.leftLine})`);
+    assert.ok(r.oscH > 40);
+    assert.ok(r.collapsedH <= 22, `collapsed pane is a title strip (${r.collapsedH})`);
+    assert.equal(r.collapsedGreen, 0, "a collapsed pane draws no series");
+    assert.ok(Math.abs(r.expandedH - r.oscH) < 2);
+    // Drag the separator above the oscillator pane up by 40 px.
+    const top = await page.evaluate(`chartA.pane("main").height()`);
+    await page.mouse.move(300, top + 1);
+    await page.mouse.down();
+    await page.mouse.move(300, top - 39, { steps: 4 });
+    await page.mouse.up();
+    const after = await page.evaluate(`({ main: chartA.pane("main").height(), osc: chartA.pane("osc").height(), resizes })`);
+    assert.ok(Math.abs(after.main - (top - 40)) <= 2, `main pane shrank by 40 px (${top} → ${after.main})`);
+    assert.ok(after.osc > r.oscH + 35, `oscillator pane grew (${r.oscH} → ${after.osc})`);
+    assert.ok(after.resizes.some((e: { paneId: string }) => e.paneId === "osc"), "paneResize emitted");
+    await page.evaluate(`chartA.remove()`);
+  });
+});
+
+test("browser: synchronised charts follow the pointer and the viewport by time; session shading; time zone labels", async (t) => {
+  await withPage(t, async (page) => {
+    await page.evaluate(`(async () => {
+      const A = X.createChart(document.getElementById("a"), { theme: "dark" });
+      const B = X.createChart(document.getElementById("b"), { theme: "dark" });
+      const data = mk(60);
+      A.addCandlestickSeries().setData(data);
+      B.addCandlestickSeries().setData(data.slice(20));
+      window.g = X.syncCharts([A, B]);
+      window.A = A; window.B = B; window.data = data;
+      A.setVisibleRange({ from: data[25].time, to: data[45].time });
+      await frame(); await frame(); await frame();
+    })()`);
+    const ranges = await page.evaluate(`({ a: A.getVisibleRange(), b: B.getVisibleRange() })`);
+    const span = ranges.a.to - ranges.a.from;
+    assert.ok(Math.abs(ranges.a.from - ranges.b.from) < span * 0.01 && Math.abs(ranges.a.to - ranges.b.to) < span * 0.01, `B follows A's time range (${JSON.stringify(ranges)})`);
+    // Hover A: B draws a dashed crosshair at the same time.
+    const x = await page.evaluate(`A.timeToCoordinate(data[35].time)`);
+    await page.mouse.move(x, 150);
+    await page.evaluate(`frame()`);
+    const bx = await page.evaluate(`B.timeToCoordinate(data[35].time)`);
+    const crossPx = await page.evaluate(`(() => { const { img } = pixels(document.getElementById("b")); return count(img, (r, g, b) => r > 90 && g > 90 && b > 90, ${Math.round(bx) - 1}, ${Math.round(bx) + 2}, 0, 210); })()`);
+    assert.ok(crossPx > 30, `synchronised crosshair on B (${crossPx} px)`);
+    await page.evaluate(`(() => { g.destroy(); A.remove(); B.remove(); })()`);
+
+    // Intraday NSE bars: pre-open, regular and post-close slots get shaded differently; labels in New York time.
+    const r = await page.evaluate(`(async () => {
+      const el = document.getElementById("a");
+      const chart = X.createChart(el, { theme: "dark", timeZone: "America/New_York" });
+      // 2026-03-02 (Mon) 09:00 IST = 03:30 UTC, 5-minute bars to 16:00 IST.
+      const start = Date.UTC(2026, 2, 2, 3, 30) / 1000;
+      const bars = mk(84, start, 300);
+      chart.addCandlestickSeries({ upColor: "#808080", downColor: "#808080", wickUpColor: "#808080", wickDownColor: "#808080" }).setData(bars);
+      chart.setVisibleRange({ from: bars[0].time, to: bars[83].time });
+      await frame();
+      const before = pixels(el).img;
+      chart.setSessionHighlight({ calendar: "NSE", preColor: "rgba(0,0,255,0.5)", postColor: "rgba(255,0,0,0.5)" });
+      await frame();
+      const after = pixels(el).img;
+      const xPre = chart.timeToCoordinate(bars[1].time), xReg = chart.timeToCoordinate(bars[40].time);
+      const px = (img, x) => [...img.data.slice((20 * img.width + Math.round(x)) * 4, (20 * img.width + Math.round(x)) * 4 + 3)];
+      const s = { pre: px(after, xPre), preBefore: px(before, xPre), reg: px(after, xReg), regBefore: px(before, xReg) };
+      chart.remove();
+      return s;
+    })()`);
+    assert.ok(r.pre[2] > r.preBefore[2] + 40, `pre-open bars are shaded (${r.preBefore} → ${r.pre})`);
+    assert.deepEqual(r.reg, r.regBefore, "regular-session bars are not shaded");
   });
 });
 

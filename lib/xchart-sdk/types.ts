@@ -12,7 +12,8 @@ import type { ChartEvents } from "./events/types.ts";
 export type ChartTime = number;
 export type ChartTheme = "dark" | "light";
 export type ChartSeriesType = "candlestick" | "line" | "area" | "histogram" | "cloud";
-export type PriceScaleMode = "normal" | "logarithmic";
+/** "percentage" / "indexed" are relative to the first visible bar (indexed: first visible = 100). Display transforms only: data is never changed. */
+export type PriceScaleMode = "normal" | "logarithmic" | "percentage" | "indexed";
 
 export interface PriceScaleOptions {
   /** "logarithmic" applies to the main price pane. */
@@ -32,8 +33,12 @@ export interface ChartOptions {
   /** Draw the crosshair (default true). Crosshair events fire either way. */
   crosshair?: boolean;
   priceScale?: PriceScaleOptions;
-  /** Offset used for intraday time labels, in minutes east of UTC (default 330 = IST). */
+  /** Offset used for intraday time labels, in minutes east of UTC (default 330 = IST). Ignored when `timeZone` is set. */
   utcOffsetMinutes?: number;
+  /** v0.3: IANA time zone for time labels (daylight saving handled), e.g. "America/New_York". */
+  timeZone?: string;
+  /** v0.3: BCP 47 locale for time labels (default "en-GB"). */
+  locale?: string;
   /**
    * Keep the newest bar in view when live updates append bars (default false: the viewport stays
    * where the user left it). Only follows when the newest bar was already visible.
@@ -62,7 +67,8 @@ export interface CloudData extends TimeValue {
 export type SeriesData<T extends ChartSeriesType> = T extends "candlestick" ? CandlestickData : T extends "cloud" ? CloudData : SingleValueData;
 
 /** Where a series is drawn: the main price pane or its own pane below it. */
-export type SeriesPane = "main" | "separate";
+/** Where a series is drawn: the main pane, its own pane ("separate"), or a named pane shared with other series. */
+export type SeriesPane = "main" | "separate" | (string & {});
 
 export interface CandlestickSeriesOptions {
   upColor?: string;
@@ -75,6 +81,8 @@ export interface LineSeriesOptions {
   lineWidth?: number;
   lineStyle?: "solid" | "dashed" | "dotted";
   pane?: SeriesPane;
+  /** v0.3 (main pane): "right" (default, the main scale), "left", or an overlay scale id with its own range. */
+  priceScaleId?: string;
   /** Decimal places for this series' price label; omit for automatic. */
   precision?: number;
   /** Show the latest value on the price axis (default true). */
@@ -99,6 +107,7 @@ export interface HistogramSeriesOptions {
   opacity?: number;
   /** Default "separate" (own pane with a zero baseline). */
   pane?: SeriesPane;
+  priceScaleId?: string;
   precision?: number;
   title?: string;
 }
@@ -118,6 +127,7 @@ export interface CloudSeriesOptions {
   /** Shift the drawing by whole bars: positive = forward (projection space), negative = back. */
   displacement?: number;
   pane?: SeriesPane;
+  priceScaleId?: string;
   precision?: number;
   lastValueVisible?: boolean;
   title?: string;
@@ -149,6 +159,35 @@ export interface CrosshairEvent {
   /** v0.3: true when `time` lies after the last real candle (projected indicator space, not market data). */
   projected?: boolean;
 }
+
+export type PriceScaleSettings = {
+  /** Main ("right") scale only. */
+  mode?: "normal" | "logarithmic" | "percentage" | "indexed";
+  autoScale?: boolean;
+  /** Fractions of the pane kept free above and below the data on this scale. */
+  margins?: { top: number; bottom: number };
+  /** "left" scale: show its axis labels (default true). */
+  visible?: boolean;
+};
+export interface PriceScaleApi {
+  readonly id: string;
+  applyOptions(o: Partial<PriceScaleSettings>): void;
+  options(): PriceScaleSettings;
+  /** Series currently on this scale (main pane). */
+  seriesCount(): number;
+}
+export interface PaneApi {
+  readonly id: string;
+  /** Current height in px (null before the first layout without explicit sizes). */
+  height(): number | null;
+  setHeight(px: number): void;
+  collapse(): void;
+  expand(): void;
+  isCollapsed(): boolean;
+  /** Position among the panes below the main pane (1 = directly below). */
+  moveTo(index: number): void;
+}
+
 
 export type Unsubscribe = () => void;
 
@@ -214,6 +253,12 @@ export interface ChartApi {
   /** Canvas y (CSS px) of a price in a pane ("main" by default). */
   priceToCoordinate(price: number, paneId?: string): number | null;
   coordinateToPrice(y: number, paneId?: string): number | null;
+  priceScale(id?: string): PriceScaleApi;
+  panes(): PaneApi[];
+  pane(id: string): PaneApi | undefined;
+  setSessionHighlight(options: import("./create-chart.ts").SessionHighlightOptions | null): void;
+  setCrosshairPosition(time: ChartTime, price?: number | null): void;
+  clearCrosshairPosition(): void;
   addDrawing(spec: DrawingSpec): DrawingApi;
   getDrawing(id: string): DrawingApi | undefined;
   getDrawings(): DrawingApi[];

@@ -23,6 +23,12 @@ export type { DrawingApi, DrawingData, DrawingEvent, DrawingPoint, DrawingSpec, 
 export * as drawingGeometry from "./drawings/geometry.ts";
 export type { MarkerPosition, MarkerShape, PriceLineApi, PriceLineOptions, PriceLineSource, SeriesMarker } from "./decorations.ts";
 export { Emitter } from "./events/emitter.ts";
+// v0.3 — scales, panes, synchronisation, calendars
+export type { PaneApi, PriceScaleApi, PriceScaleSettings } from "./types.ts";
+export type { SessionHighlightOptions } from "./create-chart.ts";
+export { syncCharts, type SyncGroup, type SyncOptions } from "./sync.ts";
+export { CALENDARS, TradingCalendar, holidayList, offsetSeconds, zonedTime, type CalendarDef, type CalendarId, type HolidayProvider, type SessionDef, type SessionKind, type SessionState } from "./calendar/index.ts";
+export { isTimeZone } from "./validation.ts";
 export type { ChartEvents, ChartEventType, PointerPayload } from "./events/types.ts";
 export { XChartError, isCssColor, validateBar, validateBars, validateChartOptions, validateRange, validateSeriesOptions, validateUpdate, validateZoom } from "./validation.ts";
 export {

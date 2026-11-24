@@ -2,7 +2,7 @@
 // overlays, indicator panes, crosshair, zoom/pan (both axes), log/auto price scale and
 // editable drawings. Colours follow the site theme (CSS variables).
 import type { Bar } from "@/lib/ta/catalog";
-import { contrastText, fillPolys, futureTime, histTone } from "../../lib/chart/geometry.ts";
+import { contrastText, fillPolys, futureTime, histTone, withAlpha } from "../../lib/chart/geometry.ts";
 
 export type PlotStyle = "line" | "histogram" | "dots" | "area";
 /** Shading between a series and `other` (series or constant); colours are final CSS colours. */
@@ -22,8 +22,12 @@ export type PlotSeries = {
   hist?: { mode: "trend" | "candle" | "sign"; colors: string[] };
   /** Line series drawn as an area: gradient from the line down to `baseline` (or the pane bottom). */
   area?: { top: string; bottom: string; baseline?: number };
+  /** Main pane only: price scale id. Omitted / "right" = the main scale; any other id gets its own auto-fitted overlay scale ("left" also shows an axis on the left edge). */
+  scale?: string;
 };
-export type PaneSpec = { id: string; title: string; series: PlotSeries[]; levels?: number[]; bands?: { from: number; to: number; color: string }[]; range?: [number, number] };
+export type PaneSpec = { id: string; title: string; series: PlotSeries[]; levels?: number[]; bands?: { from: number; to: number; color: string }[]; range?: [number, number]; collapsed?: boolean };
+/** Overlay / main price-scale settings. `margins` are fractions of the pane kept free above and below the data. */
+export type ScaleSpec = { id: string; margins?: { top: number; bottom: number }; visible?: boolean };
 export type Marker = { index: number; text: string; color: string; position: "above" | "below" };
 export type ChartType = "candles" | "bars" | "line" | "area";
 
@@ -44,10 +48,23 @@ export type ChartData = {
   future?: number;
   /** Candle colours (default: theme up/down). */
   candle?: { up?: string; down?: string; wickUp?: string; wickDown?: string };
+  /** Price-scale settings by id ("right" = the main scale). */
+  scales?: ScaleSpec[];
+  /** Relative pane heights by pane id ("main" included). Omitted panes use the default split. */
+  paneSizes?: Record<string, number>;
 };
 
 /** Optional renderer settings (used by the XChart SDK; defaults match the terminal chart). */
-export type EngineOptions = { crosshair?: boolean; pricePrecision?: number; theme?: Partial<EngineTheme> | null; utcOffsetSeconds?: number };
+export type EngineOptions = {
+  crosshair?: boolean;
+  pricePrecision?: number;
+  theme?: Partial<EngineTheme> | null;
+  utcOffsetSeconds?: number;
+  /** Main-scale transform (ignored while the log scale is on): % change or indexed to 100 from the first visible bar. */
+  scaleMode?: "normal" | "percentage" | "indexed";
+  /** Custom time labels (e.g. an IANA time zone); return null to use the built-in format. */
+  timeFormatter?: ((t: number, intraday: boolean, long: boolean) => string | null) | null;
+};
 
 /** `price` is the main-pane price under the pointer (null over indicator panes). */
 /** Geometry and drawing helpers handed to custom layers (SDK drawings, markers, price lines, plugins). */
@@ -154,13 +171,23 @@ function fmtTime(t: number, intraday: boolean, long = false, offset = IST): stri
 }
 
 /** Pane layout. For the main pane with a log scale, min/max are stored in log space. */
-type PaneLayout = { top: number; height: number; min: number; max: number; log: boolean; spec?: PaneSpec };
+type PaneLayout = {
+  top: number; height: number; min: number; max: number; log: boolean; spec?: PaneSpec;
+  /** Percentage / indexed transform of the main scale relative to `base`. */
+  mode?: "pct" | "idx"; base?: number;
+  /** Overlay scales of the main pane (same rectangle, own range). */
+  scales?: Map<string, PaneLayout>;
+  collapsed?: boolean;
+};
+const COLLAPSED_H = 20;
+const MIN_PANE_H = 30;
 
 type Interaction =
   | { kind: "pan"; x: number; y: number; end: number; min: number; max: number; vertical: boolean }
   | { kind: "axis"; y: number; min: number; max: number }
   | { kind: "drawing"; index: number; part: "all" | "a" | "b"; start: Pt; orig: Drawing }
-  | { kind: "delegate" };
+  | { kind: "delegate" }
+  | { kind: "sep"; k: number; y: number; h: number[] };
 
 export class ChartEngine {
   private canvas: HTMLCanvasElement;
@@ -194,6 +221,8 @@ export class ChartEngine {
     onDblClick?: (p: PointerInfo) => void;
     /** Runs at the start of every redraw (coalesced work such as indicator recalculation). */
     onBeforeDraw?: () => void;
+    /** A pane separator drag finished: slot heights (px) by pane id. */
+    onPaneResize?: (sizes: Record<string, number>) => void;
   };
   private layers: EngineLayer[] = [];
   private delegate: InteractionDelegate | null = null;
@@ -203,7 +232,7 @@ export class ChartEngine {
   private lastLayoutKey = "";
 
   private container: HTMLElement;
-  private opts: { crosshair: boolean; pricePrecision?: number; theme: Partial<Theme> | null; utcOffsetSeconds?: number } = { crosshair: true, theme: null };
+  private opts: { crosshair: boolean; pricePrecision?: number; theme: Partial<Theme> | null; utcOffsetSeconds?: number; scaleMode?: EngineOptions["scaleMode"]; timeFormatter?: EngineOptions["timeFormatter"] } = { crosshair: true, theme: null };
 
   constructor(container: HTMLElement, cb: ChartEngine["cb"] = {}) {
     this.container = container;
@@ -303,6 +332,13 @@ export class ChartEngine {
     if (o.crosshair !== undefined) this.opts.crosshair = o.crosshair;
     if ("pricePrecision" in o) this.opts.pricePrecision = o.pricePrecision;
     if (o.utcOffsetSeconds !== undefined) this.opts.utcOffsetSeconds = o.utcOffsetSeconds;
+    if (o.scaleMode !== undefined && o.scaleMode !== this.opts.scaleMode) {
+      this.opts.scaleMode = o.scaleMode;
+      // Manual ranges are stored in transformed space: re-fit after a mode change.
+      this.scale.auto = true;
+      this.emitScale();
+    }
+    if ("timeFormatter" in o) this.opts.timeFormatter = o.timeFormatter ?? null;
     if ("theme" in o) {
       this.opts.theme = o.theme ?? null;
       this.theme = { ...readTheme(), ...(this.opts.theme ?? {}) };
@@ -481,14 +517,34 @@ export class ChartEngine {
     return lo + (t - b[lo].t) / (b[hi].t - b[lo].t || 1);
   }
   private tf(p: number, L: PaneLayout) {
-    return L.log ? Math.log(Math.max(p, 1e-9)) : p;
+    if (L.log) return Math.log(Math.max(p, 1e-9));
+    if (L.mode === "pct") return (p / L.base! - 1) * 100;
+    if (L.mode === "idx") return (p / L.base!) * 100;
+    return p;
   }
   private yOf(p: number, L: PaneLayout) {
     return L.top + (1 - (this.tf(p, L) - L.min) / (L.max - L.min || 1)) * L.height;
   }
   private priceAt(y: number, L: PaneLayout) {
     const v = L.min + (1 - (y - L.top) / L.height) * (L.max - L.min);
-    return L.log ? Math.exp(v) : v;
+    if (L.log) return Math.exp(v);
+    if (L.mode === "pct") return (v / 100 + 1) * L.base!;
+    if (L.mode === "idx") return (v / 100) * L.base!;
+    return v;
+  }
+  /** Axis text of a main-pane price: the transformed value in percentage / indexed mode. */
+  private axisValue(p: number, L: PaneLayout) {
+    if (!L.mode) return this.fmtAxis(p);
+    const v = this.tf(p, L);
+    return L.mode === "pct" ? `${v >= 0 ? "+" : ""}${v.toFixed(2)}%` : v.toFixed(2);
+  }
+  private layoutFor(s: PlotSeries, L: PaneLayout) {
+    return s.scale && s.scale !== "right" ? L.scales?.get(s.scale) ?? L : L;
+  }
+  /** Index k (≥ 1) of the pane whose top separator is within 4 px of y, or -1. */
+  private separatorAt(y: number) {
+    for (let k = 1; k < this.layouts.length; k++) if (Math.abs(y - this.layouts[k].top) <= 4) return k;
+    return -1;
   }
   private paneAt(y: number) {
     return this.layouts.findIndex((l) => y >= l.top && y <= l.top + l.height);
@@ -574,6 +630,22 @@ export class ChartEngine {
       this.invalidate();
       return;
     }
+    if (a?.kind === "sep") {
+      const h = [...a.h];
+      const dy = p.y - a.y;
+      const k = a.k;
+      // Resize the separator's two neighbours; collapsed panes are skipped (their strip is fixed).
+      let up = k - 1;
+      while (up > 0 && this.layouts[up].collapsed) up--;
+      const total = a.h[up] + a.h[k];
+      h[up] = Math.max(MIN_PANE_H, Math.min(total - MIN_PANE_H, a.h[up] + dy));
+      h[k] = total - h[up];
+      const sizes: Record<string, number> = {};
+      this.layouts.forEach((L, i) => (sizes[i === 0 ? "main" : L.spec!.id] = h[i]));
+      this.data = { ...this.data, paneSizes: sizes };
+      this.invalidate();
+      return;
+    }
     if (a?.kind === "pan") {
       this.endIndex = a.end + (a.x - p.x) / this.spacing;
       this.clampView();
@@ -614,7 +686,8 @@ export class ChartEngine {
     } else if (!a && this.tool === "none") {
       const hit = p.x < this.plotW() ? this.hitDrawing(p.x, p.y) : null;
       const custom = p.x < this.plotW() && this.delegate?.hover ? this.delegate.hover(this.pointer(e, p.x, p.y)) : null;
-      this.canvas.style.cursor = p.x >= this.plotW() ? "ns-resize" : custom ?? (hit ? (hit.part === "all" ? "move" : "pointer") : "crosshair");
+      const sep = p.x < this.plotW() && this.separatorAt(p.y) > 0 && !this.layouts[this.separatorAt(p.y)].collapsed;
+      this.canvas.style.cursor = sep ? "row-resize" : p.x >= this.plotW() ? "ns-resize" : custom ?? (hit ? (hit.part === "all" ? "move" : "pointer") : "crosshair");
     }
     this.invalidate();
   };
@@ -632,6 +705,14 @@ export class ChartEngine {
         this.emitScale();
       }
       this.act = { kind: "axis", y: p.y, min: this.scale.min, max: this.scale.max };
+      this.canvas.setPointerCapture?.(e.pointerId);
+      return;
+    }
+
+    // Pane separator: drag to resize the neighbouring panes.
+    const sep = p.x < this.plotW() ? this.separatorAt(p.y) : -1;
+    if (sep > 0 && !this.layouts[sep].collapsed) {
+      this.act = { kind: "sep", k: sep, y: p.y, h: this.layouts.map((L, i) => (i === 0 ? L.height : L.height + PANE_GAP)) };
       this.canvas.setPointerCapture?.(e.pointerId);
       return;
     }
@@ -697,6 +778,7 @@ export class ChartEngine {
     }
     this.downAt = null;
     if (this.act?.kind === "drawing") this.cb.onDrawingsChange?.(this.drawings);
+    if (this.act?.kind === "sep" && this.data.paneSizes) this.cb.onPaneResize?.({ ...this.data.paneSizes });
     this.act = null;
     this.canvas.style.cursor = "crosshair";
   };
@@ -787,8 +869,10 @@ export class ChartEngine {
     const b = this.data.bars;
     if (i < 0 || !b.length) return null;
     const off = this.opts.utcOffsetSeconds ?? IST;
-    if (i < b.length) return fmtTime(b[i].t, !!this.data.intraday, long, off);
-    return fmtTime(futureTime(b.slice(-60).map((x) => x.t), i - (b.length - 1), !!this.data.intraday), !!this.data.intraday, long, off);
+    const intra = !!this.data.intraday;
+    const t = i < b.length ? b[i].t : futureTime(b.slice(-60).map((x) => x.t), i - (b.length - 1), intra);
+    const custom = this.opts.timeFormatter?.(t, intra, long);
+    return custom ?? fmtTime(t, intra, long, off);
   }
 
   private invalidate() {
@@ -801,18 +885,39 @@ export class ChartEngine {
   private computeLayouts(): PaneLayout[] {
     const panes = this.data.panes;
     const avail = this.h - TIME_H;
-    const paneH = panes.length ? Math.min(avail * 0.22, (avail * 0.5) / panes.length) : 0;
-    const mainH = avail - paneH * panes.length;
     const [from, to] = this.visibleRange();
     const out: PaneLayout[] = [];
     const log = this.scale.log;
-    const T = (v: number) => (log ? Math.log(Math.max(v, 1e-9)) : v);
+    const bars = this.data.bars;
+    const lineOnly = this.data.type === "line" || this.data.type === "area";
+    const onMain = (s: PlotSeries) => !s.scale || s.scale === "right";
+
+    // Percentage / indexed: base = first visible close (or the first visible main-scale value).
+    let mode: PaneLayout["mode"];
+    let base = NaN;
+    const want = this.opts.scaleMode;
+    if (!log && (want === "percentage" || want === "indexed")) {
+      for (let i = from; i <= to && !Number.isFinite(base); i++) {
+        if (bars[i] && Number.isFinite(bars[i].c)) base = bars[i].c;
+        else for (const s of this.data.overlays) if (onMain(s) && Number.isFinite(s.values[i])) {
+          base = s.values[i];
+          break;
+        }
+      }
+      if (Number.isFinite(base) && base !== 0) mode = want === "percentage" ? "pct" : "idx";
+    }
+    const T = (v: number) => (log ? Math.log(Math.max(v, 1e-9)) : mode === "pct" ? (v / base - 1) * 100 : mode === "idx" ? (v / base) * 100 : v);
+    const margins = (id: string, min: number, max: number): [number, number] => {
+      const m = this.data.scales?.find((x) => x.id === id)?.margins;
+      if (!m) return [min, max];
+      const free = Math.max(0.05, 1 - m.top - m.bottom);
+      const r = max - min;
+      return [min - (r * m.bottom) / free, max + (r * m.top) / free];
+    };
 
     if (this.scale.auto) {
       let min = Infinity;
       let max = -Infinity;
-      const bars = this.data.bars;
-      const lineOnly = this.data.type === "line" || this.data.type === "area";
       for (let i = from; i <= to; i++) {
         const b = bars[i];
         if (!b) continue;
@@ -822,6 +927,7 @@ export class ChartEngine {
           max = Math.max(max, T(lineOnly ? b.c : b.h));
         }
         for (const s of this.data.overlays) {
+          if (!onMain(s)) continue;
           const v = s.values[i];
           if (Number.isFinite(v) && (!log || v > 0)) {
             min = Math.min(min, T(v));
@@ -832,6 +938,7 @@ export class ChartEngine {
       // Overlays that continue past the last bar (projected cloud) stay in view too.
       for (let i = Math.max(to + 1, bars.length); i <= Math.ceil(this.endIndex); i++) {
         for (const s of this.data.overlays) {
+          if (!onMain(s)) continue;
           const v = s.values[i];
           if (Number.isFinite(v) && (!log || v > 0)) {
             min = Math.min(min, T(v));
@@ -844,13 +951,60 @@ export class ChartEngine {
         max = 1;
       }
       const pad = (max - min || Math.abs(max) * 0.01 || 1) * 0.08;
-      this.scale.min = min - pad;
-      this.scale.max = max + pad;
+      [this.scale.min, this.scale.max] = margins("right", min - pad, max + pad);
     }
-    out.push({ top: 0, height: mainH, min: this.scale.min, max: this.scale.max, log });
+
+    // Slot heights: explicit sizes (SDK / separator drag) or the default split; collapsed panes keep a title strip.
+    const sizes = this.data.paneSizes;
+    const ids = ["main", ...panes.map((p) => p.id)];
+    const slots: number[] = new Array(ids.length).fill(0);
+    const collapsedTotal = panes.filter((p) => p.collapsed).length * COLLAPSED_H;
+    if (sizes && ids.some((id) => sizes[id] !== undefined)) {
+      const defW = sizes.main !== undefined ? Math.max(...Object.values(sizes)) / 3 : 1;
+      const w = ids.map((id, k) => (k > 0 && panes[k - 1].collapsed ? 0 : Math.max(0.0001, sizes[id] ?? (k === 0 ? defW * 3 : defW))));
+      const sum = w.reduce((a, b) => a + b, 0);
+      const free = Math.max(0, avail - collapsedTotal);
+      ids.forEach((_, k) => (slots[k] = k > 0 && panes[k - 1].collapsed ? COLLAPSED_H : (free * w[k]) / sum));
+    } else {
+      const open = panes.filter((p) => !p.collapsed).length;
+      const paneH = open ? Math.min(avail * 0.22, (avail * 0.5) / open) : 0;
+      panes.forEach((p, k) => (slots[k + 1] = p.collapsed ? COLLAPSED_H : paneH));
+      slots[0] = avail - slots.slice(1).reduce((a, b) => a + b, 0);
+    }
+    const mainH = Math.max(MIN_PANE_H, slots[0]);
+
+    const main: PaneLayout = { top: 0, height: mainH, min: this.scale.min, max: this.scale.max, log, mode, base: mode ? base : undefined };
+    // Overlay price scales: own auto-fitted range in the main pane's rectangle.
+    const groups = new Map<string, PlotSeries[]>();
+    for (const s of this.data.overlays) if (!onMain(s)) groups.set(s.scale!, [...(groups.get(s.scale!) ?? []), s]);
+    if (groups.size) {
+      main.scales = new Map();
+      for (const [id, list] of groups) {
+        let min = Infinity;
+        let max = -Infinity;
+        const hi = Math.max(to, Math.ceil(this.endIndex));
+        for (const s of list) {
+          for (let i = from; i <= hi; i++) {
+            const v = s.values[i];
+            if (!Number.isFinite(v)) continue;
+            min = Math.min(min, v, s.style === "histogram" ? 0 : v);
+            max = Math.max(max, v, s.style === "histogram" ? 0 : v);
+          }
+        }
+        if (!Number.isFinite(min)) {
+          min = 0;
+          max = 1;
+        }
+        const pad = (max - min || Math.abs(max) * 0.01 || 1) * 0.08;
+        const [a, b] = margins(id, min - pad, max + pad);
+        main.scales.set(id, { top: 0, height: mainH, min: a, max: b, log: false });
+      }
+    }
+    out.push(main);
 
     let top = mainH;
-    for (const spec of panes) {
+    panes.forEach((spec, k) => {
+      const slot = slots[k + 1];
       let pmin = Infinity;
       let pmax = -Infinity;
       if (spec.range) [pmin, pmax] = spec.range;
@@ -876,9 +1030,9 @@ export class ChartEngine {
         pmin -= pp;
         pmax += pp;
       }
-      out.push({ top: top + PANE_GAP, height: paneH - PANE_GAP, min: pmin, max: pmax, log: false, spec });
-      top += paneH;
-    }
+      out.push({ top: top + PANE_GAP, height: Math.max(1, slot - PANE_GAP), min: pmin, max: pmax, log: false, spec, collapsed: spec.collapsed });
+      top += slot;
+    });
     return out;
   }
 
@@ -949,6 +1103,20 @@ export class ChartEngine {
       ctx.beginPath();
       ctx.rect(0, L.top, pw, L.height);
       ctx.clip();
+      if (L.collapsed) {
+        ctx.restore();
+        ctx.strokeStyle = th.axis;
+        ctx.beginPath();
+        ctx.moveTo(0, L.top - 0.5);
+        ctx.lineTo(this.w, L.top - 0.5);
+        ctx.stroke();
+        ctx.fillStyle = th.text;
+        ctx.font = "10px ui-sans-serif, system-ui, sans-serif";
+        ctx.textAlign = "left";
+        ctx.fillText(`▸ ${L.spec?.title ?? ""}`, 6, L.top + L.height / 2);
+        ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
+        return;
+      }
       const ticks = this.ticks(L);
       ctx.strokeStyle = th.grid;
       for (const t of ticks) {
@@ -962,9 +1130,9 @@ export class ChartEngine {
       const paneId = k === 0 ? "main" : L.spec!.id;
       if (k === 0) {
         this.drawLayers(L, paneId, "below", from, to, tags);
-        for (const s of series) for (const f of s.fills ?? []) this.drawFill(s, f, L, from);
+        for (const s of series) for (const f of s.fills ?? []) this.drawFill(s, f, this.layoutFor(s, L), from);
         this.drawMain(L, from, to);
-        for (const s of series) this.drawSeries(s, L, from, to);
+        for (const s of series) this.drawSeries(s, this.layoutFor(s, L), from, to);
         this.drawMarkers(L, from, to);
         this.drawDrawings(L);
         this.drawLayers(L, paneId, "above", from, to, tags);
@@ -1000,14 +1168,19 @@ export class ChartEngine {
         ctx.stroke();
       }
       this.drawPriceAxis(L, ticks);
+      const left = L.scales?.get("left");
+      if (left && this.data.scales?.find((x) => x.id === "left")?.visible !== false) this.drawLeftAxis(left);
       // Last-value labels on the price scale for series that ask for it.
       for (const s of series) {
         if (!s.scaleLabel || s.style === "histogram") continue;
         let j = Math.min(to, s.values.length - 1);
         while (j >= 0 && !Number.isFinite(s.values[j])) j--;
         if (j < 0) continue;
+        const SL = this.layoutFor(s, L);
+        // Overlay scales other than the main one have no right-axis labels (their values are on another range).
+        if (SL !== L) continue;
         const y = this.yOf(s.values[j], L);
-        if (y >= L.top && y <= L.top + L.height) tags.push({ y, text: fmtValue(s.values[j], s.precision), color: s.color });
+        if (y >= L.top && y <= L.top + L.height) tags.push({ y, text: k === 0 && L.mode ? this.axisValue(s.values[j], L) : fmtValue(s.values[j], s.precision), color: s.color });
       }
     });
 
@@ -1027,7 +1200,7 @@ export class ChartEngine {
         ctx.lineTo(pw, Math.round(y) + 0.5);
         ctx.stroke();
         ctx.setLineDash([]);
-        tags.push({ y, text: this.fmtAxis(last.c), color: col });
+        tags.push({ y, text: this.axisValue(last.c, main), color: col });
       }
     }
     // Keep overlapping tags readable: later (more important) tags win; the last price is drawn last.
@@ -1038,7 +1211,8 @@ export class ChartEngine {
       ctx.font = "10px ui-sans-serif, system-ui, sans-serif";
       ctx.textAlign = "right";
       ctx.fillStyle = th.text;
-      const badge = `${this.scale.log ? "LOG" : ""}${this.scale.log && !this.scale.auto ? " · " : ""}${this.scale.auto ? "" : "MANUAL"}`;
+      const kind = this.scale.log ? "LOG" : main.mode === "pct" ? "%" : main.mode === "idx" ? "IDX 100" : "";
+      const badge = [kind, this.scale.auto ? "" : "MANUAL"].filter(Boolean).join(" · ");
       if (badge) ctx.fillText(badge, this.w - 6, main.top + main.height - 8);
       ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
     }
@@ -1086,7 +1260,9 @@ export class ChartEngine {
     if (!L.log) {
       const step = niceStep(L.max - L.min, target);
       const out: { v: number; step: number }[] = [];
-      for (let v = Math.ceil(L.min / step) * step; v <= L.max; v += step) out.push({ v, step });
+      // Ticks are nice numbers in (transformed) axis space; `v` is returned as a price.
+      const inv = (u: number) => (L.mode === "pct" ? (u / 100 + 1) * L.base! : L.mode === "idx" ? (u / 100) * L.base! : u);
+      for (let u = Math.ceil(L.min / step) * step; u <= L.max; u += step) out.push({ v: inv(u), step });
       return out;
     }
     const lo = Math.exp(L.min);
@@ -1104,6 +1280,24 @@ export class ChartEngine {
     return out;
   }
 
+  /** Labels of the "left" overlay scale, drawn inside the plot's left edge. */
+  private drawLeftAxis(L: PaneLayout) {
+    const { ctx } = this;
+    ctx.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
+    ctx.textAlign = "left";
+    for (const t of this.ticks(L)) {
+      const y = this.yOf(t.v, L);
+      if (y < L.top + 6 || y > L.top + L.height - 6) continue;
+      const text = fmtPrice(t.v, t.step);
+      const w = ctx.measureText(text).width + 6;
+      ctx.fillStyle = withAlpha(this.theme.bg, 0.75);
+      ctx.fillRect(0, y - 7, w, 14);
+      ctx.fillStyle = this.theme.text;
+      ctx.fillText(text, 3, y);
+    }
+    ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
+  }
+
   private drawPriceAxis(L: PaneLayout, ticks: { v: number; step: number }[]) {
     const { ctx } = this;
     ctx.fillStyle = this.theme.text;
@@ -1118,7 +1312,8 @@ export class ChartEngine {
     for (const t of ticks) {
       const y = this.yOf(t.v, L);
       if (y < L.top + 6 || y > L.top + L.height - 6 || taken.some((u) => Math.abs(u - y) < 12)) continue;
-      ctx.fillText(L === this.layouts[0] && this.opts.pricePrecision !== undefined ? this.fmtAxis(t.v) : fmtPrice(t.v, t.step), this.plotW() + 6, y);
+      const text = L.mode ? (L.mode === "pct" ? `${fmtPrice(this.tf(t.v, L), t.step)}%` : fmtPrice(this.tf(t.v, L), t.step)) : L === this.layouts[0] && this.opts.pricePrecision !== undefined ? this.fmtAxis(t.v) : fmtPrice(t.v, t.step);
+      ctx.fillText(text, this.plotW() + 6, y);
     }
   }
 
@@ -1472,7 +1667,8 @@ export class ChartEngine {
     const L = this.layouts[this.paneAt(m.y)];
     if (L) {
       const span = L.log ? Math.exp(L.max) - Math.exp(L.min) : L.max - L.min;
-      this.axisTag(m.y, L === this.layouts[0] ? (this.opts.pricePrecision !== undefined ? this.fmtAxis(this.priceAt(m.y, L)) : fmtPrice(this.priceAt(m.y, L), span / 50)) : fmtPrice(this.priceAt(m.y, L), span / 50), this.theme.tag, this.theme.tagText);
+      const p = this.priceAt(m.y, L);
+      this.axisTag(m.y, L === this.layouts[0] ? (L.mode ? this.axisValue(p, L) : this.opts.pricePrecision !== undefined ? this.fmtAxis(p) : fmtPrice(p, span / 50)) : fmtPrice(p, span / 50), this.theme.tag, this.theme.tagText);
     }
     const label = this.timeLabelAt(i, true) ?? "";
     ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";

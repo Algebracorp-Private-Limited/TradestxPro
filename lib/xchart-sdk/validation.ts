@@ -98,12 +98,26 @@ export function validateSeriesType(type: unknown): asserts type is ChartSeriesTy
   if (!SERIES_TYPES.includes(type as ChartSeriesType)) throw new XChartError("INVALID_SERIES_TYPE", `Unknown series type ${String(type)}; expected one of ${SERIES_TYPES.join(", ")}`);
 }
 
+/** Pane and price-scale ids. "xs-" and "xind-" prefixes are reserved for generated panes. */
+export const PANE_ID = /^(?!xs-|xind-)[A-Za-z0-9_-]{1,32}$/;
+
+/** True when `tz` is an IANA time zone this runtime knows. */
+export function isTimeZone(tz: unknown): tz is string {
+  if (typeof tz !== "string" || !tz) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const ALLOWED_OPTIONS: Record<ChartSeriesType, string[]> = {
   candlestick: ["upColor", "downColor", "wickUpColor", "wickDownColor"],
-  line: ["color", "lineWidth", "lineStyle", "pane", "precision", "lastValueVisible", "title"],
-  area: ["color", "lineWidth", "lineStyle", "pane", "precision", "lastValueVisible", "title", "topColor", "bottomColor", "baseline"],
-  histogram: ["color", "upColor", "downColor", "colorMode", "opacity", "pane", "precision", "title"],
-  cloud: ["upColor", "downColor", "opacity", "upperColor", "lowerColor", "lineVisible", "lineWidth", "lineStyle", "displacement", "pane", "precision", "lastValueVisible", "title"],
+  line: ["color", "lineWidth", "lineStyle", "pane", "priceScaleId", "precision", "lastValueVisible", "title"],
+  area: ["color", "lineWidth", "lineStyle", "pane", "priceScaleId", "precision", "lastValueVisible", "title", "topColor", "bottomColor", "baseline"],
+  histogram: ["color", "upColor", "downColor", "colorMode", "opacity", "pane", "priceScaleId", "precision", "title"],
+  cloud: ["upColor", "downColor", "opacity", "upperColor", "lowerColor", "lineVisible", "lineWidth", "lineStyle", "displacement", "pane", "priceScaleId", "precision", "lastValueVisible", "title"],
 };
 
 /** Checks option values and combinations that the renderer cannot honour. */
@@ -130,7 +144,12 @@ export function validateSeriesOptions<T extends ChartSeriesType>(type: T, o: Par
   if (any.precision !== undefined && !(Number.isInteger(any.precision) && (any.precision as number) >= 0 && (any.precision as number) <= 10)) {
     throw new XChartError("INVALID_OPTION", "precision must be an integer from 0 to 10");
   }
-  if (any.pane !== undefined && any.pane !== "main" && any.pane !== "separate") throw new XChartError("INVALID_OPTION", 'pane must be "main" or "separate"');
+  if (any.pane !== undefined && !(typeof any.pane === "string" && (any.pane === "main" || any.pane === "separate" || PANE_ID.test(any.pane)))) {
+    throw new XChartError("INVALID_OPTION", 'pane must be "main", "separate" or a pane id (1–32 letters, digits, _ or -) shared by several series');
+  }
+  if (any.priceScaleId !== undefined && !(typeof any.priceScaleId === "string" && PANE_ID.test(any.priceScaleId))) {
+    throw new XChartError("INVALID_OPTION", 'priceScaleId must be "right", "left" or an overlay scale id (1–32 letters, digits, _ or -)');
+  }
   if (any.lastValueVisible !== undefined && typeof any.lastValueVisible !== "boolean") throw new XChartError("INVALID_OPTION", "lastValueVisible must be a boolean");
   if (any.title !== undefined && (typeof any.title !== "string" || any.title.length > 200)) throw new XChartError("INVALID_OPTION", "title must be a string of at most 200 characters");
   if (any.baseline !== undefined) finite(any.baseline, "baseline");
@@ -168,10 +187,19 @@ export function validateChartOptions(o: ChartOptions): void {
   if (o.utcOffsetMinutes !== undefined && !(Number.isInteger(o.utcOffsetMinutes) && o.utcOffsetMinutes >= -720 && o.utcOffsetMinutes <= 840)) {
     throw new XChartError("INVALID_OPTION", "utcOffsetMinutes must be an integer from -720 to 840");
   }
+  if (o.timeZone !== undefined && !isTimeZone(o.timeZone)) throw new XChartError("INVALID_OPTION", `timeZone must be an IANA time zone (e.g. "Asia/Kolkata"), got ${String(o.timeZone)}`);
+  if (o.locale !== undefined) {
+    try {
+      if (typeof o.locale !== "string") throw new Error();
+      new Intl.DateTimeFormat(o.locale);
+    } catch {
+      throw new XChartError("INVALID_OPTION", `locale must be a BCP 47 language tag, got ${String(o.locale)}`);
+    }
+  }
   const ps = o.priceScale;
   if (ps !== undefined) {
     if (!ps || typeof ps !== "object") throw new XChartError("INVALID_OPTION", "priceScale must be an object");
-    if (ps.mode !== undefined && ps.mode !== "normal" && ps.mode !== "logarithmic") throw new XChartError("INVALID_OPTION", 'priceScale.mode must be "normal" or "logarithmic"');
+    if (ps.mode !== undefined && !["normal", "logarithmic", "percentage", "indexed"].includes(ps.mode)) throw new XChartError("INVALID_OPTION", 'priceScale.mode must be "normal", "logarithmic", "percentage" or "indexed"');
     if (ps.autoScale !== undefined && typeof ps.autoScale !== "boolean") throw new XChartError("INVALID_OPTION", "priceScale.autoScale must be a boolean");
     if (ps.precision !== undefined && !(Number.isInteger(ps.precision) && ps.precision >= 0 && ps.precision <= 10)) {
       throw new XChartError("INVALID_OPTION", "priceScale.precision must be an integer from 0 to 10");

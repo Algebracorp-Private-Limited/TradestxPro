@@ -4,7 +4,7 @@
  *
  * Browser-only: construct it from client code (createChart guards against SSR).
  */
-import { ChartEngine, type ChartData, type EngineLayer, type EngineTheme, type InteractionDelegate, type PaneBox, type PaneSpec, type PlotSeries, type PointerInfo } from "../../components/chart/engine.ts";
+import { ChartEngine, type ChartData, type ScaleSpec, type EngineLayer, type EngineTheme, type InteractionDelegate, type PaneBox, type PaneSpec, type PlotSeries, type PointerInfo } from "../../components/chart/engine.ts";
 import { withAlpha } from "../chart/geometry.ts";
 import type { AxisBar, Change } from "./store.ts";
 import type {
@@ -32,13 +32,26 @@ export type RenderModel = {
   extraPanes?: PaneSpec[];
   /** Slots past the last bar that projected values extend into. */
   future?: number;
+  /** v0.3: price-scale settings, pane slot heights (px), collapsed panes and pane order. */
+  scales?: ScaleSpec[];
+  paneSizes?: Record<string, number>;
+  collapsed?: string[];
+  paneOrder?: string[];
 };
+
+/** Engine pane id of a series: "main", its own "xs-<id>" pane, or a shared named pane. */
+export function seriesPaneId(id: number, type: ChartSeriesType, o: { pane?: string }): string {
+  if (type === "candlestick") return "main";
+  const pane = o.pane ?? (type === "histogram" ? "separate" : "main");
+  return pane === "main" ? "main" : pane === "separate" ? `xs-${id}` : pane;
+}
 
 export type AdapterEvents = {
   click?(p: PointerInfo): void;
   dblClick?(p: PointerInfo): void;
   view?(v: { from: number; to: number; spacing: number }): void;
   beforeDraw?(): void;
+  paneResize?(sizes: Record<string, number>): void;
 };
 
 /** Rendering backend used by the SDK core (the Canvas adapter in production, a fake in unit tests). */
@@ -121,6 +134,7 @@ export class CanvasAdapter implements RenderAdapter {
         onDblClick: (p) => this.events.dblClick?.(p),
         onView: (v) => this.events.view?.(v),
         onBeforeDraw: () => this.events.beforeDraw?.(),
+        onPaneResize: (sz) => this.events.paneResize?.(sz),
       });
       this.setOptions(options);
     } catch (e) {
@@ -170,6 +184,8 @@ export class CanvasAdapter implements RenderAdapter {
       crosshair: o.crosshair ?? true,
       pricePrecision: o.priceScale?.precision,
       utcOffsetSeconds: o.utcOffsetMinutes !== undefined ? o.utcOffsetMinutes * 60 : undefined,
+      scaleMode: o.priceScale?.mode === "percentage" || o.priceScale?.mode === "indexed" ? o.priceScale.mode : "normal",
+      timeFormatter: o.timeZone || o.locale ? timeFormatter(o.timeZone, o.locale, (o.utcOffsetMinutes ?? 330) * 60) : null,
     });
     if (o.priceScale?.mode) this.engine.setScale({ log: o.priceScale.mode === "logarithmic" });
     if (o.priceScale?.autoScale !== undefined) this.engine.setScale({ auto: o.priceScale.autoScale });
@@ -197,12 +213,29 @@ export class CanvasAdapter implements RenderAdapter {
     for (const s of m.series) {
       const ps = s.type === "cloud" ? this.cloud(s.values, s.values2 ?? [], s.options as CloudSeriesOptions) : [this.plot(s.type, s.values, s.options, th, m.candle !== null)];
       if (s.type === "cloud") for (const p of ps) future = Math.max(future, p.values.length - m.bars.length);
-      const pane = (s.options as LineSeriesOptions | HistogramSeriesOptions).pane ?? (s.type === "histogram" ? "separate" : "main");
-      if (pane === "main") overlays.push(...ps);
-      else panes.push({ id: `xs-${s.id}`, title: ps[0].label, series: ps, levels: s.type === "histogram" ? [0] : undefined });
+      const paneId = seriesPaneId(s.id, s.type, s.options as { pane?: string });
+      if (paneId === "main") {
+        const scale = (s.options as { priceScaleId?: string }).priceScaleId;
+        overlays.push(...(scale && scale !== "right" ? ps.map((p) => ({ ...p, scale })) : ps));
+      } else {
+        const shared = panes.find((p) => p.id === paneId);
+        if (shared) {
+          shared.series.push(...ps);
+          shared.title = `${shared.title} · ${ps[0].label}`;
+          if (s.type === "histogram" && !shared.levels) shared.levels = [0];
+        } else panes.push({ id: paneId, title: ps[0].label, series: ps, levels: s.type === "histogram" ? [0] : undefined });
+      }
     }
     overlays.push(...(m.extraOverlays ?? []));
     panes.push(...(m.extraPanes ?? []));
+    if (m.collapsed?.length) for (const p of panes) if (m.collapsed.includes(p.id)) p.collapsed = true;
+    if (m.paneOrder?.length) {
+      const rank = (id: string) => {
+        const k = m.paneOrder!.indexOf(id);
+        return k < 0 ? Number.MAX_SAFE_INTEGER : k;
+      };
+      panes.sort((a, b) => rank(a.id) - rank(b.id));
+    }
     const c = m.candle;
     return {
       bars: m.bars,
@@ -211,6 +244,8 @@ export class CanvasAdapter implements RenderAdapter {
       panes,
       intraday: m.intraday,
       future,
+      scales: m.scales,
+      paneSizes: m.paneSizes,
       candle: c ? { up: c.upColor, down: c.downColor, wickUp: c.wickUpColor ?? c.upColor, wickDown: c.wickDownColor ?? c.downColor } : undefined,
     };
   }
@@ -362,4 +397,22 @@ export class CanvasAdapter implements RenderAdapter {
       this.events = {};
     }
   }
+}
+
+/** Time labels in an IANA time zone / locale. Daily bars are calendar dates (00:00 UTC), so they are formatted in UTC. */
+export function timeFormatter(timeZone?: string, locale = "en-GB", fixedOffsetSeconds = 19800) {
+  // Without a zone, intraday labels use the fixed offset (formatted as UTC after shifting).
+  const tz = timeZone ?? "UTC";
+  const shift = timeZone ? 0 : fixedOffsetSeconds;
+  const f = {
+    hm: new Intl.DateTimeFormat(locale, { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }),
+    dhm: new Intl.DateTimeFormat(locale, { timeZone: tz, day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }),
+    d: new Intl.DateTimeFormat(locale, { timeZone: "UTC", day: "numeric", month: "short" }),
+    dy: new Intl.DateTimeFormat(locale, { timeZone: "UTC", day: "numeric", month: "short", year: "numeric" }),
+  };
+  return (t: number, intraday: boolean, long: boolean): string => {
+    const d = new Date(t * 1000);
+    if (!intraday) return (long ? f.dy : f.d).format(d);
+    return (long ? f.dhm : f.hm).format(new Date((t + shift) * 1000));
+  };
 }
