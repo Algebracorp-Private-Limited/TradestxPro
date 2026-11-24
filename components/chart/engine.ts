@@ -186,12 +186,21 @@ export class ChartEngine {
     this.resize();
   }
 
+  private destroyed = false;
+
   destroy() {
+    if (this.destroyed) return;
+    this.destroyed = true;
     cancelAnimationFrame(this.frame);
     this.ro.disconnect();
     window.removeEventListener("pointerup", this.onUp);
     window.removeEventListener("txp-theme", this.onTheme);
     this.canvas.remove();
+    // Drop references to chart data and callbacks so a destroyed engine holds nothing alive.
+    this.data = { bars: [], type: "candles", overlays: [], panes: [] };
+    this.drawings = [];
+    this.layouts = [];
+    this.cb = {};
   }
 
   setCallbacks(cb: ChartEngine["cb"]) {
@@ -627,6 +636,7 @@ export class ChartEngine {
   }
 
   private invalidate() {
+    if (this.destroyed) return;
     cancelAnimationFrame(this.frame);
     this.frame = requestAnimationFrame(() => this.draw());
   }

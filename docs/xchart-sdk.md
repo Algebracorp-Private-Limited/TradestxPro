@@ -1,7 +1,29 @@
-# XChart SDK (v0.2)
+# XChart SDK (v0.2.1)
 
 A TypeScript API for building financial charts on top of TradestXPro's own canvas chart engine.
-Intended to be published later as `@tradestxpro/xchart`; today it lives in `lib/xchart-sdk/`.
+It is **not published as an npm package**. It lives in `lib/xchart-sdk/` in this repository and is
+structured so it can later be published as `@tradestxpro/xchart`.
+
+## What changed in v0.2.1
+
+* **Market-data integrity:** source OHLC is never repaired or clamped, timestamps are never
+  rounded, zero volume is kept, and no record is dropped silently. Strict mode (default) rejects a
+  dataset with any invalid record; tolerant mode (opt-in) quarantines bad records and returns a
+  validation report. See [Market data](#market-data-validation).
+* **Validation:** chart options are validated at creation and in `applyOptions` (dimensions,
+  theme, price scale, UTC offset, booleans), series options are checked for real CSS colours,
+  widths, opacity, line styles, colour modes, unknown keys and combinations. Every failure is an
+  `XChartError` with a code, raised before anything changes.
+* **Lifecycle:** removed series and destroyed charts throw `SERIES_REMOVED` / `CHART_REMOVED`
+  consistently; repeated removal is a no-op; a failed construction removes its wrapper and canvas;
+  destruction releases data arrays, series references, subscribers, listeners and observers.
+* **Crosshair:** a stationary pointer now receives updated values after live updates, data
+  replacement and series removal; new subscribers get the current state; unsubscribing during
+  delivery is respected.
+* **Live view:** appending bars no longer moves the viewport unless `followLatest: true`;
+  full re-renders keep the same visible time window; switching daily ↔ intraday data refits.
+* **CI:** `.github/workflows/xchart-ci.yml` runs typecheck, lint, unit tests, the production
+  build and mandatory Chromium canvas tests.
 
 > No third-party charting code: rendering is done by `components/chart/engine.ts` (TradestXPro's
 > engine). TradingView libraries/widgets are not used.
@@ -41,6 +63,7 @@ Engine changes made for the SDK (all opt-in, existing charts unaffected): `setOp
 `getViewRange` / `setViewRange` / `scrollBy` / `scrollToEnd` / `refresh`, crosshair `price` and `time`,
 gap bars (NaN prices) skipped when drawing and scaling, candle colours, area series, sign-coloured
 histograms, `lastDrawMs`, and `resize()` no longer clears the canvas when the size did not change.
+v0.2.1: `destroy()` is idempotent, stops scheduling frames and drops its data, drawings and callbacks.
 
 ## Importing
 
@@ -70,7 +93,7 @@ by index (like most trading charts), so overnight gaps and weekends do not leave
 ```ts
 "use client";
 import { useEffect, useRef } from "react";
-import { createChart } from "@/lib/xchart-sdk";
+import { createChart, type CandlestickData } from "@/lib/xchart-sdk";
 
 export function MyChart({ candles }: { candles: CandlestickData[] }) {
   const box = useRef<HTMLDivElement>(null);
@@ -138,16 +161,65 @@ candles.update({ time: lastTime + 300, open: close, high: close, low: close, clo
 Series may have different timestamps; they are aligned by time. A series that lags behind may
 later fill a time another series already has, or insert a new time between existing ones.
 
-To use TradestXPro market data (the user's connected broker, or NSE end-of-day files), use the
-existing `/api/charts/bars` endpoint through the helper (signed-in session required):
+To use TradestXPro market data (the user's connected broker, or NSE end-of-day files), see
+[Market data validation](#market-data-validation) below.
+
+## Market data validation
+
+`lib/xchart-sdk/market-data.ts` turns `{ t, o, h, l, c, v }` bars (the format of TradestXPro's
+existing `/api/charts/bars` endpoint) into SDK candles **without changing any value**.
+
+| Check | Rejection reason |
+|---|---|
+| Record is not an object | `MALFORMED_RECORD` |
+| Time not finite, or negative | `INVALID_TIMESTAMP` |
+| Time looks like milliseconds (> 1e11) | `MILLISECOND_TIMESTAMP` |
+| Time has a fractional part (it is **not** truncated) | `FRACTIONAL_TIMESTAMP` |
+| Open/high/low/close not finite | `INVALID_PRICE` |
+| High below open/close/low, or low above open/close/high (it is **not** repaired) | `INVALID_OHLC` |
+| Volume negative or not finite (0 is valid and kept; absent stays absent) | `INVALID_VOLUME` |
+| Same time as the previous accepted record | `DUPLICATE_TIMESTAMP` |
+| Earlier than the previous accepted record | `OUT_OF_ORDER` |
+
+Missing candles are never fabricated.
 
 ```ts
-import { loadTradestxproCandles, fromTradestxproBars } from "@/lib/xchart-sdk";
+import {
+  validateTradestxproBars, fromTradestxproBars, loadTradestxproCandles, MarketDataError,
+} from "@/lib/xchart-sdk";
 
-const { candles: history } = await loadTradestxproCandles("NSE:RELIANCE", "1D");
-candles.setData(history);
-// or convert bars you already have: fromTradestxproBars(bars)  // { t, o, h, l, c, v } → CandlestickData
+// Strict (default): throws MarketDataError (code INVALID_MARKET_DATA) if any record is invalid.
+try {
+  const candles = fromTradestxproBars(bars, { source: "NSE:RELIANCE 1D" });
+  series.setData(candles);
+} catch (e) {
+  if (e instanceof MarketDataError) console.table(e.report.rejections);
+}
+
+// Tolerant (opt-in): valid records are returned, invalid ones quarantined in the report.
+const { candles, report } = validateTradestxproBars(bars, { mode: "tolerant", source: "vendor feed" });
+series.setData(candles);
+if (report.rejectedRecords) showDataWarning(report);
+
+// Load straight from TradestXPro (signed-in session required).
+const { candles: history, report: r } = await loadTradestxproCandles("NSE:RELIANCE", "1D", { mode: "strict" });
 ```
+
+The report (`ValidationReport`):
+
+```ts
+{
+  source: string;            // what you passed, or "<symbol> <tf> · <data source>" for loadTradestxproCandles
+  mode: "strict" | "tolerant";
+  validatedAt: string;       // ISO-8601
+  totalRecords, validRecords, rejectedRecords,
+  duplicateTimestamps, outOfOrderRecords, invalidOhlcRecords,
+  invalidVolumeRecords, invalidTimestampRecords, malformedRecords,
+  rejections: { index, time, reason, message, record }[]   // record = the original, unmodified
+}
+```
+
+Ordering is checked against the last **accepted** record, so one bad row cannot hide another.
 
 ## Time scale and price scale
 
@@ -160,7 +232,14 @@ chart.scrollBy(-20);                   // scroll 20 bars back
 chart.zoom(1.5);                       // zoom in around the right edge (< 1 zooms out)
 chart.applyOptions({ priceScale: { mode: "logarithmic", precision: 1 } });
 chart.applyOptions({ theme: "light" });
+chart.applyOptions({ followLatest: true }); // keep the newest bar in view on live appends
 ```
+
+**Viewport during updates.** A live update never moves the viewport unless `followLatest` is
+`true` (and the newest bar was visible). Full re-renders (`setData`, series removal, inserting a
+time between existing bars, option changes) keep the same visible **time** window. If the data
+frequency changes (daily ↔ intraday) or the old window no longer contains data, the chart fits
+the new data.
 
 Users can still zoom with the wheel, pan by dragging (vertically too), drag the price axis to
 stretch it and double-click to reset, as on `/charts`.
@@ -177,55 +256,106 @@ const unsubscribe = chart.subscribeCrosshairMove((e) => {
 unsubscribe(); // idempotent; chart.remove() also clears all subscribers
 ```
 
-Events are emitted only when the hovered bar or price changes (not on every frame), never before
-the pointer first enters, and once with `time: null` when it leaves. A throwing handler is
-logged and does not stop other handlers.
+Crosshair behaviour:
+
+* Emitted when the hovered bar, the price under the pointer **or the data** changes (so a
+  stationary pointer sees live-candle updates, data replacement and series removal), not on every frame.
+* A handler subscribed while the pointer is over the chart receives the current state right away.
+* Never emitted before the pointer first enters; emitted once with `time: null` when it leaves.
+* A handler unsubscribed during a delivery (for example by another handler) is not called.
+* A throwing handler is logged with `console.error` and does not stop the others.
+* `chart.remove()` drops every subscription.
 
 ## Errors
 
-Invalid input throws `XChartError` (extends `RangeError`) with a `code`:
+Every SDK failure is an `XChartError` (a `RangeError` subclass, as in v0.2) with a stable `code`,
+raised before any state changes: a rejected call leaves the chart and its series unchanged.
 
 | Code | When |
 |---|---|
-| `INVALID_NUMBER`, `INVALID_TIME`, `INVALID_POINT` | non-finite values, non-integer / millisecond / negative times |
+| `INVALID_NUMBER`, `INVALID_TIME`, `INVALID_POINT`, `INVALID_DATA` | non-finite values, non-integer / millisecond / negative times, non-object points, non-array data |
 | `INVALID_OHLC`, `INVALID_VOLUME` | high/low inconsistent with open/close, negative volume |
 | `DUPLICATE_TIME`, `UNSORTED_TIME` | `setData` with repeated or decreasing times (message names the item) |
 | `OUT_OF_ORDER` | `update` older than the series' last point |
 | `INVALID_RANGE`, `NO_DATA` | `from >= to`, or a visible range on an empty chart |
-| `INVALID_OPTION`, `INCOMPATIBLE_SERIES` | bad colours/widths/opacity/precision; candle-coloured histogram without candles |
+| `INVALID_OPTION`, `INVALID_COLOR`, `INVALID_DIMENSION` | bad option values, unknown option keys, invalid CSS colours, NaN/∞/out-of-range sizes |
+| `INVALID_SERIES_TYPE`, `UNSUPPORTED_SERIES`, `INCOMPATIBLE_SERIES` | unknown type; a second candlestick series; candle-coloured histogram without candles |
+| `INVALID_HANDLER` | non-function crosshair handler |
 | `CHART_REMOVED`, `SERIES_REMOVED` | using a removed chart or series |
-| `NO_DOM`, `INVALID_CONTAINER`, `CONTAINER_IN_USE` | SSR call, bad container, second chart in one container |
+| `NO_DOM`, `INVALID_CONTAINER`, `CONTAINER_IN_USE`, `INIT_FAILED` | SSR call, bad container, second chart in one container, renderer failed to start |
+| `INVALID_MARKET_DATA` (`MarketDataError`, has `.report`), `DATA_UNAVAILABLE` | strict market-data validation failed; `/api/charts/bars` request failed |
 
-A rejected call leaves the chart unchanged.
 
-## Cleanup
+## Lifecycle and cleanup
 
-`chart.remove()` destroys the engine (cancels the pending frame, disconnects the ResizeObserver,
-removes window listeners), removes the chart's wrapper element and canvas, clears subscribers and
-frees the container for a new chart. It is idempotent. Always call it from your effect cleanup.
+* `chart.remove()` destroys the engine (cancels the pending animation frame, disconnects the
+  ResizeObserver, removes its window listeners), removes the chart's wrapper element and canvas,
+  clears subscribers, detaches every series, releases the data arrays and frees the container
+  for a new chart. It is idempotent.
+* After `chart.remove()`, chart methods throw `CHART_REMOVED`; series methods (`setData`, `update`,
+  `data`, `applyOptions`) throw `SERIES_REMOVED`; `series.remove()` is a no-op; `series.options()`
+  still returns the last options.
+* `series.remove()` is idempotent; its unique timestamps leave the shared axis.
+* Removing the candlestick series while a `colorMode: "candle"` histogram remains is allowed: the
+  histogram is coloured by sign until a candlestick series is added again (its option is kept).
+* If the renderer cannot start (e.g. no 2D canvas), `createChart` throws `INIT_FAILED` and leaves
+  no wrapper, canvas, listener or container lock behind. Invalid options are rejected before the DOM is touched.
+* Always call `chart.remove()` from your effect cleanup.
 
-## Testing
 
-* `tests/xchart-sdk.test.ts` (Node): validation, lifecycle, series creation/removal, history,
-  live updates, duplicates/out-of-order, multi-series alignment, visible range, crosshair
-  subscription cleanup, a 50,000-candle data-path benchmark.
-* `tests/xchart-sdk-browser.test.ts` (Chromium via Playwright): the unbundled SDK + engine run in
-  a real browser; checks canvas pixels for candles/line/area/histogram, first-frame rendering,
-  viewport ranges, real pointer crosshair events, live updates and cleanup. Skipped (reported as
-  skipped) if Playwright/Chromium is not installed. `XCHART_BENCH=1` also runs the benchmarks.
+## Testing and CI
+
+* `tests/xchart-sdk.test.ts` (Node, 38 tests): validation, market-data integrity (strict/tolerant,
+  reports, preserved values, zero volume), option validation and atomicity, lifecycle, crosshair
+  reliability, alignment (gaps, holidays, unique timestamps, frequency changes), viewport, and a
+  50,000-candle data-path check.
+* `tests/xchart-sdk-browser.test.ts` (Chromium via Playwright): the unbundled SDK and engine run in
+  a real browser and canvas **pixels** are checked: candles, line, area fill, histogram, missing
+  candle slot, multi-series x alignment, viewport changes, theme switching, live updates, real
+  pointer crosshair (including a stationary pointer during an update), DOM/listener/observer
+  cleanup, multiple charts, and a forced renderer failure.
+  * Locally these skip if Playwright/Chromium is unavailable.
+  * With `XCHART_REQUIRE_BROWSER=1` (CI) they **fail** instead of skipping.
+  * `XCHART_BENCH=1` also runs the benchmarks (reported, never asserted).
+* CI: `.github/workflows/xchart-ci.yml` on pull requests to `main` and pushes to
+  `feature/xchart-sdk-foundation`. Node 22.13.1, `npm ci` from the lockfile, `playwright@1.63.0`
+  pinned in `devDependencies`. Two jobs to mark as required checks:
+  * **`quality`**: `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`.
+  * **`browser`**: installs Chromium with system dependencies and runs the browser tests in
+    mandatory mode; any failure or unexpected skip fails the job.
+  No secrets are used; the build needs no database or broker credentials.
 * Demo: `/xchart-demo` (synthetic data).
 
-## Known limitations (v0.2)
 
-* One candlestick series per chart (it is the engine's main series). Additional OHLC series are not supported yet.
-* Bars are spaced by index, not by wall-clock time (gaps collapse). There is no option for time-proportional spacing.
-* Line/area/histogram on the main pane share the price scale with the candles; there are no separate
-  left/right price scales or scale margins yet. Separate panes have their own auto-scaled axis.
-* Per-point colours (e.g. a colour on each histogram item) are not supported; colours come from series options.
-* Minimum bar spacing is 0.5 px, so at most ~2 bars per pixel can be in view (50,000 bars cannot all be shown at once).
-* Theme is `dark`/`light` presets; custom palettes, fonts and grid options are not exposed yet.
-* Markers, price lines, drawings and the indicator catalogue exist in the engine but are not exposed through the SDK yet.
-* Time labels support a fixed UTC offset only (no DST-aware time zones).
+## Known limitations (v0.2.1)
+
+* One candlestick series per chart (it is the engine's main series).
+* Bars are spaced by index, not wall-clock time (gaps collapse); no time-proportional spacing.
+* Line/area/histogram on the main pane share the candles' price scale; no left/right scales or
+  scale margins. Separate panes have their own auto-scaled axis.
+* No per-point colours; colours come from series options.
+* Minimum bar spacing is 0.5 px (at most ~2 bars per pixel in view).
+* Dark/light theme presets only; no custom palettes, fonts or grid options.
+* Markers, price lines, drawings and the indicator catalogue are in the engine but not exposed through the SDK.
+* Time labels use a fixed UTC offset (no DST-aware time zones).
+* Strict market-data validation rejects the whole dataset on one bad record; use tolerant mode
+  if a partial chart with a report is acceptable.
+* Browser tests run against Chromium only (no Firefox/WebKit runs yet).
+
+## Migrating from v0.2
+
+* `fromTradestxproBars()` **may now throw** `MarketDataError` where v0.2 silently clamped
+  high/low, dropped duplicates/out-of-order/malformed rows, truncated fractional times and turned
+  zero volume into "no volume". Fix the source, or opt into `{ mode: "tolerant" }` and inspect the report.
+* `loadTradestxproCandles(symbol, tf, baseUrl)` still accepts a base-URL string; the third argument
+  can now also be `{ mode, source, baseUrl }`. The result gains a `report`. Errors are `XChartError`.
+* Live appends no longer scroll the chart automatically. Add `followLatest: true` to keep v0.2 behaviour.
+* Series options are now validated strictly: unknown keys (e.g. `upColor` on a line series) and
+  invalid CSS colours throw `INVALID_OPTION` / `INVALID_COLOR`.
+* `autoSize: false` now requires `width` and `height`; sizes must be finite, 1–16384 px.
+* A second candlestick series throws `UNSUPPORTED_SERIES` (was a plain `RangeError`).
+* Errors remain `RangeError` subclasses, so existing `instanceof RangeError` checks still work.
+
 
 ## Future API compatibility
 

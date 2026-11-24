@@ -13,6 +13,9 @@ export type {
   CandlestickSeriesOptions, LineSeriesOptions, AreaSeriesOptions, HistogramSeriesOptions,
   CrosshairEvent, VisibleTimeRange, Unsubscribe,
 } from "./types.ts";
-export { XChartError, validateBar, validateBars, validateRange, validateUpdate, validateSeriesOptions } from "./validation.ts";
-export { fromTradestxproBars, loadTradestxproCandles, type TradestxproBar } from "./market-data.ts";
-export const XCHART_VERSION = "0.2.0";
+export { XChartError, isCssColor, validateBar, validateBars, validateChartOptions, validateRange, validateSeriesOptions, validateUpdate, validateZoom } from "./validation.ts";
+export {
+  MarketDataError, fromTradestxproBars, loadTradestxproCandles, validateTradestxproBars,
+  type MarketDataOptions, type Rejection, type RejectionReason, type TradestxproBar, type ValidationMode, type ValidationReport,
+} from "./market-data.ts";
+export const XCHART_VERSION = "0.2.1";

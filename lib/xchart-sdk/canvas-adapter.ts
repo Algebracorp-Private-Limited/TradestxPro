@@ -23,6 +23,8 @@ export type RenderModel = {
   bars: AxisBar[];
   intraday: boolean;
   candle: CandlestickSeriesOptions | null;
+  /** Follow appended bars when the newest bar is in view (ChartOptions.followLatest). */
+  followLatest?: boolean;
   series: { id: number; type: Exclude<ChartSeriesType, "candlestick">; values: number[]; options: SeriesOptionsMap[Exclude<ChartSeriesType, "candlestick">] }[];
 };
 
@@ -62,6 +64,7 @@ const DEFAULT_LINE = "#2962ff";
 export class CanvasAdapter implements RenderAdapter {
   private wrapper: HTMLDivElement;
   private engine: ChartEngine;
+  private colorCtx: CanvasRenderingContext2D | null = null;
   private data: ChartData | null = null;
   private crosshairCb: ((index: number | null, time: number | null, price: number | null) => void) | null = null;
   private theme: "dark" | "light" = "dark";
@@ -74,10 +77,40 @@ export class CanvasAdapter implements RenderAdapter {
     Object.assign(this.wrapper.style, { position: "relative", overflow: "hidden" });
     this.applySize(options);
     container.appendChild(this.wrapper);
-    this.engine = new ChartEngine(this.wrapper, {
-      onCrosshair: (c) => this.crosshairCb?.(c ? c.index : null, c?.time ?? null, c?.price ?? null),
-    });
-    this.setOptions(options);
+    try {
+      this.engine = new ChartEngine(this.wrapper, {
+        onCrosshair: (c) => this.crosshairCb?.(c ? c.index : null, c?.time ?? null, c?.price ?? null),
+      });
+      this.setOptions(options);
+    } catch (e) {
+      // Partial initialisation: release whatever was created before rethrowing.
+      try {
+        (this as unknown as { engine?: ChartEngine }).engine?.destroy();
+      } catch {}
+      this.wrapper.remove();
+      this.destroyed = true;
+      throw e;
+    }
+  }
+
+  /**
+   * Any CSS colour → "#rrggbb" / "rgba(...)" (the browser's own parser), so opacity can be applied
+   * to named and hsl() colours too.
+   */
+  private css(color: string): string {
+    if (color.startsWith("#") || color.startsWith("rgb")) return color;
+    try {
+      this.colorCtx ??= this.wrapper.ownerDocument.createElement("canvas").getContext("2d");
+      if (!this.colorCtx) return color;
+      this.colorCtx.fillStyle = "#000000";
+      this.colorCtx.fillStyle = color;
+      return String(this.colorCtx.fillStyle);
+    } catch {
+      return color;
+    }
+  }
+  private alpha(color: string, a: number) {
+    return withAlpha(this.css(color), a);
   }
 
   private applySize(o: ChartOptions) {
@@ -104,8 +137,9 @@ export class CanvasAdapter implements RenderAdapter {
   render(model: RenderModel, change: Change) {
     if (this.destroyed) return;
     if (change.kind === "tick" && this.data && this.data.bars === model.bars) {
-      // Arrays were mutated in place: just redraw (scheduled on the next animation frame).
-      this.engine.refresh(change.appended);
+      // Arrays were mutated in place: refresh derived metadata, then redraw on the next frame.
+      this.data.intraday = model.intraday;
+      this.engine.refresh(model.followLatest ? change.appended : 0);
       return;
     }
     const first = !this.data || this.data.bars.length === 0;
@@ -118,7 +152,7 @@ export class CanvasAdapter implements RenderAdapter {
     const panes: PaneSpec[] = [];
     const th = THEMES[this.theme];
     for (const s of m.series) {
-      const ps = this.plot(s.type, s.values, s.options, th);
+      const ps = this.plot(s.type, s.values, s.options, th, m.candle !== null);
       const pane = (s.options as LineSeriesOptions | HistogramSeriesOptions).pane ?? (s.type === "histogram" ? "separate" : "main");
       if (pane === "main") overlays.push(ps);
       else panes.push({ id: `xs-${s.id}`, title: ps.label, series: [ps], levels: s.type === "histogram" ? [0] : undefined });
@@ -135,25 +169,26 @@ export class CanvasAdapter implements RenderAdapter {
     };
   }
 
-  private plot(type: Exclude<ChartSeriesType, "candlestick">, values: number[], o: SeriesOptionsMap[typeof type], th: Partial<EngineTheme>): PlotSeries {
+  private plot(type: Exclude<ChartSeriesType, "candlestick">, values: number[], o: SeriesOptionsMap[typeof type], th: Partial<EngineTheme>, hasCandles: boolean): PlotSeries {
     if (type === "histogram") {
       const h = o as HistogramSeriesOptions;
       const op = h.opacity ?? 0.8;
       const up = h.upColor ?? th.up ?? "#22c55e";
       const down = h.downColor ?? th.down ?? "#ef4444";
-      const mode = h.colorMode ?? "sign";
+      // "candle" colouring needs candles; if the candlestick series was removed, colour by sign instead.
+      const mode = h.colorMode === "candle" && !hasCandles ? "sign" : h.colorMode ?? "sign";
       return {
         label: h.title ?? "Histogram",
         values,
-        color: withAlpha(h.color ?? up, op),
+        color: this.alpha(h.color ?? up, op),
         style: "histogram",
         precision: h.precision,
         scaleLabel: false,
-        hist: mode === "single" ? undefined : { mode, colors: [withAlpha(up, op), withAlpha(down, op)] },
+        hist: mode === "single" ? undefined : { mode, colors: [this.alpha(up, op), this.alpha(down, op)] },
       };
     }
     const l = o as AreaSeriesOptions;
-    const color = l.color ?? DEFAULT_LINE;
+    const color = this.css(l.color ?? DEFAULT_LINE);
     return {
       label: l.title ?? (type === "area" ? "Area" : "Line"),
       values,
@@ -162,7 +197,7 @@ export class CanvasAdapter implements RenderAdapter {
       dash: l.lineStyle,
       precision: l.precision,
       scaleLabel: l.lastValueVisible !== false,
-      area: type === "area" ? { top: l.topColor ?? withAlpha(color, 0.35), bottom: l.bottomColor ?? withAlpha(color, 0), baseline: l.baseline } : undefined,
+      area: type === "area" ? { top: l.topColor ? this.css(l.topColor) : withAlpha(color, 0.35), bottom: l.bottomColor ? this.css(l.bottomColor) : withAlpha(color, 0), baseline: l.baseline } : undefined,
     };
   }
 
@@ -171,7 +206,7 @@ export class CanvasAdapter implements RenderAdapter {
   }
 
   getViewRange() {
-    if (!this.data || !this.data.bars.length) return null;
+    if (this.destroyed || !this.data || !this.data.bars.length) return null;
     return this.engine.getViewRange();
   }
   setViewRange(from: number, to: number) {
@@ -202,8 +237,12 @@ export class CanvasAdapter implements RenderAdapter {
     if (this.destroyed) return;
     this.destroyed = true;
     this.crosshairCb = null;
-    this.engine.destroy();
-    this.wrapper.remove();
-    this.data = null;
+    try {
+      this.engine.destroy();
+    } finally {
+      this.wrapper.remove();
+      this.data = null;
+      this.colorCtx = null;
+    }
   }
 }

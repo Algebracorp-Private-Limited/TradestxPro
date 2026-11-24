@@ -30,6 +30,11 @@ export interface ChartOptions {
   priceScale?: PriceScaleOptions;
   /** Offset used for intraday time labels, in minutes east of UTC (default 330 = IST). */
   utcOffsetMinutes?: number;
+  /**
+   * Keep the newest bar in view when live updates append bars (default false: the viewport stays
+   * where the user left it). Only follows when the newest bar was already visible.
+   */
+  followLatest?: boolean;
 }
 
 export interface TimeValue {
