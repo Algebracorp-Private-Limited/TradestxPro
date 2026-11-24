@@ -50,6 +50,39 @@ export type ChartData = {
 export type EngineOptions = { crosshair?: boolean; pricePrecision?: number; theme?: Partial<EngineTheme> | null; utcOffsetSeconds?: number };
 
 /** `price` is the main-pane price under the pointer (null over indicator panes). */
+/** Geometry and drawing helpers handed to custom layers (SDK drawings, markers, price lines, plugins). */
+export type LayerApi = {
+  ctx: CanvasRenderingContext2D;
+  theme: EngineTheme;
+  pane: { id: string; top: number; height: number; width: number };
+  /** Visible bar index range (inclusive) and bar spacing in px. */
+  from: number;
+  to: number;
+  spacing: number;
+  barCount: number;
+  xOfIndex(i: number): number;
+  indexOfX(x: number): number;
+  /** Price ↔ y in this pane (main-pane price scale for "main"). */
+  yOfPrice(p: number): number;
+  priceOfY(y: number): number;
+  bar(i: number): Bar | undefined;
+  /** Queues a label on the price axis (drawn above series labels). */
+  axisLabel(y: number, text: string, bg: string): void;
+};
+export type EngineLayer = { pane?: string; z?: "below" | "above"; draw(api: LayerApi): void };
+
+/** Pointer position in chart terms, given to the interaction delegate and click callbacks. */
+export type PointerInfo = { x: number; y: number; index: number; price: number | null; paneId: string | null; shift: boolean; ctrl: boolean; pointerType: string };
+/** Lets the SDK claim pointer/keyboard input (e.g. drawings) before the engine pans or zooms. */
+export type InteractionDelegate = {
+  hover?(p: PointerInfo): string | null;
+  down?(p: PointerInfo): boolean;
+  move?(p: PointerInfo): void;
+  up?(p: PointerInfo): void;
+  dbl?(p: PointerInfo): boolean;
+  key?(e: KeyboardEvent): boolean;
+};
+
 export type CrosshairInfo = { index: number; bar: Bar | null; price?: number | null; time?: number } | null;
 export type PaneBox = { id: string; top: number; height: number };
 export type ScaleState = { auto: boolean; log: boolean };
@@ -126,7 +159,8 @@ type PaneLayout = { top: number; height: number; min: number; max: number; log: 
 type Interaction =
   | { kind: "pan"; x: number; y: number; end: number; min: number; max: number; vertical: boolean }
   | { kind: "axis"; y: number; min: number; max: number }
-  | { kind: "drawing"; index: number; part: "all" | "a" | "b"; start: Pt; orig: Drawing };
+  | { kind: "drawing"; index: number; part: "all" | "a" | "b"; start: Pt; orig: Drawing }
+  | { kind: "delegate" };
 
 export class ChartEngine {
   private canvas: HTMLCanvasElement;
@@ -154,7 +188,18 @@ export class ChartEngine {
     onToolDone?: () => void;
     onLayout?: (panes: PaneBox[]) => void;
     onScale?: (s: ScaleState) => void;
+    /** Viewport changed (fractional bar indices, bar spacing). Fired after a redraw. */
+    onView?: (v: { from: number; to: number; spacing: number }) => void;
+    onClick?: (p: PointerInfo) => void;
+    onDblClick?: (p: PointerInfo) => void;
+    /** Runs at the start of every redraw (coalesced work such as indicator recalculation). */
+    onBeforeDraw?: () => void;
   };
+  private layers: EngineLayer[] = [];
+  private delegate: InteractionDelegate | null = null;
+  private extCross: { index: number; price: number | null } | null = null;
+  private lastView = "";
+  private downAt: { x: number; y: number; t: number } | null = null;
   private lastLayoutKey = "";
 
   private container: HTMLElement;
@@ -307,6 +352,82 @@ export class ChartEngine {
     this.invalidate();
   }
 
+  /** Custom render layers (replaces the previous set). */
+  setLayers(layers: EngineLayer[]) {
+    this.layers = layers;
+    this.invalidate();
+  }
+  setInteraction(d: InteractionDelegate | null) {
+    this.delegate = d;
+  }
+  /** Shows a crosshair at a bar index when the pointer is not over this chart (chart synchronisation). */
+  setCrosshair(c: { index: number; price: number | null } | null) {
+    this.extCross = c;
+    this.invalidate();
+  }
+  requestRedraw() {
+    this.invalidate();
+  }
+  /** Public geometry (CSS px relative to the canvas). */
+  xOfIndex(i: number) {
+    return this.xOf(i);
+  }
+  indexOfX(x: number) {
+    return this.indexAt(x);
+  }
+  getPlotWidth() {
+    return this.plotW();
+  }
+  getSpacing() {
+    return this.spacing;
+  }
+  setSpacing(px: number) {
+    if (!(px > 0)) return;
+    this.spacing = px;
+    this.clampView();
+    this.invalidate();
+  }
+  /** Pane rectangles from the last layout ("main" first). */
+  getPanes(): PaneBox[] {
+    return this.layouts.map((l, i) => ({ id: i === 0 ? "main" : l.spec!.id, top: l.top, height: l.height }));
+  }
+  priceToY(p: number, paneId = "main"): number | null {
+    const L = this.layoutOf(paneId);
+    return L ? this.yOf(p, L) : null;
+  }
+  yToPrice(y: number, paneId = "main"): number | null {
+    const L = this.layoutOf(paneId);
+    return L ? this.priceAt(y, L) : null;
+  }
+  private layoutOf(id: string) {
+    return id === "main" ? this.layouts[0] : this.layouts.find((l) => l.spec?.id === id);
+  }
+  /** PNG data URL of the current chart, re-rendered at `scale` × CSS pixels. */
+  toDataURL(scale = this.dpr): string {
+    const prev = this.dpr;
+    const s = Math.max(0.5, Math.min(8, scale));
+    this.dpr = s;
+    this.canvas.width = Math.round(this.w * s);
+    this.canvas.height = Math.round(this.h * s);
+    this.drawFrame();
+    const url = this.canvas.toDataURL("image/png");
+    this.dpr = prev;
+    this.canvas.width = this.w * prev;
+    this.canvas.height = this.h * prev;
+    this.drawFrame();
+    return url;
+  }
+
+  private pointer(e: { shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; pointerType?: string }, x: number, y: number): PointerInfo {
+    const k = this.paneAt(y);
+    const L = k >= 0 ? this.layouts[k] : undefined;
+    return {
+      x, y, index: this.indexAt(x), price: L ? this.priceAt(y, L) : null,
+      paneId: k < 0 ? null : k === 0 ? "main" : L!.spec!.id,
+      shift: !!e.shiftKey, ctrl: !!(e.ctrlKey || e.metaKey), pointerType: e.pointerType ?? "mouse",
+    };
+  }
+
   fit = () => {
     const n = this.data.bars.length;
     const visible = Math.min(n, Math.max(30, Math.floor(this.plotW() / 8)));
@@ -448,6 +569,11 @@ export class ChartEngine {
     const p = this.local(e);
     this.mouse = p;
     const a = this.act;
+    if (a?.kind === "delegate") {
+      this.delegate?.move?.(this.pointer(e, p.x, p.y));
+      this.invalidate();
+      return;
+    }
     if (a?.kind === "pan") {
       this.endIndex = a.end + (a.x - p.x) / this.spacing;
       this.clampView();
@@ -487,7 +613,8 @@ export class ChartEngine {
       this.drawings = this.drawings.map((d, i) => (i === a.index ? next : d));
     } else if (!a && this.tool === "none") {
       const hit = p.x < this.plotW() ? this.hitDrawing(p.x, p.y) : null;
-      this.canvas.style.cursor = p.x >= this.plotW() ? "ns-resize" : hit ? (hit.part === "all" ? "move" : "pointer") : "crosshair";
+      const custom = p.x < this.plotW() && this.delegate?.hover ? this.delegate.hover(this.pointer(e, p.x, p.y)) : null;
+      this.canvas.style.cursor = p.x >= this.plotW() ? "ns-resize" : custom ?? (hit ? (hit.part === "all" ? "move" : "pointer") : "crosshair");
     }
     this.invalidate();
   };
@@ -506,6 +633,14 @@ export class ChartEngine {
       }
       this.act = { kind: "axis", y: p.y, min: this.scale.min, max: this.scale.max };
       this.canvas.setPointerCapture?.(e.pointerId);
+      return;
+    }
+
+    this.downAt = { x: p.x, y: p.y, t: performance.now() };
+    if (p.x < this.plotW() && this.delegate?.down?.(this.pointer(e, p.x, p.y))) {
+      this.act = { kind: "delegate" };
+      this.canvas.setPointerCapture?.(e.pointerId);
+      this.invalidate();
       return;
     }
 
@@ -552,7 +687,15 @@ export class ChartEngine {
     this.cb.onToolDone?.();
   }
 
-  private onUp = () => {
+  private onUp = (e?: PointerEvent) => {
+    const r = this.canvas.getBoundingClientRect();
+    const up = e ? { x: e.clientX - r.left, y: e.clientY - r.top } : null;
+    if (this.act?.kind === "delegate" && up && e) this.delegate?.up?.(this.pointer(e, up.x, up.y));
+    // A press released without moving is a click (not a pan).
+    else if (this.act?.kind === "pan" && up && e && this.downAt && Math.hypot(up.x - this.downAt.x, up.y - this.downAt.y) < 4 && performance.now() - this.downAt.t < 600) {
+      this.cb.onClick?.(this.pointer(e, up.x, up.y));
+    }
+    this.downAt = null;
     if (this.act?.kind === "drawing") this.cb.onDrawingsChange?.(this.drawings);
     this.act = null;
     this.canvas.style.cursor = "crosshair";
@@ -565,6 +708,14 @@ export class ChartEngine {
 
   private onDbl = (e: MouseEvent) => {
     const p = this.local(e);
+    if (p.x < this.plotW()) {
+      const info = this.pointer(e, p.x, p.y);
+      if (this.delegate?.dbl?.(info)) {
+        this.invalidate();
+        return;
+      }
+      this.cb.onDblClick?.(info);
+    }
     if (p.x >= this.plotW()) {
       this.scale.auto = true;
       this.emitScale();
@@ -573,6 +724,11 @@ export class ChartEngine {
   };
 
   private onKey = (e: KeyboardEvent) => {
+    if (this.delegate?.key?.(e)) {
+      e.preventDefault();
+      this.invalidate();
+      return;
+    }
     if ((e.key === "Delete" || e.key === "Backspace") && this.selected >= 0) {
       e.preventDefault();
       this.deleteSelected();
@@ -733,6 +889,7 @@ export class ChartEngine {
   }
 
   private drawFrame() {
+    this.cb.onBeforeDraw?.();
     const { ctx } = this;
     const th = this.theme;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
@@ -802,13 +959,17 @@ export class ChartEngine {
         ctx.stroke();
       }
       const series = k === 0 ? this.data.overlays : (L.spec?.series ?? []);
+      const paneId = k === 0 ? "main" : L.spec!.id;
       if (k === 0) {
+        this.drawLayers(L, paneId, "below", from, to, tags);
         for (const s of series) for (const f of s.fills ?? []) this.drawFill(s, f, L, from);
         this.drawMain(L, from, to);
         for (const s of series) this.drawSeries(s, L, from, to);
         this.drawMarkers(L, from, to);
         this.drawDrawings(L);
+        this.drawLayers(L, paneId, "above", from, to, tags);
       } else if (L.spec) {
+        this.drawLayers(L, paneId, "below", from, to, tags);
         for (const b of L.spec.bands ?? []) {
           const y1 = this.yOf(Math.max(b.from, b.to), L);
           const y2 = this.yOf(Math.min(b.from, b.to), L);
@@ -828,6 +989,7 @@ export class ChartEngine {
         }
         for (const s of series) for (const f of s.fills ?? []) this.drawFill(s, f, L, from);
         for (const s of series) this.drawSeries(s, L, from, to);
+        this.drawLayers(L, paneId, "above", from, to, tags);
       }
       ctx.restore();
       if (k > 0) {
@@ -882,6 +1044,41 @@ export class ChartEngine {
     }
 
     this.drawCrosshair();
+    const view = { from: this.indexAt(0) + 0.5, to: this.endIndex, spacing: this.spacing };
+    const vk = `${view.from.toFixed(4)}|${view.to.toFixed(4)}|${view.spacing.toFixed(4)}|${bars.length}`;
+    if (vk !== this.lastView) {
+      this.lastView = vk;
+      this.cb.onView?.(view);
+    }
+  }
+
+  private drawLayers(L: PaneLayout, paneId: string, z: "below" | "above", from: number, to: number, tags: { y: number; text: string; color: string }[]) {
+    if (!this.layers.length) return;
+    const api: LayerApi = {
+      ctx: this.ctx,
+      theme: this.theme,
+      pane: { id: paneId, top: L.top, height: L.height, width: this.plotW() },
+      from, to, spacing: this.spacing, barCount: this.data.bars.length,
+      xOfIndex: (i) => this.xOf(i),
+      indexOfX: (x) => this.indexAt(x),
+      yOfPrice: (p) => this.yOf(p, L),
+      priceOfY: (y) => this.priceAt(y, L),
+      bar: (i) => this.data.bars[i],
+      axisLabel: (y, text, bg) => {
+        if (y >= L.top && y <= L.top + L.height) tags.push({ y, text, color: bg });
+      },
+    };
+    for (const layer of this.layers) {
+      if ((layer.pane ?? "main") !== paneId || (layer.z ?? "above") !== z) continue;
+      this.ctx.save();
+      try {
+        layer.draw(api);
+      } catch (e) {
+        // A failing custom layer must not break the chart.
+        console.error("[chart] layer failed", e);
+      }
+      this.ctx.restore();
+    }
   }
 
   private ticks(L: PaneLayout): { v: number; step: number }[] {
@@ -1227,6 +1424,26 @@ export class ChartEngine {
   private drawCrosshair() {
     const m = this.mouse;
     const bars = this.data.bars;
+    if (!m && this.extCross && bars.length) {
+      // Synchronised crosshair from another chart: draw only, no pointer event.
+      const { ctx } = this;
+      const x = Math.round(this.xOf(this.extCross.index)) + 0.5;
+      if (x >= 0 && x <= this.plotW()) {
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = this.theme.cross;
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, this.h - TIME_H);
+        const L = this.layouts[0];
+        if (L && this.extCross.price !== null) {
+          const y = Math.round(this.yOf(this.extCross.price, L)) + 0.5;
+          ctx.moveTo(0, y);
+          ctx.lineTo(this.plotW(), y);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
     if (!m || !bars.length || m.x > this.plotW() || m.y > this.h - TIME_H || this.act?.kind === "axis") {
       this.cb.onCrosshair?.(null);
       return;

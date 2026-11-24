@@ -1,3 +1,7 @@
+import type { IndicatorApi, IndicatorDefinition } from "./indicators/types.ts";
+import type { DrawingApi, DrawingData, DrawingEvent, DrawingSpec, DrawingType } from "./drawings/types.ts";
+import type { PriceLineApi, PriceLineOptions, SeriesMarker } from "./decorations.ts";
+import type { ChartEvents } from "./events/types.ts";
 /**
  * Public, framework-independent XChart SDK contracts (v0.2).
  *
@@ -7,7 +11,7 @@
  */
 export type ChartTime = number;
 export type ChartTheme = "dark" | "light";
-export type ChartSeriesType = "candlestick" | "line" | "area" | "histogram";
+export type ChartSeriesType = "candlestick" | "line" | "area" | "histogram" | "cloud";
 export type PriceScaleMode = "normal" | "logarithmic";
 
 export interface PriceScaleOptions {
@@ -50,7 +54,12 @@ export interface CandlestickData extends TimeValue {
 export interface SingleValueData extends TimeValue {
   value: number;
 }
-export type SeriesData<T extends ChartSeriesType> = T extends "candlestick" ? CandlestickData : SingleValueData;
+/** Two boundaries at one time (cloud / band series). `upper` may fall below `lower` (a crossing). */
+export interface CloudData extends TimeValue {
+  upper: number;
+  lower: number;
+}
+export type SeriesData<T extends ChartSeriesType> = T extends "candlestick" ? CandlestickData : T extends "cloud" ? CloudData : SingleValueData;
 
 /** Where a series is drawn: the main price pane or its own pane below it. */
 export type SeriesPane = "main" | "separate";
@@ -93,11 +102,32 @@ export interface HistogramSeriesOptions {
   precision?: number;
   title?: string;
 }
+export interface CloudSeriesOptions {
+  /** Fill where upper ≥ lower (default translucent green). */
+  upColor?: string;
+  /** Fill where upper < lower (default translucent red). */
+  downColor?: string;
+  /** Multiplies the fill colours' alpha (0–1, default 1). */
+  opacity?: number;
+  upperColor?: string;
+  lowerColor?: string;
+  /** Draw the boundary lines (default true). */
+  lineVisible?: boolean;
+  lineWidth?: number;
+  lineStyle?: "solid" | "dashed" | "dotted";
+  /** Shift the drawing by whole bars: positive = forward (projection space), negative = back. */
+  displacement?: number;
+  pane?: SeriesPane;
+  precision?: number;
+  lastValueVisible?: boolean;
+  title?: string;
+}
 export type SeriesOptionsMap = {
   candlestick: CandlestickSeriesOptions;
   line: LineSeriesOptions;
   area: AreaSeriesOptions;
   histogram: HistogramSeriesOptions;
+  cloud: CloudSeriesOptions;
 };
 /** @deprecated v0.1 name; use the per-type option interfaces. */
 export type SeriesOptions = CandlestickSeriesOptions & LineSeriesOptions;
@@ -114,6 +144,10 @@ export interface CrosshairEvent {
   price: number | null;
   /** Data of each series at `time` (series without a point there are absent). */
   seriesData: ReadonlyMap<SeriesApi<ChartSeriesType>, SeriesData<ChartSeriesType>>;
+  /** v0.3: indicator output values at `time` (absent during warm-up or gaps). */
+  indicators?: ReadonlyMap<IndicatorApi, Readonly<Record<string, number>>>;
+  /** v0.3: true when `time` lies after the last real candle (projected indicator space, not market data). */
+  projected?: boolean;
 }
 
 export type Unsubscribe = () => void;
@@ -129,6 +163,14 @@ export interface SeriesApi<T extends ChartSeriesType> {
   applyOptions(options: Partial<SeriesOptionsMap[T]>): void;
   options(): Readonly<SeriesOptionsMap[T]>;
   remove(): void;
+  // v0.3 — markers and price lines are view-only and never modify the series data.
+  setMarkers(markers: ReadonlyArray<SeriesMarker>): void;
+  addMarker(marker: SeriesMarker): string;
+  removeMarker(id: string): boolean;
+  getMarkers(): SeriesMarker[];
+  clearMarkers(): void;
+  createPriceLine(options: PriceLineOptions): PriceLineApi;
+  priceLines(): PriceLineApi[];
 }
 
 export interface ChartApi {
@@ -154,4 +196,38 @@ export interface ChartApi {
   /** Re-measures the container (only needed with autoSize: false after manual resizes). */
   resize(width: number, height: number): void;
   remove(): void;
+
+  // ---------- v0.3 ----------
+  addCloudSeries(options?: CloudSeriesOptions): SeriesApi<"cloud">;
+  /** Typed events; returns an unsubscribe function. */
+  on<K extends keyof ChartEvents>(type: K, handler: (payload: ChartEvents[K]) => void): Unsubscribe;
+  addIndicator(type: string, config?: Record<string, unknown>): IndicatorApi;
+  getIndicators(): IndicatorApi[];
+  removeIndicator(indicator: IndicatorApi | string): boolean;
+  registerIndicator(definition: IndicatorDefinition): void;
+  unregisterIndicator(id: string): boolean;
+  listIndicators(): IndicatorDefinition[];
+  getIndicatorDefinition(id: string): IndicatorDefinition | undefined;
+  /** Canvas x (CSS px) of a time; null without data or renderer geometry. */
+  timeToCoordinate(time: ChartTime): number | null;
+  coordinateToTime(x: number): ChartTime | null;
+  /** Canvas y (CSS px) of a price in a pane ("main" by default). */
+  priceToCoordinate(price: number, paneId?: string): number | null;
+  coordinateToPrice(y: number, paneId?: string): number | null;
+  addDrawing(spec: DrawingSpec): DrawingApi;
+  getDrawing(id: string): DrawingApi | undefined;
+  getDrawings(): DrawingApi[];
+  removeDrawing(drawing: DrawingApi | string): boolean;
+  clearDrawings(): void;
+  duplicateDrawing(id: string): DrawingApi | undefined;
+  selectDrawing(id: string | null): void;
+  selectedDrawing(): string | null;
+  setDrawingTool(tool: DrawingType | null): void;
+  getDrawingTool(): DrawingType | null;
+  setDrawingSnap(on: boolean): void;
+  undoDrawing(): boolean;
+  redoDrawing(): boolean;
+  serializeDrawings(): DrawingData[];
+  loadDrawings(data: unknown): void;
+  subscribeDrawingEvents(handler: (e: DrawingEvent) => void): Unsubscribe;
 }

@@ -297,6 +297,111 @@ test("browser: a failing renderer constructor leaves no DOM, listeners or contai
 // ---------------------------------------------------------------------------------------
 // Benchmarks (opt-in: XCHART_BENCH=1). Reported, not asserted: hardware varies.
 // ---------------------------------------------------------------------------------------
+test("browser: v0.3 indicators, cloud, drawings, markers and price lines draw real pixels", async (t) => {
+  await withPage(t, async (page) => {
+    const r = await page.evaluate(`(async () => {
+      const el = document.getElementById("a");
+      const chart = X.createChart(el, { theme: "dark" });
+      const c = chart.addCandlestickSeries({ upColor: "#808080", downColor: "#808080", wickUpColor: "#808080", wickDownColor: "#808080" });
+      const data = mk(40);
+      c.setData(data);
+      chart.setVisibleRange({ from: data[0].time, to: data[39].time });
+      await frame();
+      const snap = () => pixels(el).img;
+      const base = snap();
+      const plot = (img, pred) => count(img, pred, 0, 600, 0, 400);
+      const out = { base: { blue: plot(base, is.blue), green: plot(base, is.green), magenta: plot(base, is.magenta), yellow: plot(base, is.yellow), red: plot(base, is.red) } };
+      const sma = chart.addIndicator("sma", { period: 5, color: "#0000ff", lineWidth: 3 });
+      await frame(); out.sma = plot(snap(), is.blue);
+      sma.setVisible(false); await frame(); out.smaHidden = plot(snap(), is.blue);
+      const cloud = chart.addCloudSeries({ upColor: "rgba(0,255,0,1)", downColor: "rgba(0,255,0,1)", lineVisible: false });
+      cloud.setData(data.map((d) => ({ time: d.time, upper: d.close + 12, lower: d.close + 6 })));
+      await frame(); out.cloud = plot(snap(), is.green);
+      cloud.remove();
+      chart.addDrawing({ type: "rectangle", points: [{ time: data[5].time, price: 104 }, { time: data[20].time, price: 125 }], style: { color: "#ff00ff", lineWidth: 3, fillOpacity: 0 } });
+      await frame(); out.rect = plot(snap(), is.magenta);
+      c.setMarkers([{ time: data[30].time, position: "aboveBar", shape: "arrowDown", color: "#ffff00", size: 2 }, { time: data[32].time, position: "belowBar", shape: "circle", color: "#ffff00", size: 2 }]);
+      await frame(); out.markers = plot(snap(), is.yellow);
+      const pl = c.createPriceLine({ price: 112, color: "#ff0000", lineStyle: "solid", lineWidth: 2 });
+      await frame();
+      const y = Math.round(chart.priceToCoordinate(112));
+      out.priceLineRow = count(snap(), is.red, 0, 600, y - 1, y + 2);
+      out.axisTag = count(snap(), is.red, 600, 670, y - 6, y + 6);
+      pl.remove(); await frame(); out.priceLineGone = count(snap(), is.red, 0, 600, y - 1, y + 2);
+      out.data = JSON.stringify(c.data()) === JSON.stringify(data);
+      chart.remove();
+      return out;
+    })()`);
+    assert.ok(r.sma > r.base.blue + 300, `SMA line pixels (${r.sma})`);
+    assert.ok(r.smaHidden <= r.base.blue + 5, `hidden SMA leaves no pixels (${r.smaHidden})`);
+    assert.ok(r.cloud > r.base.green + 1500, `cloud fill pixels (${r.cloud})`);
+    assert.ok(r.rect > r.base.magenta + 400, `rectangle outline pixels (${r.rect})`);
+    assert.ok(r.markers > r.base.yellow + 80, `marker pixels (${r.markers})`);
+    assert.ok(r.priceLineRow > 500, `price line spans the plot (${r.priceLineRow})`);
+    assert.ok(r.axisTag > 100, `price line axis label (${r.axisTag})`);
+    assert.ok(r.priceLineGone < 20, `removed price line disappears (${r.priceLineGone})`);
+    assert.equal(r.data, true, "decorations never modify series data");
+  });
+});
+
+test("browser: pointer creates and drags drawings without panning; projected crosshair past the last candle", async (t) => {
+  await withPage(t, async (page) => {
+    await page.evaluate(`(async () => {
+      const el = document.getElementById("a");
+      const chart = X.createChart(el, { theme: "dark" });
+      const c = chart.addCandlestickSeries();
+      window.data = mk(40);
+      c.setData(data);
+      chart.setVisibleRange({ from: data[0].time, to: data[39].time });
+      await frame();
+      window.chart = chart;
+      window.cross = [];
+      chart.on("crosshairMove", (e) => cross.push({ time: e.time, projected: e.projected }));
+      chart.setDrawingTool("trendline");
+      window.range0 = JSON.stringify(chart.getVisibleRange());
+    })()`);
+    const xy = (i: number, price: number) => page.evaluate(`[chart.timeToCoordinate(data[${i}].time), chart.priceToCoordinate(${price})]`);
+    const [x1, y1] = await xy(8, 110);
+    const [x2, y2] = await xy(24, 120);
+    await page.mouse.move(x1, y1);
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.mouse.move(x2, y2, { steps: 4 });
+    await page.mouse.down();
+    await page.mouse.up();
+    const created = await page.evaluate(`(() => { const d = chart.getDrawings()[0]; return { n: chart.getDrawings().length, pts: d && d.data().points, t8: data[8].time, t24: data[24].time, tool: chart.getDrawingTool(), range: JSON.stringify(chart.getVisibleRange()) === range0 }; })()`);
+    assert.equal(created.n, 1);
+    assert.equal(created.tool, null);
+    assert.deepEqual(created.pts.map((p: { time: number }) => p.time), [created.t8, created.t24]);
+    assert.equal(created.range, true, "creating a drawing does not pan");
+    // Drag the line's midpoint by +4 bars.
+    const [mx, my] = await page.evaluate(`[(chart.timeToCoordinate(data[8].time) + chart.timeToCoordinate(data[24].time)) / 2, (chart.priceToCoordinate(${created.pts[0].price}) + chart.priceToCoordinate(${created.pts[1].price})) / 2]`);
+    const [bx] = await xy(4, 0);
+    const [ax] = await xy(0, 0);
+    await page.mouse.move(mx, my);
+    await page.mouse.down();
+    await page.mouse.move(mx + (bx - ax), my, { steps: 5 });
+    await page.mouse.up();
+    const moved = await page.evaluate(`({ pts: chart.getDrawings()[0].data().points, t12: data[12].time, t28: data[28].time, range: JSON.stringify(chart.getVisibleRange()) === range0 })`);
+    assert.deepEqual(moved.pts.map((p: { time: number }) => p.time), [moved.t12, moved.t28], "body drag moves both anchors by whole bars");
+    assert.equal(moved.range, true, "dragging a drawing does not pan the chart");
+    // Keyboard delete + undo on the focused canvas.
+    await page.keyboard.press("Delete");
+    assert.equal(await page.evaluate(`chart.getDrawings().length`), 0);
+    await page.keyboard.press("Control+z");
+    assert.equal(await page.evaluate(`chart.getDrawings().length`), 1);
+    // Ichimoku: hovering the projection space reports projected = true (no fabricated candles).
+    await page.evaluate(`(async () => { chart.addIndicator("ichimoku"); chart.fitContent(); await frame(); })()`);
+    const lastX = await page.evaluate(`chart.timeToCoordinate(data[39].time)`);
+    await page.mouse.move(Math.min(595, lastX + 40), 150);
+    await page.evaluate(`frame()`);
+    const last = await page.evaluate(`({ c: cross[cross.length - 1], last: data[39].time, bars: chart.getDrawings().length, n: chart.getIndicators()[0].getValues().length })`);
+    assert.equal(last.c.projected, true);
+    assert.ok(last.c.time > last.last);
+    await page.evaluate(`chart.remove()`);
+  });
+});
+
 test("browser: benchmarks (1k / 10k / 50k candles)", { skip: process.env.XCHART_BENCH !== "1" && "set XCHART_BENCH=1 to run" }, async (t) => {
   const browser = await launch(t);
   if (!browser) return;

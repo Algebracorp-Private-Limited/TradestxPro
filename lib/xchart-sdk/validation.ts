@@ -35,6 +35,10 @@ export function validateBar<T extends ChartSeriesType>(type: T, bar: SeriesData<
     if (c.volume !== undefined && (typeof c.volume !== "number" || !Number.isFinite(c.volume) || c.volume < 0)) {
       throw new XChartError("INVALID_VOLUME", `volume${where(index)} must be a nonnegative finite number`);
     }
+  } else if (type === "cloud") {
+    const c = bar as unknown as { upper: unknown; lower: unknown };
+    finite(c.upper, "upper", index);
+    finite(c.lower, "lower", index);
   } else {
     finite((bar as { value: number }).value, "value", index);
   }
@@ -89,7 +93,7 @@ export function isCssColor(v: unknown): v is string {
   return HEX.test(c) || COLOR_FN.test(c) || NAMED_COLORS.has(c.toLowerCase());
 }
 
-const SERIES_TYPES = ["candlestick", "line", "area", "histogram"] as const;
+const SERIES_TYPES = ["candlestick", "line", "area", "histogram", "cloud"] as const;
 export function validateSeriesType(type: unknown): asserts type is ChartSeriesType {
   if (!SERIES_TYPES.includes(type as ChartSeriesType)) throw new XChartError("INVALID_SERIES_TYPE", `Unknown series type ${String(type)}; expected one of ${SERIES_TYPES.join(", ")}`);
 }
@@ -99,6 +103,7 @@ const ALLOWED_OPTIONS: Record<ChartSeriesType, string[]> = {
   line: ["color", "lineWidth", "lineStyle", "pane", "precision", "lastValueVisible", "title"],
   area: ["color", "lineWidth", "lineStyle", "pane", "precision", "lastValueVisible", "title", "topColor", "bottomColor", "baseline"],
   histogram: ["color", "upColor", "downColor", "colorMode", "opacity", "pane", "precision", "title"],
+  cloud: ["upColor", "downColor", "opacity", "upperColor", "lowerColor", "lineVisible", "lineWidth", "lineStyle", "displacement", "pane", "precision", "lastValueVisible", "title"],
 };
 
 /** Checks option values and combinations that the renderer cannot honour. */
@@ -110,7 +115,7 @@ export function validateSeriesOptions<T extends ChartSeriesType>(type: T, o: Par
     if (any[k] === undefined) continue;
     if (!ALLOWED_OPTIONS[type].includes(k)) throw new XChartError("INVALID_OPTION", `"${k}" is not an option of ${type} series`);
   }
-  for (const k of ["color", "upColor", "downColor", "wickUpColor", "wickDownColor", "topColor", "bottomColor"]) {
+  for (const k of ["color", "upColor", "downColor", "wickUpColor", "wickDownColor", "topColor", "bottomColor", "upperColor", "lowerColor"]) {
     if (any[k] !== undefined && !isCssColor(any[k])) throw new XChartError("INVALID_COLOR", `${k} must be a valid CSS colour (got ${JSON.stringify(any[k])})`);
   }
   if (any.lineWidth !== undefined && !(typeof any.lineWidth === "number" && Number.isFinite(any.lineWidth) && any.lineWidth > 0 && any.lineWidth <= 20)) {
@@ -129,6 +134,10 @@ export function validateSeriesOptions<T extends ChartSeriesType>(type: T, o: Par
   if (any.lastValueVisible !== undefined && typeof any.lastValueVisible !== "boolean") throw new XChartError("INVALID_OPTION", "lastValueVisible must be a boolean");
   if (any.title !== undefined && (typeof any.title !== "string" || any.title.length > 200)) throw new XChartError("INVALID_OPTION", "title must be a string of at most 200 characters");
   if (any.baseline !== undefined) finite(any.baseline, "baseline");
+  if (any.lineVisible !== undefined && typeof any.lineVisible !== "boolean") throw new XChartError("INVALID_OPTION", "lineVisible must be a boolean");
+  if (any.displacement !== undefined && !(Number.isInteger(any.displacement) && Math.abs(any.displacement as number) <= 1000)) {
+    throw new XChartError("INVALID_OPTION", "displacement must be an integer number of bars between -1000 and 1000");
+  }
   if (any.colorMode !== undefined && !["sign", "candle", "single"].includes(any.colorMode as string)) {
     throw new XChartError("INVALID_OPTION", 'colorMode must be "sign", "candle" or "single"');
   }
