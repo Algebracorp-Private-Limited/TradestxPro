@@ -5,7 +5,7 @@
  * Pure TypeScript: no DOM access.
  */
 import type { CandlestickData, ChartSeriesType, SeriesData, SingleValueData } from "./types.ts";
-import { validateBars, validateUpdate } from "./validation.ts";
+import { XChartError, validateBars, validateSeriesType, validateUpdate } from "./validation.ts";
 
 /** Same shape as the engine's Bar. NaN prices mark a gap (no candle at this time). */
 export type AxisBar = { t: number; o: number; h: number; l: number; c: number; v: number };
@@ -58,11 +58,14 @@ export class SeriesStore {
   /** Candles aligned to the axis (gap bars where there is no candle, or no candlestick series). */
   bars: AxisBar[] = [];
   readonly series = new Map<number, StoreSeries>();
+  /** Increments on every data change (lets observers tell "same position, new data" apart). */
+  version = 0;
   private nextId = 1;
 
   add(type: ChartSeriesType): StoreSeries {
+    validateSeriesType(type);
     if (type === "candlestick" && this.candle()) {
-      throw new RangeError("[XChart] Only one candlestick series per chart is supported in this version");
+      throw new XChartError("UNSUPPORTED_SERIES", "Only one candlestick series per chart is supported in this version");
     }
     const s: StoreSeries = { id: this.nextId++, type, points: [], values: new Array(this.times.length).fill(NaN) };
     this.series.set(s.id, s);
@@ -77,7 +80,16 @@ export class SeriesStore {
   remove(id: number): Change {
     if (!this.series.delete(id)) return { kind: "tick", appended: 0 };
     this.rebuild();
+    this.version++;
     return { kind: "full" };
+  }
+
+  /** Drops every series and array (chart destruction). */
+  clear() {
+    this.series.clear();
+    this.times = [];
+    this.bars = [];
+    this.version++;
   }
 
   setData(id: number, data: ReadonlyArray<SeriesData<ChartSeriesType>>): Change {
@@ -85,6 +97,7 @@ export class SeriesStore {
     validateBars(s.type, data);
     s.points = data.map((p) => ({ ...p }));
     this.rebuild();
+    this.version++;
     return { kind: "full" };
   }
 
@@ -94,6 +107,7 @@ export class SeriesStore {
     const last = s.points[s.points.length - 1];
     validateUpdate(s.type, last, point);
     const p = { ...point };
+    this.version++;
     if (last && p.time === last.time) {
       s.points[s.points.length - 1] = p;
       this.writeAt(s, search(this.times, p.time), p);
@@ -189,7 +203,7 @@ export class SeriesStore {
 
   private get(id: number): StoreSeries {
     const s = this.series.get(id);
-    if (!s) throw new RangeError("[XChart] This series was removed from the chart");
+    if (!s) throw new XChartError("SERIES_REMOVED", "This series was removed from the chart");
     return s;
   }
 

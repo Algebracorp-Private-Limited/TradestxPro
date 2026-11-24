@@ -55,7 +55,7 @@ export function XChartDemo() {
     let unsub: (() => void) | null = null;
     import("@/lib/xchart-sdk").then(({ createChart }) => {
       if (disposed || !box.current) return;
-      const chart = createChart(box.current, { theme, autoSize: true, crosshair: true, priceScale: { precision: 2 } });
+      const chart = createChart(box.current, { theme, autoSize: true, crosshair: true, followLatest: true, priceScale: { precision: 2 } });
       const candles = chart.addCandlestickSeries({ upColor: "#22c55e", downColor: "#ef4444" });
       const ma = chart.addLineSeries({ color: "#f59e0b", lineWidth: 2, title: "SMA 20" });
       const volume = chart.addHistogramSeries({ colorMode: "candle", opacity: 0.6, title: "Volume", precision: 0 });
