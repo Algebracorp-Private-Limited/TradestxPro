@@ -523,6 +523,68 @@ test("browser: synchronised charts follow the pointer and the viewport by time; 
   });
 });
 
+test("browser: chart types draw distinct pixels; Heikin Ashi keeps real data; plugin layer renders; layout round-trip", async (t) => {
+  await withPage(t, async (page) => {
+    const r = await page.evaluate(`(async () => {
+      const el = document.getElementById("a");
+      const chart = X.createChart(el, { theme: "dark" });
+      const c = chart.addCandlestickSeries({ upColor: "#00ff00", downColor: "#ff0000", wickUpColor: "#00ff00", wickDownColor: "#ff0000" });
+      const data = mk(40);
+      c.setData(data);
+      chart.setVisibleRange({ from: data[0].time, to: data[39].time });
+      const out = {};
+      // Blue pixels on the horizontal segment a step line draws at close[10] between bars 10 and 11.
+      const seg = (img) => { const y = Math.round(chart.priceToCoordinate(data[10].close)); const x0 = chart.timeToCoordinate(data[10].time) + 2, x1 = chart.timeToCoordinate(data[11].time) - 2; return count(img, is.blue, x0, x1, y - 1, y + 2); };
+      const shot = async (type, style) => { chart.setChartType(type, style); await frame(); const { img } = pixels(el); return { green: count(img, is.green, 0, 600, 0, 374), red: count(img, is.red, 0, 600, 0, 374), blue: count(img, is.blue, 0, 600, 0, 374), seg: seg(img) }; };
+      out.candles = await shot("candles");
+      out.hollow = await shot("hollow-candles");
+      out.hilo = await shot("high-low");
+      out.line = await shot("line", { lineColor: "#0000ff", lineWidth: 2 });
+      out.step = await shot("step-line", { lineColor: "#0000ff", lineWidth: 2 });
+      out.columns = await shot("columns", { upColor: "#00ff00", downColor: "#ff0000" });
+      out.baseline = await shot("baseline", { upColor: "#00ff00", downColor: "#ff0000", baseline: data[20].close });
+      out.ha = await shot("heikin-ashi");
+      out.haData = JSON.stringify(c.data()) === JSON.stringify(data);
+      try { chart.setChartType("renko"); } catch (e) { out.renko = e.code; }
+      chart.setChartType("candles");
+      chart.use({ id: "test/box", install(ctx) { ctx.addLayer({ z: "above", draw(api) { api.ctx.fillStyle = "#ff00ff"; api.ctx.fillRect(10, api.pane.top + 10, 50, 30); } }); } });
+      await frame();
+      out.plugin = count(pixels(el).img, is.magenta, 0, 100, 0, 60);
+      chart.removePlugin("test/box");
+      await frame();
+      out.pluginGone = count(pixels(el).img, is.magenta, 0, 100, 0, 60);
+      chart.addIndicator("ema", { period: 9, color: "#0000ff" });
+      chart.addDrawing({ type: "horizontal-line", points: [{ time: data[5].time, price: 120 }] });
+      const layout = JSON.stringify(chart.saveLayout());
+      chart.remove();
+      const other = X.createChart(el, { theme: "dark" });
+      other.addCandlestickSeries().setData(data);
+      other.loadLayout(layout);
+      other.setVisibleRange({ from: data[0].time, to: data[39].time });
+      await frame();
+      out.restoredBlue = count(pixels(el).img, is.blue, 0, 600, 0, 374);
+      out.restored = { ind: other.getIndicators().length, drawings: other.getDrawings().length };
+      other.remove();
+      return out;
+    })()`);
+    assert.ok(r.candles.green > 300 && r.candles.red > 300);
+    assert.ok(r.hollow.green < r.candles.green * 0.7, `hollow up candles are outlines (${r.candles.green} → ${r.hollow.green})`);
+    assert.ok(Math.abs(r.hollow.red - r.candles.red) < r.candles.red * 0.15, "falling candles stay filled");
+    assert.ok(r.hilo.green > 100 && r.hilo.red > 100);
+    assert.ok(r.line.blue > 300 && r.line.green < 20, `line chart (${JSON.stringify(r.line)})`);
+    assert.ok(r.step.seg > r.line.seg + 6, `step line draws a horizontal segment between bars (${r.line.seg} → ${r.step.seg})`);
+    assert.ok(r.columns.green + r.columns.red > r.candles.green + r.candles.red, "columns fill to the pane bottom");
+    assert.ok(r.baseline.green > 100 && r.baseline.red > 100, `baseline colours above/below (${JSON.stringify(r.baseline)})`);
+    assert.ok(r.ha.green > 200, "Heikin Ashi candles drawn");
+    assert.equal(r.haData, true, "Heikin Ashi never changes series data");
+    assert.equal(r.renko, "UNSUPPORTED_CHART_TYPE");
+    assert.ok(r.plugin > 1000, `plugin layer pixels (${r.plugin})`);
+    assert.equal(r.pluginGone, 0);
+    assert.deepEqual(r.restored, { ind: 1, drawings: 1 });
+    assert.ok(r.restoredBlue > 200, `restored EMA is drawn (${r.restoredBlue})`);
+  });
+});
+
 test("browser: benchmarks (1k / 10k / 50k candles)", { skip: process.env.XCHART_BENCH !== "1" && "set XCHART_BENCH=1 to run" }, async (t) => {
   const browser = await launch(t);
   if (!browser) return;

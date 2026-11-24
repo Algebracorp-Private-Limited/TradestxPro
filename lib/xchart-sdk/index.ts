@@ -29,6 +29,12 @@ export type { SessionHighlightOptions } from "./create-chart.ts";
 export { syncCharts, type SyncGroup, type SyncOptions } from "./sync.ts";
 export { CALENDARS, TradingCalendar, holidayList, offsetSeconds, zonedTime, type CalendarDef, type CalendarId, type HolidayProvider, type SessionDef, type SessionKind, type SessionState } from "./calendar/index.ts";
 export { isTimeZone } from "./validation.ts";
+// v0.3 — chart types, layouts, plugins
+export { PRICE_CHART_TYPES, TIME_CHART_TYPES, heikinAshi, kagi, lineBreak, pointAndFigure, rangeBars, renko, type Brick, type BreakLine, type ChartType, type ChartTypeStyle, type KagiLine, type PnfColumn, type PriceChartType, type RangeBar } from "./chart-types.ts";
+export { LAYOUT_FORMAT, LAYOUT_VERSION, parseLayout, type ChartLayout, type LayoutLoadOptions, type LayoutLoadReport } from "./layout.ts";
+export type { PluginContext, PluginInfo, PluginLayer, XChartPlugin } from "./plugins.ts";
+export type { ToolEnv, ToolSpec } from "./drawings/tools.ts";
+export type { LayerApi } from "../../components/chart/engine.ts";
 export type { ChartEvents, ChartEventType, PointerPayload } from "./events/types.ts";
 export { XChartError, isCssColor, validateBar, validateBars, validateChartOptions, validateRange, validateSeriesOptions, validateUpdate, validateZoom } from "./validation.ts";
 export {

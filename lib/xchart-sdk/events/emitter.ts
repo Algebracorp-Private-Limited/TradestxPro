@@ -20,6 +20,16 @@ export class Emitter<Events extends Record<string, unknown>> {
     };
   }
 
+  /** Like on(), but the handler runs at most once. */
+  once<K extends keyof Events>(type: K, handler: Handler<Events[K]>): () => void {
+    if (typeof handler !== "function") throw new TypeError("handler must be a function");
+    const off = this.on(type, (p) => {
+      off();
+      handler(p);
+    });
+    return off;
+  }
+
   has(type: keyof Events): boolean {
     return (this.handlers.get(type)?.size ?? 0) > 0;
   }

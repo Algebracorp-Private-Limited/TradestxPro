@@ -7,7 +7,7 @@
  */
 import { SeriesStore, type Change } from "./store.ts";
 import { CanvasAdapter, seriesPaneId, type RenderAdapter, type RenderModel } from "./canvas-adapter.ts";
-import { PANE_ID, XChartError, validateChartOptions, validateRange, validateSeriesOptions, validateZoom } from "./validation.ts";
+import { PANE_ID, XChartError, validateBars, validateSeriesType, validateChartOptions, validateRange, validateSeriesOptions, validateZoom } from "./validation.ts";
 import { Emitter } from "./events/emitter.ts";
 import { IndicatorRegistry } from "./indicators/registry.ts";
 import { defaultRegistry } from "./indicators/index.ts";
@@ -20,6 +20,11 @@ import { Decorations, type PriceLineApi, type PriceLineOptions, type SeriesMarke
 import type { EngineLayer } from "../../components/chart/engine.ts";
 import { TradingCalendar, type CalendarId } from "./calendar/index.ts";
 import { isCssColor } from "./validation.ts";
+import { engineType, heikinAshi, validateChartType, type ChartType, type ChartTypeStyle } from "./chart-types.ts";
+import type { AxisBar } from "./store.ts";
+import { PluginManager, type PluginInfo, type XChartPlugin } from "./plugins.ts";
+import { CALENDARS } from "./calendar/index.ts";
+import { LAYOUT_CHART_KEYS, LAYOUT_FORMAT, LAYOUT_VERSION, parseLayout, type ChartLayout, type LayoutLoadOptions, type LayoutLoadReport } from "./layout.ts";
 
 export type SessionHighlightOptions = {
   calendar: TradingCalendar | CalendarId;
@@ -168,6 +173,12 @@ export class ChartImpl implements ChartApi {
   private collapsedPanes = new Set<string>();
   private paneOrder: string[] = [];
   private sessionLayer: EngineLayer | null = null;
+  private chartType: ChartType = "candles";
+  private chartStyle: ChartTypeStyle = {};
+  /** Heikin Ashi display bars (the store keeps the original OHLCV). */
+  private ha: AxisBar[] | null = null;
+  private plugins_: PluginManager;
+  private sessionCalendar: string | null = null;
   private layerKey = "";
 
   constructor(adapter: RenderAdapter, options: ChartOptions = {}, onRemove?: () => void) {
@@ -190,6 +201,26 @@ export class ChartImpl implements ChartApi {
     });
     this.drawings = new DrawingManager(this.drawingHost());
     adapter.setInteraction?.(this.drawings.delegate());
+    this.plugins_ = new PluginManager({
+      chart: this,
+      setLayers: (layers) => this.setExtraLayers(layers),
+      registerIndicator: (def) => this.registerIndicator(def),
+      unregisterIndicator: (id) => void this.registry.unregister(id),
+      removeIndicatorsOfType: (id) => {
+        for (const i of [...this.indicators.values()]) if (i.type === id) i.remove();
+      },
+      registerTool: (type, spec) => this.drawings.registerTool(type, spec),
+      unregisterTool: (type) => void this.drawings.unregisterTool(type),
+      removeDrawingsOfType: (type) => {
+        for (const d of this.drawings.list()) if (d.type === type) this.drawings.remove(d.id, false);
+      },
+      on: (type, handler) => this.events.on(type, handler),
+      emitError: (pluginId, error) => {
+        if (this.events.has("pluginError")) this.events.emit("pluginError", { pluginId, error });
+        else console.error(`[XChart] plugin "${pluginId}" failed: ${error}`);
+      },
+      redraw: () => this.requestRedraw(),
+    });
     this.syncLayers(true);
   }
 
@@ -220,8 +251,8 @@ export class ChartImpl implements ChartApi {
     };
   }
 
-  private applyScaleOptions(id: string, o: Partial<PriceScaleSettings>) {
-    this.assertAlive();
+  private checkScaleOptions(id: string, o: Partial<PriceScaleSettings>) {
+    if (typeof id !== "string" || !PANE_ID.test(id)) throw new XChartError("INVALID_OPTION", "Price scale id must be 1–32 letters, digits, _ or -");
     if (!o || typeof o !== "object") throw new XChartError("INVALID_OPTION", "Price scale options must be an object");
     for (const k of Object.keys(o)) if (!["mode", "autoScale", "margins", "visible"].includes(k)) throw new XChartError("INVALID_OPTION", `Unknown price scale option "${k}"`);
     if (o.margins !== undefined) {
@@ -235,6 +266,11 @@ export class ChartImpl implements ChartApi {
     if (id !== "right" && ((o.mode !== undefined && o.mode !== "normal") || o.autoScale === false)) {
       throw new XChartError("UNSUPPORTED_SCALE", "Overlay price scales are linear and auto-fitted in this version; use the main (\"right\") scale for log, percentage or indexed modes");
     }
+  }
+
+  private applyScaleOptions(id: string, o: Partial<PriceScaleSettings>) {
+    this.assertAlive();
+    this.checkScaleOptions(id, o);
     if (id === "right" && (o.mode !== undefined || o.autoScale !== undefined)) {
       const ps: Record<string, unknown> = {};
       if (o.mode !== undefined) ps.mode = o.mode;
@@ -328,18 +364,252 @@ export class ChartImpl implements ChartApi {
     };
   }
 
+  // ---------- layouts ----------
+  private paneRef(id: string, seriesIdx: Map<number, number>, indIdx: Map<string, number>): string {
+    if (id.startsWith("xs-")) return `series:${seriesIdx.get(Number(id.slice(3))) ?? -1}`;
+    if (id.startsWith("xind-")) return `indicator:${indIdx.get(id.slice(5)) ?? -1}`;
+    return id;
+  }
+
+  /** JSON-safe description of how the chart looks. Market data only with includeData: true. */
+  saveLayout(options: { includeData?: boolean } = {}): ChartLayout {
+    this.assertAlive();
+    if (!options || typeof options !== "object") throw new XChartError("INVALID_OPTION", "saveLayout options must be an object");
+    const chart: Record<string, unknown> = {};
+    for (const k of LAYOUT_CHART_KEYS) {
+      const v = (this.opts as Record<string, unknown>)[k];
+      if (v === undefined) continue;
+      if (k === "priceScale") {
+        const ps = Object.fromEntries(Object.entries(v as object).filter(([, x]) => x !== undefined));
+        if (Object.keys(ps).length) chart[k] = ps;
+      } else chart[k] = v;
+    }
+    const seriesIdx = new Map<number, number>();
+    const series = [...this.seriesById.values()].map((s, i) => {
+      seriesIdx.set(s.id, i);
+      const out: ChartLayout["series"][number] = { type: s.type, options: { ...s.options() } as Record<string, unknown> };
+      if (options.includeData) out.data = this.pointsOf(s.id);
+      return out;
+    });
+    const indIdx = new Map<string, number>();
+    const indicators = [...this.indicators.values()].map((ind, i) => {
+      indIdx.set(ind.id, i);
+      const o = { ...ind.options() } as Record<string, unknown>;
+      if (o.visible === true) delete o.visible;
+      return { type: ind.type, params: { ...ind.parameters() } as Record<string, unknown>, options: o };
+    });
+    const ref = (id: string) => this.paneRef(id, seriesIdx, indIdx);
+    const sizes = this.paneSizes ? Object.fromEntries(Object.entries(this.paneSizes).map(([k, v]) => [ref(k), Math.round(v)])) : undefined;
+    const layout: ChartLayout = {
+      format: LAYOUT_FORMAT,
+      version: LAYOUT_VERSION,
+      sdkVersion: "0.3.0",
+      chart,
+      chartType: { type: this.chartType, style: { ...this.chartStyle } as Record<string, unknown> },
+      series,
+      indicators,
+      drawings: this.drawings.serialize(),
+      priceScales: Object.fromEntries([...this.scaleOpts].map(([id, o]) => [id, { ...(o.margins ? { margins: { ...o.margins } } : {}), ...(o.visible !== undefined ? { visible: o.visible } : {}) }])),
+      panes: { sizes, collapsed: [...this.collapsedPanes].map(ref), order: this.paneOrder.map(ref) },
+      session: this.sessionCalendar && this.sessionCalendar in CALENDARS ? { calendar: this.sessionCalendar } : null,
+      plugins: this.plugins_.ids(),
+    };
+    return JSON.parse(JSON.stringify(layout)) as ChartLayout;
+  }
+
+  /**
+   * Applies a saved layout. Everything is validated first; on any error nothing changes.
+   * Series are matched to this chart's series by type and order; layout series without a match
+   * are created only when the layout carries their data. Plugins are never installed by a load.
+   */
+  loadLayout(input: unknown, options: LayoutLoadOptions = {}): LayoutLoadReport {
+    this.assertAlive();
+    if (!options || typeof options !== "object") throw new XChartError("INVALID_OPTION", "loadLayout options must be an object");
+    const L = parseLayout(input);
+    const applyData = options.applyData !== false;
+
+    // ---- validate everything ----
+    const nextOpts = mergeOptions(this.opts, L.chart as Partial<ChartOptions>);
+    validateChartOptions(nextOpts);
+    validateChartType(L.chartType.type, L.chartType.style);
+    const existing = [...this.seriesById.values()];
+    const used = new Set<AnySeries>();
+    const plan = L.series.map((ls, i) => {
+      validateSeriesType(ls.type);
+      const type = ls.type as ChartSeriesType;
+      const match = existing.find((s) => !used.has(s) && s.type === type);
+      if (match) used.add(match);
+      const willHaveData = Boolean(ls.data && applyData);
+      if (ls.data && applyData) {
+        try {
+          validateBars(type, ls.data as never);
+        } catch (e) {
+          throw new XChartError((e as XChartError).code ?? "INVALID_LAYOUT", `layout.series[${i}]: ${(e as Error).message.replace(/^\[XChart\] /, "")}`);
+        }
+      }
+      return { ls, type, match, create: !match && willHaveData };
+    });
+    const candles = plan.filter((p) => p.type === "candlestick" && (p.match || p.create)).length + (existing.some((s) => s.type === "candlestick" && !used.has(s)) ? 1 : 0);
+    if (plan.filter((p) => p.type === "candlestick" && p.create).length && existing.some((s) => s.type === "candlestick")) throw new XChartError("INVALID_LAYOUT", "Only one candlestick series per chart is supported");
+    for (const [i, p] of plan.entries()) {
+      try {
+        this.checkOptions(p.type, p.ls.options as never);
+        validateSeriesOptions(p.type, p.ls.options as never, { hasCandles: candles > 0 });
+      } catch (e) {
+        throw new XChartError((e as XChartError).code ?? "INVALID_LAYOUT", `layout.series[${i}].options: ${(e as Error).message.replace(/^\[XChart\] /, "")}`);
+      }
+    }
+    const skippedInd: string[] = [];
+    const inds = L.indicators.filter((d, i) => {
+      const def = this.registry.get(d.type);
+      if (!def) {
+        if (options.skipUnknownIndicators) {
+          skippedInd.push(d.type);
+          return false;
+        }
+        throw new XChartError("UNKNOWN_INDICATOR", `layout.indicators[${i}]: indicator "${d.type}" is not registered on this chart`);
+      }
+      const OPTION_KEYS = ["color", "colors", "lineWidth", "lineStyle", "pane", "priceScaleId", "visible", "title", "hiddenOutputs", "fills"];
+      for (const k of Object.keys(d.options)) if (!OPTION_KEYS.includes(k)) throw new XChartError("INVALID_LAYOUT", `layout.indicators[${i}].options.${k} is not an indicator option`);
+      for (const k of Object.keys(d.params)) if (OPTION_KEYS.includes(k)) throw new XChartError("INVALID_LAYOUT", `layout.indicators[${i}].params.${k} is a display option`);
+      try {
+        // Dry run: the constructor validates parameters and options and touches nothing.
+        new IndicatorInstance("check", def, d.params, d.options as IndicatorOptions, this.indicatorHost, () => {});
+      } catch (e) {
+        throw new XChartError((e as XChartError).code ?? "INVALID_LAYOUT", `layout.indicators[${i}]: ${(e as Error).message.replace(/^\[XChart\] /, "")}`);
+      }
+      return true;
+    });
+    this.drawings.check(L.drawings);
+    for (const [id, o] of Object.entries(L.priceScales)) {
+      if (!o || typeof o !== "object") throw new XChartError("INVALID_LAYOUT", `layout.priceScales.${id} must be an object`);
+      for (const k of Object.keys(o)) if (k !== "margins" && k !== "visible") throw new XChartError("INVALID_LAYOUT", `layout.priceScales.${id}.${k} is not allowed`);
+      this.checkScaleOptions(id, o);
+    }
+    if (L.session && !(L.session.calendar in CALENDARS)) throw new XChartError("INVALID_LAYOUT", `Unknown session calendar "${L.session.calendar}"`);
+
+    // ---- apply ----
+    const report: LayoutLoadReport = { seriesMatched: 0, seriesCreated: 0, seriesSkipped: 0, indicatorsAdded: 0, indicatorsSkipped: skippedInd, drawings: L.drawings.length, pluginsNotInstalled: L.plugins.filter((id) => !this.plugins_.ids().includes(id)) };
+    this.opts = nextOpts;
+    this.adapter.setOptions(this.opts);
+    this.chartType = L.chartType.type as ChartType;
+    this.chartStyle = { ...(L.chartType.style as ChartTypeStyle) };
+    this.ha = null;
+    const layoutSeries: (AnySeries | null)[] = [];
+    for (const p of plan) {
+      let s: AnySeries | null = p.match ?? null;
+      if (s) {
+        s.applyOptions(p.ls.options as never);
+        report.seriesMatched++;
+      } else if (p.create) {
+        s = this.add(p.type, p.ls.options as never) as unknown as AnySeries;
+        report.seriesCreated++;
+      } else report.seriesSkipped++;
+      if (s && p.ls.data && applyData) s.setData(p.ls.data as never);
+      layoutSeries.push(s);
+    }
+    for (const i of [...this.indicators.values()]) i.remove();
+    const newInd = inds.map((d) => {
+      report.indicatorsAdded++;
+      return this.addIndicator(d.type, { ...d.params, ...d.options });
+    });
+    this.drawings.load(L.drawings);
+    this.scaleOpts = new Map(Object.entries(L.priceScales).map(([id, o]) => [id, { ...(o.margins ? { margins: { ...o.margins } } : {}), ...(o.visible !== undefined ? { visible: o.visible } : {}) }]));
+    const unref = (r: string): string | null => {
+      const m = /^(series|indicator):(-?\d+)$/.exec(r);
+      if (!m) return r;
+      const k = Number(m[2]);
+      if (m[1] === "series") {
+        const s = layoutSeries[k];
+        return s ? this.paneOf(s.id) : null;
+      }
+      const ind = newInd[k];
+      return ind ? `xind-${ind.id}` : null;
+    };
+    const sizes = L.panes.sizes ? Object.fromEntries(Object.entries(L.panes.sizes).flatMap(([k, v]) => (unref(k) ? [[unref(k)!, v]] : []))) : undefined;
+    this.paneSizes = sizes && Object.keys(sizes).length ? sizes : undefined;
+    this.collapsedPanes = new Set(L.panes.collapsed.map(unref).filter((x): x is string => x !== null && x !== "main"));
+    this.paneOrder = L.panes.order.map(unref).filter((x): x is string => x !== null && x !== "main");
+    if (L.session) this.setSessionHighlight({ calendar: L.session.calendar as CalendarId });
+    else this.setSessionHighlight(null);
+    this.render({ kind: "full" });
+    this.events.emit("layoutChange", { reason: "layout-load" });
+    return report;
+  }
+
+  // ---------- plugins (trusted code; not sandboxed) ----------
+  use(plugin: XChartPlugin): void {
+    this.assertAlive();
+    try {
+      this.plugins_.install(plugin);
+    } catch (e) {
+      if (e instanceof XChartError) throw e;
+      throw new XChartError("PLUGIN_FAILED", (e as Error).message);
+    }
+  }
+  removePlugin(id: string): boolean {
+    this.assertAlive();
+    return this.plugins_.remove(id);
+  }
+  plugins(): PluginInfo[] {
+    return this.plugins_.list();
+  }
+  /** Drawing tool ids available on this chart (built-in and plugin tools). */
+  drawingTools(): string[] {
+    return this.drawings.toolTypes();
+  }
+
+  // ---------- chart type ----------
+  /** Changes how the candlestick series is drawn. Display only: the series data is never modified. */
+  setChartType(type: ChartType, style?: ChartTypeStyle): void {
+    this.assertAlive();
+    validateChartType(type, style);
+    this.chartType = type;
+    this.chartStyle = { ...(style ?? {}) };
+    this.ha = null;
+    this.render({ kind: "full" });
+    this.events.emit("layoutChange", { reason: "chart-type" });
+  }
+  getChartType(): { type: ChartType; style: ChartTypeStyle } {
+    return { type: this.chartType, style: { ...this.chartStyle } };
+  }
+
+  private updateDisplayBars(change: Change) {
+    if (this.chartType !== "heikin-ashi") {
+      this.ha = null;
+      return;
+    }
+    const src = this.store.bars;
+    if (!this.ha || change.kind === "full" || this.ha.length < src.length - 1) this.ha = heikinAshi(src, []);
+    else heikinAshi(src, this.ha, Math.max(0, src.length - 2)); // in place: the renderer's tick path keeps its array
+  }
+
+  private realLast(): { price: number; prev: number | null } | undefined {
+    if (this.chartType !== "heikin-ashi") return undefined;
+    const b = this.store.bars;
+    let i = b.length - 1;
+    while (i >= 0 && !Number.isFinite(b[i].c)) i--;
+    if (i < 0) return undefined;
+    let j = i - 1;
+    while (j >= 0 && !Number.isFinite(b[j].c)) j--;
+    return { price: b[i].c, prev: j >= 0 ? b[j].c : null };
+  }
+
   // ---------- trading sessions ----------
   /** Shades extended-hours / closed bars and marks day breaks using a trading calendar; null removes it. View-only. */
   setSessionHighlight(o: SessionHighlightOptions | null): void {
     this.assertAlive();
     if (o === null) {
       this.sessionLayer = null;
+      this.sessionCalendar = null;
+    this.ha = null;
       this.syncLayers(true);
       this.adapter.requestRedraw?.();
       return;
     }
     if (!o || typeof o !== "object") throw new XChartError("INVALID_OPTION", "setSessionHighlight expects options or null");
     const cal = o.calendar instanceof TradingCalendar ? o.calendar : new TradingCalendar(o.calendar);
+    this.sessionCalendar = cal.id;
     for (const k of ["preColor", "postColor", "closedColor", "dayBreakColor"] as const) if (o[k] !== undefined && !isCssColor(o[k])) throw new XChartError("INVALID_COLOR", `Invalid ${k}`);
     if (o.dayBreaks !== undefined && typeof o.dayBreaks !== "boolean") throw new XChartError("INVALID_OPTION", "dayBreaks must be a boolean");
     const st = this.store;
@@ -583,7 +853,7 @@ export class ChartImpl implements ChartApi {
     return this.drawings.selected;
   }
   /** Starts interactive creation with a tool; null returns to normal pan/zoom. */
-  setDrawingTool(tool: DrawingType | null): void {
+  setDrawingTool(tool: DrawingType | (string & {}) | null): void {
     this.assertAlive();
     this.drawings.setTool(tool);
   }
@@ -620,6 +890,12 @@ export class ChartImpl implements ChartApi {
       active = false;
       this.drawingSubs.delete(handler);
     };
+  }
+
+  once<K extends keyof ChartEvents>(type: K, handler: (payload: ChartEvents[K]) => void): Unsubscribe {
+    this.assertAlive();
+    if (typeof handler !== "function") throw new XChartError("INVALID_HANDLER", `once("${String(type)}") expects a function`);
+    return this.events.once(type, handler);
   }
 
   /** Subscribes to a typed chart event; returns an unsubscribe function. */
@@ -845,8 +1121,12 @@ export class ChartImpl implements ChartApi {
       future = p.future;
     }
     const scales = [...this.scaleOpts].map(([id, o]) => ({ id, margins: o.margins as { top: number; bottom: number } | undefined, visible: o.visible }));
+    const st = this.chartStyle;
     return {
-      times: this.store.times, bars: this.store.bars, intraday: this.store.intraday(), candle, series, followLatest: this.opts.followLatest === true, extraOverlays, extraPanes, future,
+      chartType: engineType(this.chartType),
+      mainStyle: { line: st.lineColor, lineWidth: st.lineWidth, areaTop: st.areaTopColor, areaBottom: st.areaBottomColor, baseline: st.baseline, up: st.upColor, down: st.downColor, markers: this.chartType === "line-markers" },
+      lastPrice: this.realLast(),
+      times: this.store.times, bars: this.ha ?? this.store.bars, intraday: this.store.intraday(), candle, series, followLatest: this.opts.followLatest === true, extraOverlays, extraPanes, future,
       scales, paneSizes: this.paneSizes, collapsed: [...this.collapsedPanes], paneOrder: this.paneOrder,
     };
   }
@@ -855,6 +1135,7 @@ export class ChartImpl implements ChartApi {
     if (this.removed) return;
     // Full re-renders keep the viewport on the same TIMES (bars may shift index when the axis changes).
     const keep = change.kind === "full" ? (before === undefined ? this.captureView() : before) : null;
+    this.updateDisplayBars(change);
     this.adapter.render(this.model(), change);
     if (change.kind === "full") this.syncLayers();
     if (keep) this.restoreView(keep);
@@ -942,7 +1223,10 @@ export class ChartImpl implements ChartApi {
     }
     const lastBar = this.lastCandleTime();
     const projected = lastBar !== null && p.index > this.store.indexOfTime(lastBar);
-    return { time, price: p.price, seriesData, indicators, projected };
+    const ev: CrosshairEvent = { time, price: p.price, seriesData, indicators, projected };
+    const hb = this.ha?.[p.index];
+    if (hb && Number.isFinite(hb.c)) ev.display = { open: hb.o, high: hb.h, low: hb.l, close: hb.c };
+    return ev;
   }
 
   private deliver(handlers: Handler[], e: CrosshairEvent) {
@@ -1022,6 +1306,7 @@ export class ChartImpl implements ChartApi {
     for (const i of [...this.indicators.values()]) i.remove();
     this.indicators.clear();
     this.inputCache = null;
+    this.plugins_.destroyAll();
     this.drawings.destroy();
     this.drawingSubs.clear();
     for (const d of this.decorations.values()) d.clear();

@@ -31,7 +31,8 @@ export type DrawingStyle = {
 
 export type DrawingSpec = {
   id?: string;
-  type: DrawingType;
+  /** A built-in tool or a tool registered on the chart (plugins). */
+  type: DrawingType | (string & {});
   points: DrawingPoint[];
   style?: DrawingStyle;
   text?: string;
@@ -41,10 +42,12 @@ export type DrawingSpec = {
 
 /** Serialised drawing (JSON-safe). */
 export type DrawingData = Required<Pick<DrawingSpec, "id" | "type" | "points" | "locked" | "visible">> & { style: DrawingStyle; text?: string };
+/** Rendering/hit-testing environment given to drawing tools (see tools.ts). */
+export type { ToolEnv, ToolSpec } from "./tools.ts";
 
 export interface DrawingApi {
   readonly id: string;
-  readonly type: DrawingType;
+  readonly type: DrawingType | (string & {});
   data(): DrawingData;
   /** Moves anchors and/or changes the text. */
   update(patch: { points?: DrawingPoint[]; text?: string }): void;

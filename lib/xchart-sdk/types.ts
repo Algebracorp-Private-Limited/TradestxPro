@@ -158,6 +158,8 @@ export interface CrosshairEvent {
   indicators?: ReadonlyMap<IndicatorApi, Readonly<Record<string, number>>>;
   /** v0.3: true when `time` lies after the last real candle (projected indicator space, not market data). */
   projected?: boolean;
+  /** v0.3: the drawn (transformed) candle when the chart type is a display transform such as Heikin Ashi; `seriesData` keeps the real OHLC. */
+  display?: { open: number; high: number; low: number; close: number };
 }
 
 export type PriceScaleSettings = {
@@ -240,6 +242,7 @@ export interface ChartApi {
   addCloudSeries(options?: CloudSeriesOptions): SeriesApi<"cloud">;
   /** Typed events; returns an unsubscribe function. */
   on<K extends keyof ChartEvents>(type: K, handler: (payload: ChartEvents[K]) => void): Unsubscribe;
+  once<K extends keyof ChartEvents>(type: K, handler: (payload: ChartEvents[K]) => void): Unsubscribe;
   addIndicator(type: string, config?: Record<string, unknown>): IndicatorApi;
   getIndicators(): IndicatorApi[];
   removeIndicator(indicator: IndicatorApi | string): boolean;
@@ -256,6 +259,14 @@ export interface ChartApi {
   priceScale(id?: string): PriceScaleApi;
   panes(): PaneApi[];
   pane(id: string): PaneApi | undefined;
+  saveLayout(options?: { includeData?: boolean }): import("./layout.ts").ChartLayout;
+  loadLayout(layout: unknown, options?: import("./layout.ts").LayoutLoadOptions): import("./layout.ts").LayoutLoadReport;
+  use(plugin: import("./plugins.ts").XChartPlugin): void;
+  removePlugin(id: string): boolean;
+  plugins(): import("./plugins.ts").PluginInfo[];
+  drawingTools(): string[];
+  setChartType(type: import("./chart-types.ts").ChartType, style?: import("./chart-types.ts").ChartTypeStyle): void;
+  getChartType(): { type: import("./chart-types.ts").ChartType; style: import("./chart-types.ts").ChartTypeStyle };
   setSessionHighlight(options: import("./create-chart.ts").SessionHighlightOptions | null): void;
   setCrosshairPosition(time: ChartTime, price?: number | null): void;
   clearCrosshairPosition(): void;
@@ -267,7 +278,7 @@ export interface ChartApi {
   duplicateDrawing(id: string): DrawingApi | undefined;
   selectDrawing(id: string | null): void;
   selectedDrawing(): string | null;
-  setDrawingTool(tool: DrawingType | null): void;
+  setDrawingTool(tool: DrawingType | (string & {}) | null): void;
   getDrawingTool(): DrawingType | null;
   setDrawingSnap(on: boolean): void;
   undoDrawing(): boolean;

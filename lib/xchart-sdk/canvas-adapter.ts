@@ -4,7 +4,7 @@
  *
  * Browser-only: construct it from client code (createChart guards against SSR).
  */
-import { ChartEngine, type ChartData, type ScaleSpec, type EngineLayer, type EngineTheme, type InteractionDelegate, type PaneBox, type PaneSpec, type PlotSeries, type PointerInfo } from "../../components/chart/engine.ts";
+import { ChartEngine, type ChartData, type ChartType as EngineChartType, type MainStyle, type ScaleSpec, type EngineLayer, type EngineTheme, type InteractionDelegate, type PaneBox, type PaneSpec, type PlotSeries, type PointerInfo } from "../../components/chart/engine.ts";
 import { withAlpha } from "../chart/geometry.ts";
 import type { AxisBar, Change } from "./store.ts";
 import type {
@@ -14,7 +14,6 @@ import type {
   ChartOptions,
   ChartSeriesType,
   HistogramSeriesOptions,
-  LineSeriesOptions,
   SeriesOptionsMap,
 } from "./types.ts";
 
@@ -37,6 +36,10 @@ export type RenderModel = {
   paneSizes?: Record<string, number>;
   collapsed?: string[];
   paneOrder?: string[];
+  /** v0.3: main draw type, its style, and the real last/previous close when `bars` is a display transform. */
+  chartType?: EngineChartType;
+  mainStyle?: MainStyle;
+  lastPrice?: { price: number; prev: number | null };
 };
 
 /** Engine pane id of a series: "main", its own "xs-<id>" pane, or a shared named pane. */
@@ -197,6 +200,7 @@ export class CanvasAdapter implements RenderAdapter {
     if (change.kind === "tick" && this.data && this.data.bars === model.bars && !shifted) {
       // Arrays were mutated in place: refresh derived metadata, then redraw on the next frame.
       this.data.intraday = model.intraday;
+      this.data.lastPrice = model.lastPrice;
       this.engine.refresh(model.followLatest ? change.appended : 0);
       return;
     }
@@ -239,7 +243,9 @@ export class CanvasAdapter implements RenderAdapter {
     const c = m.candle;
     return {
       bars: m.bars,
-      type: "candles",
+      type: m.chartType ?? "candles",
+      mainStyle: m.mainStyle,
+      lastPrice: m.lastPrice,
       overlays,
       panes,
       intraday: m.intraday,

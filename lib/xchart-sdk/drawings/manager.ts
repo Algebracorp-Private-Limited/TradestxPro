@@ -6,8 +6,11 @@
 import type { EngineLayer, InteractionDelegate, LayerApi, PointerInfo } from "../../../components/chart/engine.ts";
 import { XChartError, isCssColor } from "../validation.ts";
 import { snapToOhlc, type P } from "./geometry.ts";
-import { MIN_ANCHORS, TOOLS, type ToolEnv } from "./tools.ts";
-import { DRAWING_TYPES, type DrawingApi, type DrawingData, type DrawingEvent, type DrawingPoint, type DrawingSpec, type DrawingStyle, type DrawingType } from "./types.ts";
+import { TOOLS, type ToolEnv, type ToolSpec } from "./tools.ts";
+
+export type ToolTable = Readonly<Record<string, ToolSpec>>;
+const minAnchors = (t: ToolSpec) => (t.anchors === "multi" ? 3 : t.anchors);
+import { type DrawingApi, type DrawingData, type DrawingEvent, type DrawingPoint, type DrawingSpec, type DrawingStyle, type DrawingType } from "./types.ts";
 
 export type DrawingHost = {
   indexOfTime(t: number): number;
@@ -56,9 +59,9 @@ export function validateStyle(s: unknown): asserts s is DrawingStyle {
   if (o.levels !== undefined && (!Array.isArray(o.levels) || o.levels.length > 32 || o.levels.some((v) => typeof v !== "number" || !Number.isFinite(v)))) throw new XChartError("INVALID_DRAWING", "Drawing levels must be up to 32 finite numbers");
 }
 
-export function validatePoints(type: DrawingType, pts: unknown) {
+export function validatePoints(type: string, pts: unknown, tools: ToolTable = TOOLS) {
   if (!Array.isArray(pts)) throw new XChartError("INVALID_DRAWING", "Drawing points must be an array");
-  const need = TOOLS[type].anchors;
+  const need = tools[type].anchors;
   if (need === "multi" ? pts.length < 3 || pts.length > MAX_POLY : pts.length !== need) {
     throw new XChartError("INVALID_DRAWING", `"${type}" needs ${need === "multi" ? `3–${MAX_POLY}` : need} point(s), got ${pts.length}`);
   }
@@ -69,11 +72,11 @@ export function validatePoints(type: DrawingType, pts: unknown) {
   });
 }
 
-export function validateSpec(spec: unknown): asserts spec is DrawingSpec {
+export function validateSpec(spec: unknown, tools: ToolTable = TOOLS): asserts spec is DrawingSpec {
   if (!spec || typeof spec !== "object") throw new XChartError("INVALID_DRAWING", "Drawing must be an object");
   const s = spec as DrawingSpec;
-  if (!DRAWING_TYPES.includes(s.type)) throw new XChartError("UNKNOWN_DRAWING", `Unknown drawing type "${String(s.type)}"`);
-  validatePoints(s.type, s.points);
+  if (typeof s.type !== "string" || !Object.prototype.hasOwnProperty.call(tools, s.type)) throw new XChartError("UNKNOWN_DRAWING", `Unknown drawing type "${String(s.type)}"`);
+  validatePoints(s.type, s.points, tools);
   validateStyle(s.style);
   if (s.id !== undefined && (typeof s.id !== "string" || !/^[A-Za-z0-9_.:-]{1,64}$/.test(s.id))) throw new XChartError("INVALID_DRAWING", "Drawing id must be 1–64 characters of letters, digits, _ . : -");
   if (s.text !== undefined && (typeof s.text !== "string" || s.text.length > 500)) throw new XChartError("INVALID_DRAWING", "Drawing text must be a string of at most 500 characters");
@@ -85,9 +88,9 @@ type Creating = { type: DrawingType; points: DrawingPoint[]; preview: DrawingPoi
 
 class DrawingHandle implements DrawingApi {
   readonly id: string;
-  readonly type: DrawingType;
+  readonly type: DrawingType | (string & {});
   private m: DrawingManager;
-  constructor(m: DrawingManager, id: string, type: DrawingType) {
+  constructor(m: DrawingManager, id: string, type: DrawingType | (string & {})) {
     this.m = m;
     this.id = id;
     this.type = type;
@@ -125,6 +128,29 @@ export class DrawingManager {
   private drag: Drag | null = null;
   /** Snap anchors to the nearest open/high/low/close (default on; hold Ctrl to bypass while drawing). */
   snap = true;
+  /** Built-in tools plus tools registered on this chart (plugins). */
+  private tools: Record<string, ToolSpec> = { ...TOOLS };
+
+  /** Registers a custom drawing tool for this chart. Its render/hit run in a try/catch (a failure only skips that drawing). */
+  registerTool(type: string, spec: ToolSpec) {
+    if (typeof type !== "string" || !/^[a-z][a-z0-9-]{1,40}$/.test(type)) throw new XChartError("INVALID_DRAWING", "Tool id must be 2–41 lowercase letters, digits or -, starting with a letter");
+    if (Object.prototype.hasOwnProperty.call(this.tools, type)) throw new XChartError("DUPLICATE_DRAWING", `Drawing tool "${type}" already exists`);
+    const a = spec?.anchors;
+    if (!spec || typeof spec.render !== "function" || typeof spec.hit !== "function" || !(a === "multi" || (Number.isInteger(a) && (a as number) >= 1 && (a as number) <= 16))) {
+      throw new XChartError("INVALID_DRAWING", "A drawing tool needs anchors (1–16 or \"multi\"), render(env, points, drawing) and hit(env, points, p, drawing)");
+    }
+    this.tools[type] = { anchors: a, render: spec.render, hit: spec.hit };
+  }
+  unregisterTool(type: string): boolean {
+    if (Object.prototype.hasOwnProperty.call(TOOLS, type)) throw new XChartError("BUILTIN_DRAWING", `"${type}" is a built-in tool`);
+    if (!Object.prototype.hasOwnProperty.call(this.tools, type)) return false;
+    if ([...this.items.values()].some((d) => d.type === type)) throw new XChartError("DRAWING_IN_USE", `Remove the "${type}" drawings first`);
+    delete this.tools[type];
+    return true;
+  }
+  toolTypes(): string[] {
+    return Object.keys(this.tools);
+  }
 
   constructor(host: DrawingHost) {
     this.host = host;
@@ -132,7 +158,7 @@ export class DrawingManager {
 
   // ---------- public API ----------
   add(spec: DrawingSpec, record = true): DrawingApi {
-    validateSpec(spec);
+    validateSpec(spec, this.tools);
     const id = spec.id ?? this.nextId(spec.type);
     if (this.items.has(id)) throw new XChartError("DUPLICATE_DRAWING", `A drawing with id "${id}" already exists`);
     if (record) this.checkpoint();
@@ -166,7 +192,7 @@ export class DrawingManager {
   patch(id: string, p: { points?: DrawingPoint[]; text?: string; style?: Partial<DrawingStyle>; visible?: boolean; locked?: boolean }, record = true) {
     const d = this.items.get(id);
     if (!d) throw new XChartError("DRAWING_REMOVED", `Drawing "${id}" was removed`);
-    if (p.points !== undefined) validatePoints(d.type, p.points);
+    if (p.points !== undefined) validatePoints(d.type, p.points, this.tools);
     if (p.style !== undefined) validateStyle(p.style);
     if (p.text !== undefined && (typeof p.text !== "string" || p.text.length > 500)) throw new XChartError("INVALID_DRAWING", "Drawing text must be a string of at most 500 characters");
     for (const k of ["visible", "locked"] as const) if (p[k] !== undefined && typeof p[k] !== "boolean") throw new XChartError("INVALID_DRAWING", `Drawing ${k} must be a boolean`);
@@ -216,10 +242,10 @@ export class DrawingManager {
   }
 
   /** Starts interactive creation of `tool` (null cancels). */
-  setTool(tool: DrawingType | null) {
-    if (tool !== null && !DRAWING_TYPES.includes(tool)) throw new XChartError("UNKNOWN_DRAWING", `Unknown drawing type "${String(tool)}"`);
-    this.creating = tool ? { type: tool, points: [], preview: null, dragging: false } : null;
-    this.host.emit({ type: "tool", tool });
+  setTool(tool: DrawingType | (string & {}) | null) {
+    if (tool !== null && !Object.prototype.hasOwnProperty.call(this.tools, tool)) throw new XChartError("UNKNOWN_DRAWING", `Unknown drawing type "${String(tool)}"`);
+    this.creating = tool ? { type: tool as DrawingType, points: [], preview: null, dragging: false } : null;
+    this.host.emit({ type: "tool", tool: tool as DrawingType | null });
     this.host.redraw();
   }
   tool(): DrawingType | null {
@@ -252,11 +278,24 @@ export class DrawingManager {
     return this.snapshot();
   }
   /** Replaces all drawings with validated copies of `data` (atomic: nothing changes if one is invalid). */
+  /** Validates drawings for load() without changing anything. */
+  check(data: unknown) {
+    if (!Array.isArray(data)) throw new XChartError("INVALID_DRAWING", "Drawings must be an array");
+    const ids = new Set<string>();
+    for (const d of data) {
+      validateSpec(d, this.tools);
+      if (d.id !== undefined) {
+        if (ids.has(d.id)) throw new XChartError("DUPLICATE_DRAWING", `Duplicate drawing id "${d.id}"`);
+        ids.add(d.id);
+      }
+    }
+  }
+
   load(data: unknown, record = true) {
     if (!Array.isArray(data)) throw new XChartError("INVALID_DRAWING", "Drawings must be an array");
     const ids = new Set<string>();
     for (const d of data) {
-      validateSpec(d);
+      validateSpec(d, this.tools);
       if (d.id !== undefined) {
         if (ids.has(d.id)) throw new XChartError("DUPLICATE_DRAWING", `Duplicate drawing id "${d.id}"`);
         ids.add(d.id);
@@ -297,9 +336,9 @@ export class DrawingManager {
     const c = this.creating;
     if (c && c.points.length) {
       const pts = c.preview ? [...c.points, c.preview] : c.points;
-      const need = MIN_ANCHORS(c.type);
+      const need = minAnchors(this.tools[c.type]);
       const temp: DrawingData = { id: "__preview", type: c.type, points: pts, style: {}, locked: false, visible: true };
-      const tool = TOOLS[c.type];
+      const tool = this.tools[c.type];
       if (tool.anchors === "multi" || pts.length >= need) this.renderOne(env, temp, api.theme.select, true);
       else {
         // Not enough anchors yet: show the anchors and a guide segment.
@@ -324,7 +363,7 @@ export class DrawingManager {
         ctx.shadowColor = select;
         ctx.shadowBlur = 6;
       }
-      TOOLS[d.type].render(env, pts, d);
+      this.tools[d.type].render(env, pts, d);
     } catch (e) {
       console.error(`[XChart] drawing "${d.id}" failed to render`, e);
     }
@@ -390,7 +429,7 @@ export class DrawingManager {
       const a = pts.findIndex((q) => Math.hypot(q.x - x, q.y - y) <= ANCHOR_HIT);
       if (a >= 0) return { id: d.id, anchor: a };
       try {
-        if (TOOLS[d.type].hit(env, pts, p, d)) return { id: d.id, anchor: -1 };
+        if (this.tools[d.type].hit(env, pts, p, d)) return { id: d.id, anchor: -1 };
       } catch {
         /* a broken hit-test is treated as a miss */
       }
@@ -440,7 +479,7 @@ export class DrawingManager {
           c.points.push(pt);
           c.preview = pt;
           c.dragging = true;
-          if (TOOLS[c.type].anchors !== "multi" && c.points.length >= MIN_ANCHORS(c.type)) this.finishCreate();
+          if (this.tools[c.type].anchors !== "multi" && c.points.length >= minAnchors(this.tools[c.type])) this.finishCreate();
           this.host.redraw();
           return true;
         }
@@ -485,7 +524,7 @@ export class DrawingManager {
         if (c) {
           c.dragging = false;
           // A drag that ends away from the first anchor completes a two-anchor tool.
-          const need = TOOLS[c.type].anchors;
+          const need = this.tools[c.type].anchors;
           if (need === 2 && c.points.length === 1) {
             const pt = this.pointAt(p, true);
             const first = c.points[0];
@@ -509,7 +548,7 @@ export class DrawingManager {
       },
       dbl: (p) => {
         const c = this.creating;
-        if (c && TOOLS[c.type].anchors === "multi") {
+        if (c && this.tools[c.type].anchors === "multi") {
           // The double click's own presses added duplicate anchors; drop the extra one.
           const pts = c.points.filter((q, i) => i === 0 || q.time !== c.points[i - 1].time || q.price !== c.points[i - 1].price);
           c.points = pts;
@@ -622,7 +661,7 @@ export class DrawingManager {
     }
     return h;
   }
-  private nextId(type: DrawingType): string {
+  private nextId(type: string): string {
     let id: string;
     do id = `${type}-${++this.seq}`;
     while (this.items.has(id));

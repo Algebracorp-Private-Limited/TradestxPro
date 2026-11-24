@@ -22,6 +22,10 @@ export type PlotSeries = {
   hist?: { mode: "trend" | "candle" | "sign"; colors: string[] };
   /** Line series drawn as an area: gradient from the line down to `baseline` (or the pane bottom). */
   area?: { top: string; bottom: string; baseline?: number };
+  /** Draw as a step line (horizontal then vertical). */
+  step?: boolean;
+  /** Dots at every data point (line with markers). */
+  pointMarkers?: boolean;
   /** Main pane only: price scale id. Omitted / "right" = the main scale; any other id gets its own auto-fitted overlay scale ("left" also shows an axis on the left edge). */
   scale?: string;
 };
@@ -29,7 +33,9 @@ export type PaneSpec = { id: string; title: string; series: PlotSeries[]; levels
 /** Overlay / main price-scale settings. `margins` are fractions of the pane kept free above and below the data. */
 export type ScaleSpec = { id: string; margins?: { top: number; bottom: number }; visible?: boolean };
 export type Marker = { index: number; text: string; color: string; position: "above" | "below" };
-export type ChartType = "candles" | "bars" | "line" | "area";
+export type ChartType = "candles" | "bars" | "line" | "area" | "hollow" | "hilo" | "step" | "baseline" | "columns";
+/** Styling of line-like main types (line, step, area, baseline, columns). */
+export type MainStyle = { line?: string; lineWidth?: number; areaTop?: string; areaBottom?: string; baseline?: number; up?: string; down?: string; markers?: boolean };
 
 export type DrawingTool = "none" | "trend" | "hline" | "fib" | "rect" | "ray";
 type Pt = { t: number; p: number };
@@ -50,6 +56,9 @@ export type ChartData = {
   candle?: { up?: string; down?: string; wickUp?: string; wickDown?: string };
   /** Price-scale settings by id ("right" = the main scale). */
   scales?: ScaleSpec[];
+  mainStyle?: MainStyle;
+  /** Real last / previous close when `bars` are a display transform (e.g. Heikin Ashi). */
+  lastPrice?: { price: number; prev: number | null };
   /** Relative pane heights by pane id ("main" included). Omitted panes use the default split. */
   paneSizes?: Record<string, number>;
 };
@@ -889,7 +898,7 @@ export class ChartEngine {
     const out: PaneLayout[] = [];
     const log = this.scale.log;
     const bars = this.data.bars;
-    const lineOnly = this.data.type === "line" || this.data.type === "area";
+    const lineOnly = ["line", "area", "step", "baseline", "columns"].includes(this.data.type);
     const onMain = (s: PlotSeries) => !s.scale || s.scale === "right";
 
     // Percentage / indexed: base = first visible close (or the first visible main-scale value).
@@ -1186,12 +1195,13 @@ export class ChartEngine {
 
     let li = bars.length - 1;
     while (li >= 0 && !Number.isFinite(bars[li].c)) li--;
-    const last = li >= 0 ? bars[li] : undefined;
+    const real = this.data.lastPrice;
+    const last = li >= 0 ? (real ? { ...bars[li], c: real.price } : bars[li]) : undefined;
     const main = this.layouts[0];
     if (last && main) {
       const y = this.yOf(last.c, main);
       if (y >= main.top && y <= main.top + main.height) {
-        const prev = li > 0 ? bars[li - 1] : undefined;
+        const prev = real ? (real.prev === null ? undefined : { c: real.prev }) : li > 0 ? bars[li - 1] : undefined;
         const col = !prev || last.c >= prev.c ? th.up : th.down;
         ctx.setLineDash([2, 3]);
         ctx.strokeStyle = col;
@@ -1322,35 +1332,96 @@ export class ChartEngine {
     const th = this.theme;
     const bars = this.data.bars;
     const type = this.data.type;
-    if (type === "line" || type === "area") {
+    const ms = this.data.mainStyle ?? {};
+    if (type === "columns") {
+      const w = Math.max(1, Math.floor(this.spacing * 0.6));
+      const bottom = L.top + L.height;
+      for (let i = from; i <= to; i++) {
+        const b = bars[i];
+        if (!Number.isFinite(b.c)) continue;
+        const prev = bars[i - 1];
+        ctx.fillStyle = prev && Number.isFinite(prev.c) && b.c < prev.c ? ms.down ?? th.down : ms.up ?? th.up;
+        const y = this.yOf(b.c, L);
+        ctx.fillRect(Math.round(this.xOf(i)) - Math.floor(w / 2), y, w, Math.max(1, bottom - y));
+      }
+      return;
+    }
+    if (type === "line" || type === "area" || type === "step" || type === "baseline") {
+      // Last-known close carries across gaps for the step type only.
+      const pts: [number, number][] = [];
+      for (let i = from; i <= to; i++) if (Number.isFinite(bars[i].c)) pts.push([this.xOf(i), this.yOf(bars[i].c, L)]);
       const path = () => {
         ctx.beginPath();
-        let pen = false;
-        for (let i = from; i <= to; i++) {
-          if (!Number.isFinite(bars[i].c)) continue;
-          const x = this.xOf(i);
-          const y = this.yOf(bars[i].c, L);
-          if (!pen) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-          pen = true;
-        }
+        pts.forEach(([x, y], k) => {
+          if (!k) ctx.moveTo(x, y);
+          else {
+            if (type === "step") ctx.lineTo(x, pts[k - 1][1]);
+            ctx.lineTo(x, y);
+          }
+        });
       };
-      if (type === "area" && to >= from) {
+      if (!pts.length) return;
+      const lw = ms.lineWidth ?? 1.6;
+      if (type === "baseline") {
+        let base = ms.baseline;
+        if (base === undefined) for (let i = from; i <= to && base === undefined; i++) if (Number.isFinite(bars[i].c)) base = bars[i].c;
+        const yb = Math.max(L.top, Math.min(L.top + L.height, this.yOf(base ?? 0, L)));
+        const up = ms.up ?? th.up, down = ms.down ?? th.down;
+        for (const [color, y0, y1] of [[up, L.top, yb], [down, yb, L.top + L.height]] as const) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(0, y0, this.plotW(), y1 - y0);
+          ctx.clip();
+          path();
+          ctx.lineTo(pts[pts.length - 1][0], yb);
+          ctx.lineTo(pts[0][0], yb);
+          ctx.closePath();
+          ctx.globalAlpha = 0.18;
+          ctx.fillStyle = color;
+          ctx.fill();
+          ctx.globalAlpha = 1;
+          path();
+          ctx.strokeStyle = color;
+          ctx.lineWidth = lw;
+          ctx.stroke();
+          ctx.restore();
+        }
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = th.level;
+        ctx.beginPath();
+        ctx.moveTo(0, Math.round(yb) + 0.5);
+        ctx.lineTo(this.plotW(), Math.round(yb) + 0.5);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.lineWidth = 1;
+        return;
+      }
+      const lineColor = ms.line ?? (type === "area" ? "#38bdf8" : th.line);
+      if (type === "area") {
         path();
-        ctx.lineTo(this.xOf(to), L.top + L.height);
-        ctx.lineTo(this.xOf(from), L.top + L.height);
+        ctx.lineTo(pts[pts.length - 1][0], L.top + L.height);
+        ctx.lineTo(pts[0][0], L.top + L.height);
         ctx.closePath();
         const g = ctx.createLinearGradient(0, L.top, 0, L.top + L.height);
-        g.addColorStop(0, "rgba(56,189,248,0.28)");
-        g.addColorStop(1, "rgba(56,189,248,0)");
+        g.addColorStop(0, ms.areaTop ?? "rgba(56,189,248,0.28)");
+        g.addColorStop(1, ms.areaBottom ?? "rgba(56,189,248,0)");
         ctx.fillStyle = g;
         ctx.fill();
       }
       path();
-      ctx.strokeStyle = type === "area" ? "#38bdf8" : th.line;
-      ctx.lineWidth = 1.6;
+      ctx.strokeStyle = lineColor;
+      ctx.lineWidth = lw;
       ctx.stroke();
       ctx.lineWidth = 1;
+      if (ms.markers) {
+        ctx.fillStyle = lineColor;
+        const r = Math.max(1.5, Math.min(3.5, this.spacing / 4));
+        for (const [x, y] of pts) {
+          ctx.beginPath();
+          ctx.arc(x, y, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
       return;
     }
     const bodyW = Math.max(1, Math.floor(this.spacing * 0.7));
@@ -1367,6 +1438,24 @@ export class ChartEngine {
       const yl = this.yOf(b.l, L);
       const yo = this.yOf(b.o, L);
       const yc = this.yOf(b.c, L);
+      if (type === "hilo") {
+        // High-low range bar (no open/close).
+        ctx.fillStyle = col;
+        ctx.fillRect(x - Math.floor(bodyW / 2), yh, bodyW, Math.max(1, yl - yh));
+        continue;
+      }
+      if (type === "hollow" && upBar) {
+        // Hollow candle: rising bars are outlined, falling bars filled.
+        ctx.beginPath();
+        ctx.moveTo(x + 0.5, yh);
+        ctx.lineTo(x + 0.5, Math.min(yo, yc));
+        ctx.moveTo(x + 0.5, Math.max(yo, yc));
+        ctx.lineTo(x + 0.5, yl);
+        ctx.stroke();
+        ctx.strokeStyle = col;
+        ctx.strokeRect(x - Math.floor(bodyW / 2) + 0.5, Math.min(yo, yc) + 0.5, Math.max(1, bodyW - 1), Math.max(1, Math.abs(yc - yo)));
+        continue;
+      }
       if (type === "bars") {
         ctx.beginPath();
         ctx.moveTo(x + 0.5, yh);
@@ -1483,6 +1572,7 @@ export class ChartEngine {
     ctx.setLineDash(s.dash === "dashed" ? [6, 4] : s.dash === "dotted" ? [1.5, 3] : []);
     ctx.beginPath();
     let pen = false;
+    let prevY = 0;
     for (let i = Math.max(0, from - 1); i <= Math.min(Math.max(to + 1, Math.ceil(this.endIndex) + 1), s.values.length - 1); i++) {
       const v = s.values[i];
       if (!Number.isFinite(v) || (L.log && v <= 0)) {
@@ -1492,13 +1582,28 @@ export class ChartEngine {
       const x = this.xOf(i);
       const y = this.yOf(v, L);
       if (!pen) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+      else {
+        if (s.step) ctx.lineTo(x, prevY);
+        ctx.lineTo(x, y);
+      }
+      prevY = y;
       pen = true;
     }
     ctx.stroke();
+    ctx.setLineDash([]);
+    if (s.pointMarkers) {
+      ctx.fillStyle = s.color;
+      const r = Math.max(1.5, Math.min(3.5, this.spacing / 4));
+      for (let i = Math.max(0, from); i <= Math.min(to, s.values.length - 1); i++) {
+        const v = s.values[i];
+        if (!Number.isFinite(v) || (L.log && v <= 0)) continue;
+        ctx.beginPath();
+        ctx.arc(this.xOf(i), this.yOf(v, L), r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
     ctx.lineWidth = 1;
     ctx.globalAlpha = 1;
-    ctx.setLineDash([]);
   }
 
   private drawMarkers(L: PaneLayout, from: number, to: number) {

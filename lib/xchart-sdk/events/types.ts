@@ -21,6 +21,7 @@ export type ChartEvents = {
   paneResize: { paneId: string; height: number };
   scaleChange: { scaleId: string; paneId: string };
   layoutChange: { reason: string };
+  pluginError: { pluginId: string; error: string };
   destroy: Record<string, never>;
 };
 export type ChartEventType = keyof ChartEvents;
