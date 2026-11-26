@@ -10,8 +10,8 @@
  * - checkpoints: snapshots of the committed state every CHECKPOINT_EVERY bars, used to replay from
  *   the nearest point after a historical correction instead of from the start.
  *
- * Adding a node marks the graph for a full rebuild (exact by construction); removing nodes only
- * prunes them (the remaining states are unaffected).
+ * Adding nodes initialises only the NEW nodes over the committed history (initPending; existing
+ * states are untouched); removing nodes only prunes them (the remaining states are unaffected).
  */
 import type { Kernel, NodeDef, Row } from "./incremental.ts";
 import { Checkpoints } from "./checkpoints.ts";

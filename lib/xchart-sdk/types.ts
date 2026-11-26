@@ -269,6 +269,10 @@ export interface ChartApi {
   setBenchmarkSeries(series: SeriesApi<ChartSeriesType> | null): void;
   searchIndicators(q?: { text?: string; category?: string; requires?: string; incremental?: boolean; param?: string }): IndicatorDefinition[];
   indicatorCompatibility(id: string): { ok: boolean; reasons: string[] };
+  /** Incremental indicator engine diagnostics (shared nodes, committed bars, rebuilds, replays, last sync time). */
+  indicatorEngineStats(): ReturnType<import("./create-chart.ts").ChartImpl["indicatorEngineStats"]>;
+  /** Renderer diagnostics: full vs crosshair-only frames and their last durations (null if the renderer does not report them). */
+  renderStats(): { fullFrames: number; overlayFrames: number; lastDrawMs: number; lastOverlayMs: number } | null;
   getIndicators(): IndicatorApi[];
   removeIndicator(indicator: IndicatorApi | string): boolean;
   registerIndicator(definition: IndicatorDefinition): void;

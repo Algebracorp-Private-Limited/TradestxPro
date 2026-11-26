@@ -1053,12 +1053,20 @@ export class ChartImpl implements ChartApi {
   timeToCoordinate(time: number): number | null {
     this.assertAlive();
     if (!this.store.times.length || !this.adapter.xOfIndex || typeof time !== "number" || !Number.isFinite(time)) return null;
+    if (this.derived) {
+      // Price-based axis: the first element formed at or after `time` (by source candle time); none → null.
+      const b = this.derived.bars;
+      if (!b.length || time > b[b.length - 1].t) return null;
+      return this.adapter.xOfIndex(this.axisIndexOf(time));
+    }
     return this.adapter.xOfIndex(this.store.indexOfTime(time));
   }
   coordinateToTime(x: number): number | null {
     this.assertAlive();
     if (!this.store.times.length || !this.adapter.indexOfX || !Number.isFinite(x)) return null;
     const i = Math.round(this.adapter.indexOfX(x));
+    // Price-based axis: the source candle time of the element (no times are invented between or past elements).
+    if (this.derived) return this.derived.bars[i]?.t ?? null;
     return i >= 0 && i < this.store.times.length ? this.store.times[i] : this.store.timeAt(i);
   }
   priceToCoordinate(price: number, paneId = "main", scaleId = "right"): number | null {

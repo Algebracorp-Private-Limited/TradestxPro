@@ -503,8 +503,9 @@ test("browser: overlay scale margins, percentage mode, left axis, panes (collaps
     await page.mouse.down();
     await page.mouse.move(300, top - 39, { steps: 4 });
     await page.mouse.up();
-    const after = await page.evaluate(`({ main: chartA.pane("main").height(), osc: chartA.pane("osc").height(), resizes })`);
-    assert.ok(Math.abs(after.main - (top - 40)) <= 2, `main pane shrank by 40 px (${top} → ${after.main})`);
+    // Pane geometry is re-laid out on the next frame (engines differ in whether input dispatch flushes one).
+    const after = await page.evaluate(`(async () => { await frame(); return { main: chartA.pane("main").height(), osc: chartA.pane("osc").height(), resizes }; })()`);
+    assert.ok(Math.abs(after.main - (top - 40)) <= 2, `main pane shrank by 40 px (${top} → ${after.main}; resizes ${JSON.stringify(after.resizes)})`);
     assert.ok(after.osc > r.oscH + 35, `oscillator pane grew (${r.oscH} → ${after.osc})`);
     assert.ok(after.resizes.some((e: { paneId: string }) => e.paneId === "osc"), "paneResize emitted");
     await page.evaluate(`chartA.remove()`);
@@ -929,6 +930,8 @@ test("browser: high-DPI canvas, container resize and a mobile viewport", async (
     await mobile.goto(ORIGIN + "/");
     await mobile.waitForFunction(() => (window as unknown as { ready?: boolean }).ready === true, null, { timeout: 15000 });
     const m = await mobile.evaluate(`(async () => {
+      // Only the chart under test is on the page (the fixture's fixed 670 px box would itself overflow a phone).
+      document.getElementById("a").style.display = "none";
       const el = document.getElementById("b");
       el.style.width = "100%"; el.style.height = "320px";
       const chart = X.createChart(el, {});
@@ -938,14 +941,15 @@ test("browser: high-DPI canvas, container resize and a mobile viewport", async (
       const cv = el.querySelector("canvas");
       const img = cv.getContext("2d").getImageData(0, 0, cv.width, cv.height);
       const scroll = document.documentElement.scrollWidth <= window.innerWidth;
-      const out = { w: cv.clientWidth, dpr: cv.width / cv.clientWidth, drawn: count(img, is.green) + count(img, is.red), noHScroll: scroll };
+      const out = { w: cv.clientWidth, dpr: cv.width / cv.clientWidth, drawn: count(img, is.green) + count(img, is.red), noHScroll: scroll, chartFits: el.scrollWidth <= el.clientWidth, widths: [document.documentElement.scrollWidth, window.innerWidth, el.scrollWidth, el.clientWidth] };
       chart.remove();
       return out;
     })()`);
     assert.equal(m.w, 375);
     assert.equal(m.dpr, 3);
     assert.ok(m.drawn > 500, `candles drawn on the phone-sized chart (${m.drawn} px)`);
-    assert.equal(m.noHScroll, true, "no horizontal page scroll at phone width");
+    assert.equal(m.chartFits, true, `the chart does not overflow its container (${m.widths})`);
+    assert.equal(m.noHScroll, true, `no horizontal page scroll at phone width (${m.widths})`);
     await mobile.close();
   } finally {
     await browser.close();

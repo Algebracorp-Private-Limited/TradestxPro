@@ -214,6 +214,12 @@ test("chart: Renko renders on a logical axis, original data untouched, crosshair
   assert.equal(ev!.derived!.logical, 7);
   assert.equal(ev!.time, pt.sourceTime);
   assert.deepEqual([...ev!.seriesData.values()][0], data[pt.sourceIndex], "the observed candle, not the brick");
+  // Time ↔ coordinate on the logical axis: by source candle time, never interpolated.
+  const first = info.points.findIndex((q) => q.sourceTime >= pt.sourceTime);
+  assert.equal(chart.timeScale().timeToCoordinate(pt.sourceTime), first * 10 + 5, "first element formed at that time");
+  assert.equal(chart.timeScale().coordinateToTime(7 * 10 + 5), pt.sourceTime);
+  assert.equal(chart.timeScale().coordinateToTime(99_999), null, "no time past the last element");
+  assert.equal(chart.timeScale().timeToCoordinate(data[199].time + 10 * DAY), null, "no element after the last candle");
   // Live update: only the tail is rebuilt; the same array is extended in place.
   const bars = m.bars;
   s.update({ ...data[199], close: data[199].close + 8, high: data[199].high + 8 });

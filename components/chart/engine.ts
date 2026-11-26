@@ -249,6 +249,8 @@ export class ChartEngine {
   private base: HTMLCanvasElement | null = null;
   private baseValid = false;
   private pendingFull = true;
+  /** Set while crosshair-only frames are being requested: only then is the frame cached (the copy forces a synchronous raster flush). */
+  private overlayActive = false;
   /** Duration of the last crosshair-only redraw (ms). */
   lastOverlayMs = 0;
   /** Frame counters (diagnostics): full renders vs crosshair-only blits. */
@@ -1150,7 +1152,11 @@ export class ChartEngine {
       return;
     }
     this.drawFrame();
-    this.snapshot();
+    // Cache the frame only while the crosshair is moving: copying the canvas forces a synchronous
+    // raster flush, which data/pan frames without pointer activity should not pay.
+    if (this.overlayActive) this.snapshot();
+    else this.baseValid = false;
+    this.overlayActive = false;
     this.drawCrosshair();
     this.lastDrawMs = performance.now() - t0;
     this.frames.full++;
@@ -1176,6 +1182,7 @@ export class ChartEngine {
   /** Schedules a crosshair-only redraw (falls back to a full frame when one is already pending). */
   private invalidateOverlay() {
     if (this.destroyed) return;
+    this.overlayActive = true;
     cancelAnimationFrame(this.frame);
     this.frame = requestAnimationFrame(() => this.draw());
   }
