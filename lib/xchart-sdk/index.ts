@@ -35,10 +35,22 @@ export { LAYOUT_FORMAT, LAYOUT_VERSION, parseLayout, type ChartLayout, type Layo
 export type { PluginContext, PluginInfo, PluginLayer, XChartPlugin } from "./plugins.ts";
 export type { ToolEnv, ToolSpec } from "./drawings/tools.ts";
 export type { LayerApi } from "../../components/chart/engine.ts";
+// v0.3.1 — price-based chart types (derived data model)
+export { DERIVED_KINDS, DerivedSeriesEngine, PATH_ASSUMPTION, computeDerived, resolveSettings as resolveDerivedSettings } from "./derived/index.ts";
+export type { DerivedKind, DerivedPoint, DerivedSeries, DerivedSettings, DerivedStatus, KagiSettings, LineBreakSettings, PnfSettings, PriceSource, RangeBarSettings, RenkoSettings, SizeMethod, SourceCandle } from "./derived/types.ts";
+export type { DrawingDomain } from "./drawings/types.ts";
+// v0.3.1 — incremental indicator engine and workers
+export * as kernels from "./indicators/incremental.ts";
+export { StreamGraph, type GraphStats, type StreamInput } from "./indicators/dependencies.ts";
+export { Checkpoints } from "./indicators/checkpoints.ts";
+export { FrameScheduler } from "./indicators/scheduler.ts";
+export type { StreamOutput, StreamSpec } from "./indicators/types.ts";
+export { IndicatorWorkerClient, StaleResultError, CancelledError, type IndicatorResultSet, type WorkerClientOptions } from "./workers/worker-client.ts";
+export { PROTOCOL_VERSION, validateRequest as validateWorkerRequest, validateResponse as validateWorkerResponse } from "./workers/protocol.ts";
 export type { ChartEvents, ChartEventType, PointerPayload } from "./events/types.ts";
 export { XChartError, isCssColor, validateBar, validateBars, validateChartOptions, validateRange, validateSeriesOptions, validateUpdate, validateZoom } from "./validation.ts";
 export {
   MarketDataError, fromTradestxproBars, loadTradestxproCandles, validateTradestxproBars,
   type MarketDataOptions, type Rejection, type RejectionReason, type TradestxproBar, type ValidationMode, type ValidationReport,
 } from "./market-data.ts";
-export const XCHART_VERSION = "0.3.0";
+export const XCHART_VERSION = "0.3.1";

@@ -226,6 +226,14 @@ export class ChartEngine {
   private mouse: { x: number; y: number } | null = null;
   private act: Interaction | null = null;
   private frame = 0;
+  /** Last full frame without the crosshair: pointer moves only blit it and redraw the crosshair. */
+  private base: HTMLCanvasElement | null = null;
+  private baseValid = false;
+  private pendingFull = true;
+  /** Duration of the last crosshair-only redraw (ms). */
+  lastOverlayMs = 0;
+  /** Frame counters (diagnostics): full renders vs crosshair-only blits. */
+  readonly frames = { full: 0, overlay: 0 };
   private layouts: PaneLayout[] = [];
   private tool: DrawingTool = "none";
   private drawings: Drawing[] = [];
@@ -290,6 +298,10 @@ export class ChartEngine {
     if (this.destroyed) return;
     this.destroyed = true;
     cancelAnimationFrame(this.frame);
+    if (this.base) {
+      this.base.width = this.base.height = 0; // release the cached frame's pixels
+      this.base = null;
+    }
     this.ro.disconnect();
     window.removeEventListener("pointerup", this.onUp);
     window.removeEventListener("txp-theme", this.onTheme);
@@ -423,7 +435,7 @@ export class ChartEngine {
   /** Shows a crosshair at a bar index when the pointer is not over this chart (chart synchronisation). */
   setCrosshair(c: { index: number; price: number | null } | null) {
     this.extCross = c;
-    this.invalidate();
+    this.invalidateOverlay();
   }
   requestRedraw() {
     this.invalidate();
@@ -470,6 +482,7 @@ export class ChartEngine {
     this.canvas.width = Math.round(this.w * s);
     this.canvas.height = Math.round(this.h * s);
     this.drawFrame();
+    this.baseValid = false;
     const url = this.canvas.toDataURL("image/png");
     this.dpr = prev;
     this.canvas.width = this.w * prev;
@@ -714,6 +727,9 @@ export class ChartEngine {
       const custom = p.x < this.plotW() && this.delegate?.hover ? this.delegate.hover(this.pointer(e, p.x, p.y)) : null;
       const sep = p.x < this.plotW() && this.separatorAt(p.y) > 0 && !this.layouts[this.separatorAt(p.y)].collapsed;
       this.canvas.style.cursor = sep ? "row-resize" : p.x >= this.plotW() ? "ns-resize" : custom ?? (hit ? (hit.part === "all" ? "move" : "pointer") : "crosshair");
+      // Plain pointer movement only moves the crosshair.
+      this.invalidateOverlay();
+      return;
     }
     this.invalidate();
   };
@@ -811,7 +827,7 @@ export class ChartEngine {
 
   private onLeave = () => {
     if (!this.act) this.mouse = null;
-    this.invalidate();
+    this.invalidateOverlay();
   };
 
   private onDbl = (e: MouseEvent) => {
@@ -903,6 +919,7 @@ export class ChartEngine {
 
   private invalidate() {
     if (this.destroyed) return;
+    this.pendingFull = true;
     cancelAnimationFrame(this.frame);
     this.frame = requestAnimationFrame(() => this.draw());
   }
@@ -1064,8 +1081,47 @@ export class ChartEngine {
 
   private draw() {
     const t0 = performance.now();
+    const full = this.pendingFull || !this.baseValid || !this.base || this.base.width !== this.canvas.width || this.base.height !== this.canvas.height;
+    this.pendingFull = false;
+    if (!full) {
+      // Crosshair-only frame: restore the cached frame, draw the crosshair on top.
+      this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+      this.ctx.drawImage(this.base!, 0, 0);
+      this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+      this.drawCrosshair();
+      this.lastOverlayMs = performance.now() - t0;
+      this.frames.overlay++;
+      return;
+    }
     this.drawFrame();
+    this.snapshot();
+    this.drawCrosshair();
     this.lastDrawMs = performance.now() - t0;
+    this.frames.full++;
+  }
+
+  private snapshot() {
+    try {
+      if (!this.base) this.base = this.canvas.ownerDocument.createElement("canvas");
+      if (this.base.width !== this.canvas.width || this.base.height !== this.canvas.height) {
+        this.base.width = this.canvas.width;
+        this.base.height = this.canvas.height;
+      }
+      const b = this.base.getContext("2d");
+      if (!b) return void (this.baseValid = false);
+      b.clearRect(0, 0, this.base.width, this.base.height);
+      b.drawImage(this.canvas, 0, 0);
+      this.baseValid = true;
+    } catch {
+      this.baseValid = false;
+    }
+  }
+
+  /** Schedules a crosshair-only redraw (falls back to a full frame when one is already pending). */
+  private invalidateOverlay() {
+    if (this.destroyed) return;
+    cancelAnimationFrame(this.frame);
+    this.frame = requestAnimationFrame(() => this.draw());
   }
 
   private drawFrame() {
@@ -1244,7 +1300,6 @@ export class ChartEngine {
       ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
     }
 
-    this.drawCrosshair();
     const view = { from: this.indexAt(0) + 0.5, to: this.endIndex, spacing: this.spacing };
     const vk = `${view.from.toFixed(4)}|${view.to.toFixed(4)}|${view.spacing.toFixed(4)}|${bars.length}`;
     if (vk !== this.lastView) {

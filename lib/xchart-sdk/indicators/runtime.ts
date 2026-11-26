@@ -16,11 +16,15 @@ import { XChartError } from "../validation.ts";
 import type { BuiltinDefinition } from "./builtins.ts";
 import type { IndicatorApi, IndicatorDefinition, IndicatorInput, IndicatorOptions, IndicatorParams, IndicatorPoint, IndicatorResult, OutputDef } from "./types.ts";
 import { resolveParams, validateIndicatorOptions } from "./validation.ts";
+import type { StreamGraph } from "./dependencies.ts";
+import type { StreamSpec } from "./types.ts";
 
 /** What the runtime needs from the chart. */
 export type IndicatorHost = {
   /** Price input (existing bars only) and, for each input bar, its axis slot. */
   input(): { input: IndicatorInput; axisIdx: number[]; axisLength: number } | null;
+  /** Shared streaming graph, synced to the current input (null when unavailable). */
+  graph?(): StreamGraph | null;
   /** Time of the k-th slot after the last input bar (projection labels). */
   futureTime(k: number): number;
   changed(kind: "full" | "plots"): void;
@@ -48,6 +52,13 @@ export class IndicatorInstance implements IndicatorApi {
   private lastAxisLen = 0;
   /** Number of projected slots past the last input bar (e.g. Ichimoku cloud). */
   projection = 0;
+  // Streaming state (definitions with `stream`).
+  private spec: StreamSpec | null = null;
+  private specIntraday: boolean | null = null;
+  private release: (() => void) | null = null;
+  private streamGraph: StreamGraph | null = null;
+  /** "stream" when the last flush used the incremental graph, "full" for the reference calculation. */
+  mode: "stream" | "full" = "full";
 
   constructor(id: string, def: IndicatorDefinition, params: Record<string, unknown> | undefined, opts: IndicatorOptions, host: IndicatorHost, onRemove: (i: IndicatorInstance) => void) {
     this.id = id;
@@ -100,6 +111,7 @@ export class IndicatorInstance implements IndicatorApi {
     this.params = next;
     this.outs = outs;
     this.dirty = "full";
+    this.detachStream(); // parameter change: re-register the nodes (re-initialised from history)
     host.changed("full");
     host.emit("indicatorChange", { indicator: this, action: "parameters" });
   }
@@ -116,8 +128,16 @@ export class IndicatorInstance implements IndicatorApi {
     this.host!.changed("plots");
   }
 
+  private detachStream() {
+    this.release?.();
+    this.release = null;
+    this.spec = null;
+    this.streamGraph = null;
+  }
+
   remove(): void {
     if (!this.host) return;
+    this.detachStream(); // releases cached calculation state (shared nodes are reference counted)
     this.host = null;
     this.aligned = {};
     this.raw = {};
@@ -144,6 +164,19 @@ export class IndicatorInstance implements IndicatorApi {
     }
     const { input, axisIdx, axisLength } = src;
     const n = input.time.length;
+    const graph = this.def.stream ? host.graph?.() ?? null : null;
+    if (graph) {
+      try {
+        return this.flushStream(graph, kind, input, axisIdx, axisLength);
+      } catch (e) {
+        // Fall back to the reference calculation; report the problem.
+        this.detachStream();
+        this.err = e instanceof Error ? e.message : String(e);
+        host.emit("indicatorError", { indicator: this, error: this.err });
+        return true;
+      }
+    }
+    this.mode = "full";
     try {
       const lb = this.def.lookback?.(this.params);
       const canTail = kind === "tail" && this.def.update === undefined && lb !== undefined && n >= this.lastN && n - this.lastN <= 1 && this.lastN > 0 && Object.keys(this.raw).length > 0;
@@ -172,6 +205,72 @@ export class IndicatorInstance implements IndicatorApi {
     this.lastN = n;
     this.writeAligned(axisIdx, axisLength, n);
     return true;
+  }
+
+  /** Incremental path: shared graph, outputs updated from the first changed bar only. */
+  private flushStream(graph: StreamGraph, kind: "full" | "tail", input: IndicatorInput, axisIdx: number[], axisLength: number): boolean {
+    const n = input.time.length;
+    let full = kind === "full";
+    if (!this.spec || this.streamGraph !== graph || this.specIntraday !== input.intraday) {
+      this.detachStream();
+      const spec = this.def.stream!(this.params, { intraday: input.intraday });
+      this.release = graph.acquire([...spec.outputs.map((o) => o.node), ...(spec.activeWhen ? [spec.activeWhen] : [])]);
+      this.spec = spec;
+      this.specIntraday = input.intraday;
+      this.streamGraph = graph;
+      full = true;
+    }
+    this.host!.graph!(); // sync once per input revision (no-op when already synced)
+    const spec = this.spec;
+    const active = !spec.activeWhen || graph.values(spec.activeWhen.key)[n - 1] === 1;
+    const from = full || !active || this.lastN === 0 ? 0 : Math.min(graph.changedFrom, this.lastN, n);
+    // Raw (input-indexed, shifted) arrays.
+    const keys = new Set(spec.outputs.map((o) => o.key));
+    for (const k of Object.keys(this.raw)) if (!keys.has(k) || !active) delete this.raw[k];
+    let minRaw = Infinity;
+    let proj = 0;
+    if (active) {
+      for (const o of spec.outputs) {
+        const v = graph.values(o.node.key);
+        const sh = o.shift ?? 0;
+        const len = n + (o.projection && sh > 0 ? sh : 0);
+        if (o.projection && sh > 0) proj = Math.max(proj, sh);
+        const arr = (this.raw[o.key] ??= []);
+        const lo = from === 0 ? 0 : Math.max(0, from + sh);
+        if (from === 0) arr.length = 0;
+        arr.length = len;
+        for (let i = lo; i < len; i++) {
+          const j = i - sh;
+          arr[i] = j >= 0 && j < n ? v[j] : NaN;
+        }
+        minRaw = Math.min(minRaw, lo);
+      }
+    }
+    this.err = null;
+    this.mode = "stream";
+    const prevN = this.lastN;
+    this.lastN = n;
+    if (from === 0 || full || Object.keys(this.aligned).length === 0 || axisLength < this.lastAxisLen || n < prevN) {
+      this.writeAligned(axisIdx, axisLength, n);
+    } else this.writeAlignedFrom(axisIdx, axisLength, n, Math.min(minRaw, n), proj);
+    return true;
+  }
+
+  /** Rewrites aligned outputs from input index `k0` (axis positions before it are unchanged). */
+  private writeAlignedFrom(axisIdx: number[], axisLength: number, n: number, k0: number, proj: number) {
+    this.projection = proj;
+    const last = n ? axisIdx[n - 1] : -1;
+    const len = Math.max(axisLength, last + 1 + proj);
+    const start = k0 < n ? axisIdx[k0] : last + (k0 - n + 1);
+    for (const [key, arr] of Object.entries(this.raw)) {
+      const out = (this.aligned[key] ??= []);
+      const oldLen = out.length;
+      out.length = len;
+      for (let i = Math.min(start, oldLen); i < len; i++) out[i] = NaN;
+      for (let k = k0; k < Math.min(n, arr.length); k++) out[axisIdx[k]] = arr[k];
+      for (let k = Math.max(n, k0); k < arr.length; k++) out[last + (k - n + 1)] = arr[k];
+    }
+    this.lastAxisLen = axisLength;
   }
 
   private writeAligned(axisIdx: number[], axisLength: number, n: number) {

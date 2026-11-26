@@ -42,6 +42,8 @@ export type OutputDef = {
 
 /** Columnar price input given to calculations (only bars that exist: gaps are removed). */
 export type IndicatorInput = {
+  /** Increments when the arrays are updated in place (live ticks). */
+  revision?: number;
   time: number[];
   open: number[];
   high: number[];
@@ -55,6 +57,10 @@ export type IndicatorInput = {
 export type IndicatorParams = Record<string, number | boolean | string>;
 /** Output arrays keyed by OutputDef.key. Index i ↔ input bar i; extra entries past the end are a projection. */
 export type IndicatorResult = Record<string, number[]>;
+
+/** Output wiring of a streaming indicator. `shift` moves values right (+, with projection slots past the last bar when `projection`) or left (−). */
+export type StreamOutput = { key: string; node: import("./incremental.ts").NodeDef; shift?: number; projection?: boolean };
+export type StreamSpec = { outputs: StreamOutput[]; /** Optional node whose current value 0 hides all outputs (e.g. Volume on index data). */ activeWhen?: import("./incremental.ts").NodeDef };
 
 export interface IndicatorDefinition {
   id: string;
@@ -80,6 +86,12 @@ export interface IndicatorDefinition {
   /** Optional exact incremental update from bar `from` onward (mutates and returns `prev`). */
   update?(input: IndicatorInput, p: IndicatorParams, prev: IndicatorResult, from: number): IndicatorResult;
   display?: { shortName?: string; precision?: number };
+  /**
+   * Streaming (incremental) form: graph nodes per output. When present the chart evaluates the
+   * indicator incrementally (exact, O(1)–O(window) per live update) and shares common nodes with
+   * other indicators. `calculate` remains the reference full calculation.
+   */
+  stream?(p: IndicatorParams, ctx: { intraday: boolean }): StreamSpec;
   /** Data beyond OHLC that the indicator needs ("volume", "time" for session resets, …). Used to decide where it is meaningful (e.g. not on price-based charts, which have no volume). */
   requires?: string[];
 }

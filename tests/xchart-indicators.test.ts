@@ -4,13 +4,12 @@ import { createChartWithAdapter } from "../lib/xchart-sdk/create-chart.ts";
 import { BUILTIN_INDICATORS, IndicatorRegistry, builtinRegistry, listIndicators, registerIndicator, unregisterIndicator, getIndicatorDefinition } from "../lib/xchart-sdk/indicators/index.ts";
 import type { IndicatorDefinition, IndicatorInput } from "../lib/xchart-sdk/indicators/types.ts";
 import type { RenderAdapter, RenderModel } from "../lib/xchart-sdk/canvas-adapter.ts";
-import type { Change } from "../lib/xchart-sdk/store.ts";
 import type { CandlestickData } from "../lib/xchart-sdk/types.ts";
 import { XChartError } from "../lib/xchart-sdk/validation.ts";
 
 class Fake implements RenderAdapter {
   last: RenderModel | null = null;
-  render(m: RenderModel, _c: Change) { this.last = m; }
+  render(m: RenderModel) { this.last = m; }
   setOptions() {}
   onCrosshair() {}
   getViewRange() { return this.last && this.last.times.length ? { from: 0, to: this.last.times.length - 1 } : null; }

@@ -5,13 +5,14 @@
  * Error policy (v0.2.1): every failure is an XChartError with a code, raised BEFORE any state
  * changes, so a rejected call leaves the chart and its series exactly as they were.
  */
-import { SeriesStore, type Change } from "./store.ts";
+import { SeriesStore, search, type Change } from "./store.ts";
 import { CanvasAdapter, seriesPaneId, type RenderAdapter, type RenderModel } from "./canvas-adapter.ts";
 import { PANE_ID, XChartError, validateBars, validateSeriesType, validateChartOptions, validateRange, validateSeriesOptions, validateZoom } from "./validation.ts";
 import { Emitter } from "./events/emitter.ts";
 import { IndicatorRegistry } from "./indicators/registry.ts";
 import { defaultRegistry } from "./indicators/index.ts";
 import { IndicatorInstance, indicatorPlots, type IndicatorHost } from "./indicators/runtime.ts";
+import { StreamGraph } from "./indicators/dependencies.ts";
 import type { IndicatorApi, IndicatorDefinition, IndicatorInput, IndicatorOptions } from "./indicators/types.ts";
 import type { ChartEvents } from "./events/types.ts";
 import { DrawingManager, type DrawingHost } from "./drawings/manager.ts";
@@ -164,6 +165,12 @@ export class ChartImpl implements ChartApi {
   private registry = new IndicatorRegistry(defaultRegistry);
   private indSeq = 0;
   private inputCache: { version: number; value: ReturnType<IndicatorHost["input"]> } | null = null;
+  /** Shared incremental indicator graph (released by remove()). */
+  private graph = new StreamGraph();
+  private inputRev = 0;
+  private graphRev = -1;
+  /** First input bar changed since the graph's last sync (undefined = unknown → compare). */
+  private pendingFrom: number | undefined = undefined;
   private decorations = new Map<number, Decorations>();
   private drawingSubs = new Set<(e: DrawingEvent) => void>();
   private drawings: DrawingManager;
@@ -1052,7 +1059,62 @@ export class ChartImpl implements ChartApi {
     },
     changed: () => this.render({ kind: "full" }),
     emit: (type, payload) => this.events.emit(type, payload),
+    graph: () => {
+      const src = this.indicatorInput();
+      if (!src) return null;
+      if (this.graphRev !== this.inputRev || this.graph.needsSync()) {
+        this.graph.sync(src.input, this.pendingFrom);
+        this.graphRev = this.inputRev;
+        this.pendingFrom = Number.POSITIVE_INFINITY;
+      }
+      return this.graph;
+    },
   };
+
+  /** Diagnostics: incremental-graph statistics. */
+  indicatorEngineStats() {
+    return { ...this.graph.stats, nodes: this.graph.size() };
+  }
+
+  /**
+   * Applies a live tick of the candlestick series to the cached indicator input in place (O(1)),
+   * so indicators do not pay an O(n) rebuild per tick. Anything unusual drops the cache instead.
+   */
+  private patchInput(change: Change, isCandle: boolean) {
+    const c = this.inputCache;
+    const drop = () => {
+      this.inputCache = null;
+      this.pendingFrom = undefined;
+      this.inputRev++;
+    };
+    if (!c || !c.value || this.derived || c.version !== this.store.version - 1 || change.kind !== "tick") return drop();
+    const st = this.store;
+    const v = c.value;
+    const inp = v.input;
+    const n = inp.time.length;
+    const mark = (k: number) => {
+      if (this.pendingFrom !== undefined) this.pendingFrom = Math.min(this.pendingFrom, k);
+    };
+    if (isCandle) {
+      const cs = st.candle()!;
+      const p = cs.points[cs.points.length - 1] as CandlestickData;
+      const at = (i: number) => {
+        inp.time[i] = p.time; inp.open[i] = p.open; inp.high[i] = p.high; inp.low[i] = p.low; inp.close[i] = p.close; inp.volume[i] = p.volume ?? 0;
+      };
+      if (n && inp.time[n - 1] === p.time) {
+        at(n - 1);
+        mark(n - 1);
+      } else if (!n || p.time > inp.time[n - 1]) {
+        at(n);
+        v.axisIdx.push(search(st.times, p.time));
+        mark(Math.max(0, n - 1));
+      } else return drop();
+    }
+    v.axisLength = st.times.length;
+    inp.revision = (inp.revision ?? 0) + 1;
+    c.version = st.version;
+    this.inputRev++;
+  }
 
   private lastCandleTime(): number | null {
     const b = this.store.bars;
@@ -1071,6 +1133,8 @@ export class ChartImpl implements ChartApi {
       const input: IndicatorInput = { time: b.map((x) => x.t), open: b.map((x) => x.o), high: b.map((x) => x.h), low: b.map((x) => x.l), close: b.map((x) => x.c), volume: b.map(() => 0), intraday: st.intraday() };
       const value = b.length ? { input, axisIdx: b.map((_, i) => i), axisLength: b.length } : null;
       this.inputCache = { version: key, value };
+      this.pendingFrom = undefined;
+      this.inputRev++;
       return value;
     }
     const time: number[] = [], open: number[] = [], high: number[] = [], low: number[] = [], close: number[] = [], volume: number[] = [], axisIdx: number[] = [];
@@ -1090,9 +1154,11 @@ export class ChartImpl implements ChartApi {
         }
       }
     }
-    const input: IndicatorInput = { time, open, high, low, close, volume, intraday: st.intraday() };
+    const input: IndicatorInput = { time, open, high, low, close, volume, intraday: st.intraday(), revision: 0 };
     const value = time.length ? { input, axisIdx, axisLength: st.times.length } : null;
     this.inputCache = { version: key, value };
+    this.pendingFrom = undefined; // rebuilt: the graph compares against its committed copy
+    this.inputRev++;
     return value;
   }
 
@@ -1210,6 +1276,7 @@ export class ChartImpl implements ChartApi {
     // The viewport must be captured BEFORE the data changes (cheap: two index→time lookups).
     const keep = this.captureView();
     const change = fn(this.store);
+    if (this.indicators.size) this.patchInput(change, seriesId !== undefined && this.store.series.get(seriesId)?.type === "candlestick");
     if (this.indicators.size) {
       const isInput = seriesId !== undefined && this.store.series.get(seriesId)?.type === "candlestick";
       const kind = change.kind === "full" ? "full" : this.derived ? (isInput ? "full" : null) : isInput ? "tail" : change.appended ? "full" : null;
@@ -1480,6 +1547,7 @@ export class ChartImpl implements ChartApi {
     for (const i of [...this.indicators.values()]) i.remove();
     this.indicators.clear();
     this.inputCache = null;
+    this.graph.destroy();
     this.plugins_.destroyAll();
     this.drawings.destroy();
     this.drawingSubs.clear();
@@ -1503,6 +1571,11 @@ export class ChartImpl implements ChartApi {
       this.onRemove = undefined;
       cb?.();
     }
+  }
+
+  /** Renderer diagnostics: full frames, crosshair-only frames and their last durations (null without a canvas renderer). */
+  renderStats(): { fullFrames: number; overlayFrames: number; lastDrawMs: number; lastOverlayMs: number } | null {
+    return this.adapter.renderStats?.() ?? null;
   }
 
   /** Duration of the renderer's last redraw in ms (diagnostics), or null if not reported. */

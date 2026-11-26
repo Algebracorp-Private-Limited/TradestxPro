@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { createChartWithAdapter } from "../lib/xchart-sdk/create-chart.ts";
 import type { RenderAdapter, RenderModel } from "../lib/xchart-sdk/canvas-adapter.ts";
 import type { EngineLayer, InteractionDelegate, LayerApi, PointerInfo } from "../components/chart/engine.ts";
-import type { Change } from "../lib/xchart-sdk/store.ts";
 import type { CandlestickData } from "../lib/xchart-sdk/types.ts";
 import { DRAWING_TYPES, type DrawingType } from "../lib/xchart-sdk/drawings/types.ts";
 import { TOOLS } from "../lib/xchart-sdk/drawings/tools.ts";
@@ -18,7 +17,7 @@ class Geo implements RenderAdapter {
   layers: EngineLayer[] = [];
   delegate: InteractionDelegate | null = null;
   redraws = 0;
-  render(m: RenderModel, _c: Change) { this.last = m; }
+  render(m: RenderModel) { this.last = m; }
   setOptions() {}
   onCrosshair() {}
   getViewRange() { return this.last && this.last.times.length ? { from: 0, to: this.last.times.length - 1 } : null; }
@@ -47,7 +46,7 @@ function stubCtx(calls: string[] = []): CanvasRenderingContext2D {
     get(t, k) {
       if (k in t) return t[k as string];
       if (k === "measureText") return (s: string) => ({ width: s.length * 6 });
-      return (..._a: unknown[]) => { calls.push(String(k)); };
+      return () => { calls.push(String(k)); };
     },
     set(t, k, v) { t[k as string] = v; return true; },
   }) as unknown as CanvasRenderingContext2D;

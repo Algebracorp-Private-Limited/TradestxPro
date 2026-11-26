@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createChartWithAdapter } from "../lib/xchart-sdk/create-chart.ts";
 import { seriesPaneId, timeFormatter, type AdapterEvents, type RenderAdapter, type RenderModel } from "../lib/xchart-sdk/canvas-adapter.ts";
-import type { Change } from "../lib/xchart-sdk/store.ts";
 import type { CandlestickData } from "../lib/xchart-sdk/types.ts";
 import { XChartError } from "../lib/xchart-sdk/validation.ts";
 import { syncCharts } from "../lib/xchart-sdk/sync.ts";
@@ -15,7 +14,7 @@ class Fake implements RenderAdapter {
   cross: ({ index: number; price: number | null } | null)[] = [];
   crossCb: ((i: number | null, t: number | null, p: number | null) => void) | null = null;
   setRanges = 0;
-  render(m: RenderModel, _c: Change) { this.last = m; if (!this.view && m.times.length) this.view = { from: 0, to: m.times.length - 1 }; }
+  render(m: RenderModel) { this.last = m; if (!this.view && m.times.length) this.view = { from: 0, to: m.times.length - 1 }; }
   setOptions() {}
   onCrosshair(cb: (i: number | null, t: number | null, p: number | null) => void) { this.crossCb = cb; }
   getViewRange() { return this.last && this.last.times.length ? this.view : null; }

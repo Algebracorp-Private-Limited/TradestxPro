@@ -727,6 +727,84 @@ test("browser: touch creates a logical-domain drawing on a Renko chart", async (
   }
 });
 
+test("browser: indicator Web Worker — identical results, cancellation, stale rejection, errors, termination", async (t) => {
+  await withPage(t, async (page) => {
+    const r = await page.evaluate(`(async () => {
+      const W = await import("/lib/xchart-sdk/workers/worker-client.ts");
+      const B = await import("/lib/xchart-sdk/indicators/builtins.ts");
+      const data = mk(20000, 1600000000, 60);
+      const cols = { time: data.map((d) => d.time), open: data.map((d) => d.open), high: data.map((d) => d.high), low: data.map((d) => d.low), close: data.map((d) => d.close), volume: data.map((d) => d.volume), intraday: true };
+      const client = new W.IndicatorWorkerClient();
+      const out = { usesWorker: client.usesWorker };
+      const res = await client.computeIndicators(cols, [{ id: "macd", params: {} }, { id: "supertrend", params: {} }, { id: "bogus", params: {} }]);
+      out.worker = res.worker;
+      const def = B.BUILTIN_INDICATORS.find((d) => d.id === "macd");
+      const ref = def.calculate(cols, Object.fromEntries(def.params.map((p) => [p.key, p.default])));
+      out.equal = ["macd", "signal", "hist"].every((k) => ref[k].every((v, i) => Object.is(v, res.results[0].outputs[k][i]) || (Number.isNaN(v) && Number.isNaN(res.results[0].outputs[k][i]))));
+      out.bogus = res.results[2].error ?? null;
+      out.callerIntact = cols.close.length === 20000 && Number.isFinite(cols.close[5]);
+      out.transferMs = res.transferMs; out.ms = res.ms;
+      // Coalescing: a newer request on the same channel cancels the older one.
+      const p1 = client.computeIndicators(cols, [{ id: "adx", params: {} }], { datasetVersion: 1, channel: "c" }).then(() => "ok", (e) => e.name);
+      const p2 = client.computeIndicators(cols, [{ id: "adx", params: {} }], { datasetVersion: 2, channel: "c" }).then(() => "ok", (e) => e.name);
+      out.coalesce = await Promise.all([p1, p2]);
+      // Stale rejection: without coalescing, an older dataset version that finishes is discarded.
+      const s1 = client.computeIndicators(cols, [{ id: "ema", params: {} }], { datasetVersion: 3, channel: "s", coalesce: false }).then(() => "ok", (e) => e.name);
+      const s2 = client.computeIndicators(cols, [{ id: "ema", params: {} }], { datasetVersion: 4, channel: "s", coalesce: false }).then(() => "ok", (e) => e.name);
+      out.stale = await Promise.all([s1, s2]);
+      // AbortSignal cancellation.
+      const ac = new AbortController();
+      const pc = client.computeIndicators(cols, [{ id: "ichimoku", params: {} }], { signal: ac.signal, channel: "a" }).then(() => "ok", (e) => e.name);
+      ac.abort();
+      out.abort = await pc;
+      // Derived transformation in the worker.
+      const d = await client.computeDerived(cols, "renko", { size: 2 });
+      out.derived = d.worker && d.points.length > 5;
+      // Termination rejects pending jobs.
+      const pt = client.computeIndicators(cols, [{ id: "adx", params: {} }], { channel: "t" }).then(() => "ok", (e) => e.name);
+      client.terminate();
+      out.terminated = await pt;
+      out.inFlight = client.inFlight();
+      return out;
+    })()`);
+    assert.equal(r.usesWorker, true, "a real Web Worker is used");
+    assert.equal(r.worker, true);
+    assert.equal(r.equal, true, "worker results are identical to the reference calculation");
+    assert.match(r.bogus, /Unknown/);
+    assert.equal(r.callerIntact, true, "inputs are copied before transfer");
+    assert.deepEqual(r.coalesce, ["CancelledError", "ok"]);
+    assert.deepEqual(r.stale, ["StaleResultError", "ok"]);
+    assert.equal(r.abort, "CancelledError");
+    assert.equal(r.derived, true);
+    assert.equal(r.terminated, "CancelledError");
+    assert.equal(r.inFlight, 0);
+    console.log(`    worker: 20k candles × 3 indicators compute ${r.ms.toFixed(1)} ms + transfer/overhead ${r.transferMs.toFixed(1)} ms`);
+  });
+});
+
+test("browser: crosshair-only frames reuse the cached frame", async (t) => {
+  await withPage(t, async (page) => {
+    await page.evaluate(`(async () => {
+      const el = document.getElementById("a");
+      window.chart = X.createChart(el, {});
+      chart.addCandlestickSeries().setData(mk(5000));
+      for (const id of ["ema", "bb", "ichimoku", "rsi", "macd"]) chart.addIndicator(id);
+      await frame();
+    })()`);
+    const before = await page.evaluate(`chart.renderStats()`);
+    for (let i = 0; i < 40; i++) {
+      await page.mouse.move(100 + i * 10, 150 + (i % 5) * 20);
+      await page.evaluate(`frame()`);
+    }
+    const after = await page.evaluate(`({ s: chart.renderStats(), canvases: document.querySelectorAll("#a canvas").length })`);
+    assert.equal(after.canvases, 1, "still a single canvas in the page");
+    assert.ok(after.s.overlayFrames - before.overlayFrames >= 30, `crosshair-only frames (${after.s.overlayFrames - before.overlayFrames})`);
+    assert.ok(after.s.fullFrames - before.fullFrames <= 2, `pointer movement does not re-render the chart (${after.s.fullFrames - before.fullFrames} full frames)`);
+    console.log(`    crosshair-only frame ${after.s.lastOverlayMs.toFixed(2)} ms vs full frame ${after.s.lastDrawMs.toFixed(2)} ms (5k candles, 5 indicators)`);
+    await page.evaluate(`chart.remove()`);
+  });
+});
+
 test("browser: benchmarks (1k / 10k / 50k candles)", { skip: process.env.XCHART_BENCH !== "1" && "set XCHART_BENCH=1 to run" }, async (t) => {
   const browser = await launch(t);
   if (!browser) return;

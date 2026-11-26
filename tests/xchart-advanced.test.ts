@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { createChartWithAdapter } from "../lib/xchart-sdk/create-chart.ts";
 import type { RenderAdapter, RenderModel } from "../lib/xchart-sdk/canvas-adapter.ts";
 import type { EngineLayer, LayerApi } from "../components/chart/engine.ts";
-import type { Change } from "../lib/xchart-sdk/store.ts";
 import type { CandlestickData } from "../lib/xchart-sdk/types.ts";
 import { XChartError } from "../lib/xchart-sdk/validation.ts";
 import { PRICE_CHART_TYPES, TIME_CHART_TYPES, heikinAshi, kagi, lineBreak, pointAndFigure, rangeBars, renko } from "../lib/xchart-sdk/chart-types.ts";
@@ -15,7 +14,7 @@ class Fake implements RenderAdapter {
   last: RenderModel | null = null;
   layers: EngineLayer[] = [];
   crossCb: ((i: number | null, t: number | null, p: number | null) => void) | null = null;
-  render(m: RenderModel, _c: Change) { this.last = m; }
+  render(m: RenderModel) { this.last = m; }
   setOptions() {}
   onCrosshair(cb: (i: number | null, t: number | null, p: number | null) => void) { this.crossCb = cb; }
   getViewRange() { return this.last && this.last.times.length ? { from: 0, to: this.last.times.length - 1 } : null; }

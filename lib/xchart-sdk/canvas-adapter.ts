@@ -90,6 +90,8 @@ export interface RenderAdapter {
   setSpacing?(px: number): void;
   getPlotWidth?(): number;
   toDataURL?(scale?: number): string;
+  /** Diagnostics: frame counters and last frame durations. */
+  renderStats?(): { fullFrames: number; overlayFrames: number; lastDrawMs: number; lastOverlayMs: number };
 }
 
 export const THEMES: Record<"dark" | "light", Partial<EngineTheme>> = {
@@ -356,6 +358,10 @@ export class CanvasAdapter implements RenderAdapter {
   }
   getPlotWidth() {
     return this.engine.getPlotWidth();
+  }
+  renderStats() {
+    const e = this.engine as unknown as { frames: { full: number; overlay: number }; lastDrawMs: number; lastOverlayMs: number };
+    return { fullFrames: e.frames.full, overlayFrames: e.frames.overlay, lastDrawMs: e.lastDrawMs, lastOverlayMs: e.lastOverlayMs };
   }
   toDataURL(scale?: number) {
     return this.engine.toDataURL(scale);
