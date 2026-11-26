@@ -9,7 +9,8 @@
  * - `points` and `bars` are mutated in place so the renderer's tick path can reuse them.
  */
 import type { AxisBar } from "../store.ts";
-import { createBuilder, methodology, resolveSettings, type Builder } from "./builders.ts";
+import { MAX_DERIVED_POINTS, MAX_PER_CANDLE, createBuilder, methodology, resolveSettings, type Builder } from "./builders.ts";
+import { XChartError } from "../validation.ts";
 import type { DerivedKind, DerivedPoint, DerivedSeries, DerivedSettings, SourceCandle } from "./types.ts";
 
 export * from "./types.ts";
@@ -83,6 +84,9 @@ export class DerivedSeriesEngine {
   }
 
   private push(list: Emitted[], c: SourceCandle, sourceIndex: number, status: "confirmed" | "provisional", isOpen = false) {
+    if (list.length >= MAX_PER_CANDLE || this.points.length + list.length > MAX_DERIVED_POINTS) {
+      throw new XChartError("DERIVED_LIMIT", `The ${this.kind} settings produce too many points (${list.length >= MAX_PER_CANDLE ? `≥ ${MAX_PER_CANDLE} from one candle` : `> ${MAX_DERIVED_POINTS} in total`}); use a larger size`);
+    }
     list.forEach((e, seq) => {
       const logical = this.points.length;
       const p: DerivedPoint = {

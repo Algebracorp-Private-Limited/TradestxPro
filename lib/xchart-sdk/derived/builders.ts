@@ -13,6 +13,10 @@
 import { XChartError, isCssColor } from "../validation.ts";
 import type { DerivedKind, DerivedPoint, DerivedSettingsMap, KagiSettings, LineBreakSettings, PnfSettings, PriceSource, RangeBarSettings, RenkoSettings, SourceCandle } from "./types.ts";
 
+/** Hard limits against runaway sizes (e.g. a tiny brick over a wide price range). */
+export const MAX_PER_CANDLE = 10_000;
+export const MAX_DERIVED_POINTS = 1_000_000;
+
 export const PATH_ASSUMPTION = "Intrabar path assumed open → low → high → close for rising candles and open → high → low → close for falling candles; OHLC data does not record the true order.";
 
 type Emit = Omit<DerivedPoint, "id" | "logical" | "seq" | "status" | "sourceTime" | "sourceIndex" | "sourceClose">;
@@ -118,7 +122,7 @@ class RenkoBuilder implements Builder {
       if (!Number.isFinite(this.base) && !this.last) this.base = price;
       this.lo = Math.min(this.lo, price);
       this.hi = Math.max(this.hi, price);
-      for (let guard = 0; guard < 100_000; guard++) {
+      for (let guard = 0; guard < MAX_PER_CANDLE; guard++) {
         const ref = this.last ? this.last.close : this.base;
         const size = this.rule.size(ref);
         if (!(size > 0)) break; // ATR warm-up: no bricks yet
@@ -434,7 +438,7 @@ class RangeBarBuilder implements Builder {
         this.cur = { open: p, high: p, low: p, close: p };
         continue;
       }
-      for (let guard = 0; guard < 100_000; guard++) {
+      for (let guard = 0; guard < MAX_PER_CANDLE; guard++) {
         const b: { open: number; high: number; low: number; close: number } = this.cur!;
         if (p > b.low + size) {
           const top = b.low + size;

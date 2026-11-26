@@ -200,6 +200,7 @@ export class ChartImpl implements ChartApi {
   private ha: AxisBar[] | null = null;
   /** Price-based chart type state (null for time-based types). */
   private derived: DerivedSeriesEngine | null = null;
+  private derivedError: string | null = null;
   private plugins_: PluginManager;
   private sessionCalendar: string | null = null;
   private layerKey = "";
@@ -663,9 +664,13 @@ export class ChartImpl implements ChartApi {
     const wasDerived = this.derived !== null;
     const prevKind = this.derived?.kind;
     if (isDerivedType(type)) {
-      if (!this.store.candle()) throw new XChartError("UNSUPPORTED_CHART_TYPE", `"${type}" is built from a candlestick series; add one first`);
-      this.derived = new DerivedSeriesEngine(type as DerivedKind, style as never); // validates settings
+      const cs = this.store.candle();
+      if (!cs) throw new XChartError("UNSUPPORTED_CHART_TYPE", `"${type}" is built from a candlestick series; add one first`);
+      const eng = new DerivedSeriesEngine(type as DerivedKind, style as never); // validates settings
+      eng.sync(cs.points as CandlestickData[], this.store.version); // throws DERIVED_LIMIT before anything changes
+      this.derived = eng;
     } else this.derived = null;
+    this.derivedError = null;
     this.chartType = type;
     this.chartStyle = { ...(style ?? {}) };
     this.ha = null;
@@ -678,7 +683,7 @@ export class ChartImpl implements ChartApi {
   }
 
   /** Price-based chart state: points (copies), methodology, compatibility of other chart content. */
-  getDerivedInfo(): null | { type: DerivedKind; settings: Record<string, unknown>; points: DerivedPoint[]; provisional: number; methodology: string; hidden: { series: number[]; indicators: string[]; markers: boolean; drawings: number; sessionHighlight: boolean } } {
+  getDerivedInfo(): null | { type: DerivedKind; settings: Record<string, unknown>; points: DerivedPoint[]; provisional: number; methodology: string; error: string | null; hidden: { series: number[]; indicators: string[]; markers: boolean; drawings: number; sessionHighlight: boolean } } {
     this.assertAlive();
     const d = this.derived;
     if (!d) return null;
@@ -689,6 +694,7 @@ export class ChartImpl implements ChartApi {
       points: snap.points,
       provisional: d.provisionalCount(),
       methodology: snap.methodology,
+      error: this.derivedError,
       hidden: {
         series: [...this.seriesById.values()].filter((x) => x.type !== "candlestick").map((x) => x.id),
         indicators: [...this.indicators.values()].filter((i) => !this.indicatorUsable(i)).map((i) => i.id),
@@ -769,7 +775,15 @@ export class ChartImpl implements ChartApi {
       }
       if (d.sourceRevision === this.store.version && d.revision > 0 && change.kind !== "full") return { kind: "tick", appended: 0 };
       const before = d.points.length;
-      const appended = d.sync(cs.points as CandlestickData[], this.store.version);
+      let appended: number;
+      try {
+        appended = d.sync(cs.points as CandlestickData[], this.store.version);
+      } catch (e) {
+        // A live update pushed the series past its size limit: keep the last good points and report it.
+        this.derivedError = (e as Error).message;
+        this.events.emit("layoutChange", { reason: "derived-limit" });
+        return { kind: "full" };
+      }
       if (appended < 0 || change.kind === "full") return { kind: "full" };
       return { kind: "tick", appended: Math.max(0, d.points.length - before) };
     }
@@ -805,7 +819,6 @@ export class ChartImpl implements ChartApi {
     if (o === null) {
       this.sessionLayer = null;
       this.sessionCalendar = null;
-    this.ha = null;
       this.syncLayers(true);
       this.adapter.requestRedraw?.();
       return;
@@ -1754,6 +1767,8 @@ export class ChartImpl implements ChartApi {
     this.extraLayers = [];
     this.scaleOpts.clear();
     this.sessionLayer = null;
+    this.ha = null;
+    this.derived = null;
     this.collapsedPanes.clear();
     this.subs.clear();
     this.pointer = null;

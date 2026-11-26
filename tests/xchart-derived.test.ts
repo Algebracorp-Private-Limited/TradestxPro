@@ -263,3 +263,13 @@ test("chart: drawings created on a derived chart use the logical domain; layouts
   const empty = createChartWithAdapter(new Fake());
   assert.throws(() => empty.setChartType("kagi"), (e: unknown) => (e as XChartError).code === "UNSUPPORTED_CHART_TYPE", "needs a candlestick series");
 });
+
+test("resource limits: runaway derived settings are rejected atomically", () => {
+  const f = new Fake();
+  const chart = createChartWithAdapter(f);
+  chart.addCandlestickSeries().setData(walk(50, 2));
+  chart.setChartType("kagi", { reversal: 2 });
+  assert.throws(() => chart.setChartType("renko", { size: 1e-6 }), (e: unknown) => e instanceof XChartError && e.code === "DERIVED_LIMIT");
+  assert.equal(chart.getChartType().type, "kagi", "the previous chart type stays");
+  assert.equal(chart.getDerivedInfo()!.type, "kagi");
+});
