@@ -3,7 +3,7 @@
  * Rendering receives a controlled environment (coordinate conversion only).
  */
 import { FIB_EXTENSION, FIB_FAN, FIB_RETRACEMENT, FIB_TIME, distToEllipse, distToSegment, extendLine, fibExtension, fibRetracement, linearRegression, pitchfork, pointInPolygon, riskReward, type P } from "./geometry.ts";
-import type { DrawingData, DrawingType } from "./types.ts";
+import type { DrawingData, DrawingPoint, DrawingType } from "./types.ts";
 
 export type ToolEnv = {
   ctx: CanvasRenderingContext2D;
@@ -14,15 +14,15 @@ export type ToolEnv = {
   color: string;
   text: string;
   bg: string;
-  px(p: { time: number; price: number }): P;
+  px(p: DrawingPoint): P;
   fmt(price: number): string;
   timeLabel(t: number): string;
-  /** Bars between two times (signed, fractional). */
-  bars(t1: number, t2: number): number;
-  /** x of the n-th bar after time t (for Fibonacci time zones). */
-  xAfter(t: number, n: number): number;
-  /** Closes between two times as screen-x and price (regression channel). */
-  closes(t1: number, t2: number): { x: number[]; price: number[] };
+  /** Bars between two anchors (signed, fractional), in the drawing's coordinate domain. */
+  bars(a: DrawingPoint, b: DrawingPoint): number;
+  /** x of the n-th bar after an anchor (Fibonacci time zones). */
+  xAfter(a: DrawingPoint, n: number): number;
+  /** Closes between two anchors as screen-x and price (regression channel). */
+  closes(a: DrawingPoint, b: DrawingPoint): { x: number[]; price: number[] };
   yOf(price: number): number;
 };
 
@@ -209,8 +209,7 @@ export const TOOLS: Record<DrawingType, ToolSpec> = {
   "regression-channel": {
     anchors: 2,
     render(env, [a, b], d) {
-      const t1 = Math.min(d.points[0].time, d.points[1].time), t2 = Math.max(d.points[0].time, d.points[1].time);
-      const c = env.closes(t1, t2);
+      const c = env.closes(d.points[0], d.points[1]);
       const r = linearRegression(c.x, c.price);
       if (!r) {
         line(env, d, a, b);
@@ -272,17 +271,17 @@ export const TOOLS: Record<DrawingType, ToolSpec> = {
   "fib-timezones": {
     anchors: 2,
     render(env, _pts, d) {
-      const unit = Math.max(1, Math.round(Math.abs(env.bars(d.points[0].time, d.points[1].time))));
+      const unit = Math.max(1, Math.round(Math.abs(env.bars(d.points[0], d.points[1]))));
       for (const f of FIB_TIME) {
-        const x = env.xAfter(d.points[0].time, f * unit);
+        const x = env.xAfter(d.points[0], f * unit);
         if (x > env.width + 1) break;
         line(env, d, { x, y: env.top }, { x, y: env.top + env.height });
         if (d.style.showLabels !== false) label(env, d, String(f), x + 3, env.top + 10);
       }
     },
     hit(env, [a], p, d) {
-      const unit = Math.max(1, Math.round(Math.abs(env.bars(d.points[0].time, d.points[1].time))));
-      return FIB_TIME.some((f) => Math.abs(env.xAfter(d.points[0].time, f * unit) - p.x) <= TOL) || Math.abs(p.x - a.x) <= TOL;
+      const unit = Math.max(1, Math.round(Math.abs(env.bars(d.points[0], d.points[1]))));
+      return FIB_TIME.some((f) => Math.abs(env.xAfter(d.points[0], f * unit) - p.x) <= TOL) || Math.abs(p.x - a.x) <= TOL;
     },
   },
   "fib-fan": {
@@ -411,7 +410,7 @@ export const TOOLS: Record<DrawingType, ToolSpec> = {
       const y = (a.y + b.y) / 2;
       fill(env, d, () => env.ctx.rect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y) || 2), 0.1);
       line(env, d, { x: a.x, y }, { x: b.x, y });
-      const bars = Math.round(env.bars(d.points[0].time, d.points[1].time));
+      const bars = Math.round(env.bars(d.points[0], d.points[1]));
       const days = Math.abs(d.points[1].time - d.points[0].time) / 86400;
       label(env, d, `${bars} bars · ${days >= 1 ? days.toFixed(1) + " d" : (days * 24).toFixed(1) + " h"}`, (a.x + b.x) / 2, y - 14, "center", true);
     },
@@ -424,7 +423,7 @@ export const TOOLS: Record<DrawingType, ToolSpec> = {
       fill(env, d, r, 0.1);
       stroke(env, d, r, 1);
       const p1 = d.points[0].price, p2 = d.points[1].price;
-      const bars = Math.round(env.bars(d.points[0].time, d.points[1].time));
+      const bars = Math.round(env.bars(d.points[0], d.points[1]));
       label(env, d, `${env.fmt(p2 - p1)} (${fmtPct(pct(p1, p2))}) · ${bars} bars`, (a.x + b.x) / 2, Math.max(a.y, b.y) + 14, "center", true);
     },
     hit: (env, [a, b], p) => p.x >= Math.min(a.x, b.x) - TOL && p.x <= Math.max(a.x, b.x) + TOL && p.y >= Math.min(a.y, b.y) - TOL && p.y <= Math.max(a.y, b.y) + TOL,

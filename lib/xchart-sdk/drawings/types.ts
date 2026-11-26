@@ -1,5 +1,12 @@
 /** Public drawing types. Points are time/price (never pixels or bar indexes), so drawings stay aligned. */
-export type DrawingPoint = { time: number; price: number };
+/**
+ * Anchor of a drawing. `time` is a market timestamp (UTC seconds); `price` is a value on the
+ * drawing's pane/scale. On price-based (derived) charts drawings use the LOGICAL domain: `logical`
+ * is the derived point index and `time` records the source candle time for reference.
+ */
+export type DrawingPoint = { time: number; price: number; logical?: number };
+/** Coordinate domain of a drawing's anchors: market time, or logical index of a derived chart. */
+export type DrawingDomain = "time" | "logical";
 
 export const DRAWING_TYPES = [
   // lines & channels
@@ -31,6 +38,10 @@ export type DrawingStyle = {
 
 export type DrawingSpec = {
   id?: string;
+  /** Default "time". "logical" drawings belong to price-based (derived) chart types. */
+  domain?: DrawingDomain;
+  /** Pane the drawing lives on (default "main"). Prices are values of that pane's scale. */
+  paneId?: string;
   /** A built-in tool or a tool registered on the chart (plugins). */
   type: DrawingType | (string & {});
   points: DrawingPoint[];
@@ -41,7 +52,7 @@ export type DrawingSpec = {
 };
 
 /** Serialised drawing (JSON-safe). */
-export type DrawingData = Required<Pick<DrawingSpec, "id" | "type" | "points" | "locked" | "visible">> & { style: DrawingStyle; text?: string };
+export type DrawingData = Required<Pick<DrawingSpec, "id" | "type" | "points" | "locked" | "visible">> & { style: DrawingStyle; text?: string; domain?: DrawingDomain; paneId?: string };
 /** Rendering/hit-testing environment given to drawing tools (see tools.ts). */
 export type { ToolEnv, ToolSpec } from "./tools.ts";
 

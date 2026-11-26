@@ -34,6 +34,19 @@ export type PaneSpec = { id: string; title: string; series: PlotSeries[]; levels
 export type ScaleSpec = { id: string; margins?: { top: number; bottom: number }; visible?: boolean };
 export type Marker = { index: number; text: string; color: string; position: "above" | "below" };
 export type ChartType = "candles" | "bars" | "line" | "area" | "hollow" | "hilo" | "step" | "baseline" | "columns";
+/** Per-point data the renderer needs for derived chart types (structural subset of DerivedPoint). */
+export type DerivedRenderPoint = { status: string; direction: number; thickStart?: boolean; thickEnd?: boolean; switchPrice?: number; lowBox?: number; highBox?: number; complete?: boolean };
+export type DerivedRender = {
+  kind: "renko" | "kagi" | "point-and-figure" | "line-break" | "range-bars";
+  points: ArrayLike<DerivedRenderPoint>;
+  up: string;
+  down: string;
+  wicks?: boolean;
+  yangWidth?: number;
+  yinWidth?: number;
+  /** Point & Figure: price of box index k, and column spacing (1 = one column per bar slot). */
+  boxLevel?: (k: number) => number;
+};
 /** Styling of line-like main types (line, step, area, baseline, columns). */
 export type MainStyle = { line?: string; lineWidth?: number; areaTop?: string; areaBottom?: string; baseline?: number; up?: string; down?: string; markers?: boolean };
 
@@ -57,6 +70,8 @@ export type ChartData = {
   /** Price-scale settings by id ("right" = the main scale). */
   scales?: ScaleSpec[];
   mainStyle?: MainStyle;
+  /** Price-based (derived) rendering: `bars` are derived points on a logical axis (see lib/xchart-sdk/derived). */
+  derived?: DerivedRender;
   /** Real last / previous close when `bars` are a display transform (e.g. Heikin Ashi). */
   lastPrice?: { price: number; prev: number | null };
   /** Relative pane heights by pane id ("main" included). Omitted panes use the default split. */
@@ -1329,7 +1344,110 @@ export class ChartEngine {
     }
   }
 
+  /** Derived chart types on the logical axis. Provisional points are drawn translucent. */
+  private drawDerived(L: PaneLayout, from: number, to: number) {
+    const D = this.data.derived!;
+    const { ctx } = this;
+    const bars = this.data.bars;
+    const sp = this.spacing;
+    const alpha = (p: DerivedRenderPoint) => (p.status === "provisional" ? 0.45 : 1);
+    if (D.kind === "kagi") {
+      const yang = D.yangWidth ?? 3, yin = D.yinWidth ?? 1;
+      const seg = (x1: number, y1: number, x2: number, y2: number, thick: boolean, a: number) => {
+        ctx.globalAlpha = a;
+        ctx.strokeStyle = thick ? D.up : D.down;
+        ctx.lineWidth = thick ? yang : yin;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+      };
+      ctx.lineCap = "square";
+      for (let i = Math.max(0, from - 1); i <= Math.min(to, bars.length - 1); i++) {
+        const p = D.points[i];
+        const b = bars[i];
+        const x = Math.round(this.xOf(i)) + 0.5;
+        const a = alpha(p);
+        const ys = this.yOf(b.o, L), ye = this.yOf(b.c, L);
+        if (p.switchPrice !== undefined && p.thickStart !== p.thickEnd) {
+          const yw = this.yOf(p.switchPrice, L);
+          seg(x, ys, x, yw, !!p.thickStart, a);
+          seg(x, yw, x, ye, !!p.thickEnd, a);
+        } else seg(x, ys, x, ye, !!p.thickEnd, a);
+        if (i + 1 < bars.length) seg(x, ye, Math.round(this.xOf(i + 1)) + 0.5, ye, !!p.thickEnd, alpha(D.points[i + 1]));
+      }
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 1;
+      ctx.lineCap = "butt";
+      return;
+    }
+    if (D.kind === "point-and-figure" && D.boxLevel) {
+      const lvl = D.boxLevel;
+      const w = Math.max(3, sp * 0.8);
+      ctx.lineWidth = Math.max(1, Math.min(2, sp / 8));
+      for (let i = from; i <= Math.min(to, bars.length - 1); i++) {
+        const p = D.points[i];
+        if (p.lowBox === undefined || p.highBox === undefined) continue;
+        const x = this.xOf(i);
+        ctx.globalAlpha = alpha(p);
+        const isX = p.direction > 0;
+        ctx.strokeStyle = isX ? D.up : D.down;
+        // Skip boxes outside the pane quickly.
+        for (let k = p.lowBox; k <= p.highBox; k++) {
+          const yc = this.yOf(lvl(k), L);
+          const h = Math.max(2, Math.abs(this.yOf(lvl(k + 1), L) - this.yOf(lvl(k - 1), L)) / 2 * 0.85);
+          if (yc < L.top - h || yc > L.top + L.height + h) continue;
+          const hw = Math.min(w, h) / 2;
+          ctx.beginPath();
+          if (isX) {
+            ctx.moveTo(x - hw, yc - h / 2);
+            ctx.lineTo(x + hw, yc + h / 2);
+            ctx.moveTo(x + hw, yc - h / 2);
+            ctx.lineTo(x - hw, yc + h / 2);
+          } else ctx.ellipse(x, yc, hw, h / 2, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 1;
+      return;
+    }
+    const brick = D.kind === "renko" || D.kind === "line-break";
+    const bodyW = brick ? Math.max(1, sp - Math.max(1, Math.floor(sp * 0.1))) : Math.max(1, Math.floor(sp * 0.7));
+    for (let i = from; i <= Math.min(to, bars.length - 1); i++) {
+      const b = bars[i];
+      const p = D.points[i];
+      const col = p.direction > 0 ? D.up : D.down;
+      const x = Math.round(this.xOf(i));
+      const yo = this.yOf(b.o, L), yc = this.yOf(b.c, L);
+      ctx.globalAlpha = alpha(p);
+      if (D.wicks || D.kind === "range-bars") {
+        ctx.strokeStyle = col;
+        ctx.beginPath();
+        ctx.moveTo(x + 0.5, this.yOf(b.h, L));
+        ctx.lineTo(x + 0.5, this.yOf(b.l, L));
+        ctx.stroke();
+      }
+      ctx.fillStyle = col;
+      const top = Math.min(yo, yc), hgt = Math.max(1, Math.abs(yc - yo));
+      ctx.fillRect(x - Math.floor(bodyW / 2), top, bodyW, hgt);
+      if (brick && bodyW > 4) {
+        ctx.strokeStyle = this.theme.bg;
+        ctx.strokeRect(x - Math.floor(bodyW / 2) + 0.5, top + 0.5, bodyW - 1, Math.max(0, hgt - 1));
+      }
+      if (p.complete === false) {
+        // Forming range bar: dashed outline.
+        ctx.setLineDash([2, 2]);
+        ctx.strokeStyle = col;
+        ctx.strokeRect(x - Math.floor(bodyW / 2) - 1.5, top - 1.5, bodyW + 3, hgt + 3);
+        ctx.setLineDash([]);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
   private drawMain(L: PaneLayout, from: number, to: number) {
+    if (this.data.derived) return this.drawDerived(L, from, to);
     const { ctx } = this;
     const th = this.theme;
     const bars = this.data.bars;

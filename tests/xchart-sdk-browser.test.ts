@@ -545,7 +545,7 @@ test("browser: chart types draw distinct pixels; Heikin Ashi keeps real data; pl
       out.baseline = await shot("baseline", { upColor: "#00ff00", downColor: "#ff0000", baseline: data[20].close });
       out.ha = await shot("heikin-ashi");
       out.haData = JSON.stringify(c.data()) === JSON.stringify(data);
-      try { chart.setChartType("renko"); } catch (e) { out.renko = e.code; }
+      try { chart.setChartType("renko", { size: -1 }); } catch (e) { out.renko = e.code; }
       chart.setChartType("candles");
       chart.use({ id: "test/box", install(ctx) { ctx.addLayer({ z: "above", draw(api) { api.ctx.fillStyle = "#ff00ff"; api.ctx.fillRect(10, api.pane.top + 10, 50, 30); } }); } });
       await frame();
@@ -577,7 +577,7 @@ test("browser: chart types draw distinct pixels; Heikin Ashi keeps real data; pl
     assert.ok(r.baseline.green > 100 && r.baseline.red > 100, `baseline colours above/below (${JSON.stringify(r.baseline)})`);
     assert.ok(r.ha.green > 200, "Heikin Ashi candles drawn");
     assert.equal(r.haData, true, "Heikin Ashi never changes series data");
-    assert.equal(r.renko, "UNSUPPORTED_CHART_TYPE");
+    assert.equal(r.renko, "INVALID_OPTION", "invalid Renko settings are rejected");
     assert.ok(r.plugin > 1000, `plugin layer pixels (${r.plugin})`);
     assert.equal(r.pluginGone, 0);
     assert.deepEqual(r.restored, { ind: 1, drawings: 1 });
@@ -614,6 +614,117 @@ test("browser: engine used directly (terminal chart path) keeps its v0.2 behavio
     const drawn = await page.evaluate(`(() => { const n = eng.drawings?.length ?? null; eng.destroy(); return n; })()`);
     assert.equal(drawn, 1);
   });
+});
+
+test("browser: price-based chart types render real geometry (Renko, Kagi, P&F X/O symbols, Line Break, Range bars)", async (t) => {
+  await withPage(t, async (page) => {
+    const r = await page.evaluate(`(async () => {
+      const el = document.getElementById("a");
+      const chart = X.createChart(el, { theme: "dark" });
+      // Zig-zag walk: rises 20, falls 14, rises 18 … (deterministic, synthetic).
+      const data = []; let p = 100;
+      for (let i = 0; i < 120; i++) { const step = Math.floor(i / 10) % 2 ? -1.4 : 2; const o = p; p = o + step; data.push({ time: 1767225600 + i * 86400, open: o, high: Math.max(o, p) + 0.3, low: Math.min(o, p) - 0.3, close: p, volume: 1000 }); }
+      const c = chart.addCandlestickSeries();
+      c.setData(data);
+      const shot = async () => { await frame(); return pixels(el).img; };
+      const out = {};
+      chart.setChartType("renko", { size: 2, upColor: "#00ff00", downColor: "#ff0000" });
+      let img = await shot();
+      out.renko = { green: count(img, is.green, 0, 600, 0, 374), red: count(img, is.red, 0, 600, 0, 374), points: chart.getDerivedInfo().points.length };
+      chart.setChartType("kagi", { reversal: 3, upColor: "#00ff00", downColor: "#ff0000", yangWidth: 5, yinWidth: 1 });
+      img = await shot();
+      // Width of the vertical strokes: yang lines are thick, yin lines thin.
+      const runs = (pred) => { const widths = []; for (let y = 20; y < 360; y += 7) { let run = 0; for (let x = 0; x < 600; x++) { const i = (y * img.width + x) * 4; if (pred(img.data[i], img.data[i + 1], img.data[i + 2])) run++; else { if (run) widths.push(run); run = 0; } } } widths.sort((a, b) => a - b); return widths[widths.length >> 1] ?? 0; };
+      out.kagi = { yang: runs(is.green), yin: runs(is.red), lines: chart.getDerivedInfo().points.length };
+      chart.setChartType("point-and-figure", { boxSize: 2, reversal: 3, xColor: "#00ff00", oColor: "#ff0000" });
+      img = await shot();
+      const pf = chart.getDerivedInfo();
+      const ocol = pf.points.find((q) => q.direction === -1 && q.boxes >= 3);
+      const lg = chart.getVisibleLogicalRange();
+      out.pnf = { green: count(img, is.green, 0, 600, 0, 374), red: count(img, is.red, 0, 600, 0, 374), cols: pf.points.length };
+      if (ocol) {
+        // Centre of an O is empty (a ring, not a filled candle body).
+        const span = 600 / (lg.to - lg.from + 1);
+        const x = Math.round((ocol.logical - lg.from + 0.5) * span);
+        const mid = Math.round((ocol.lowBox + ocol.highBox) / 2) * 2;
+        const y = Math.round(chart.priceToCoordinate(mid));
+        const i = (y * img.width + x) * 4;
+        out.oCentre = [img.data[i], img.data[i + 1], img.data[i + 2]];
+        out.oRing = count(img, is.red, x - span / 2, x + span / 2, y - 12, y + 12);
+      }
+      chart.setChartType("line-break", { lines: 3, upColor: "#00ff00", downColor: "#ff0000" });
+      img = await shot();
+      out.lb = { green: count(img, is.green, 0, 600, 0, 374), red: count(img, is.red, 0, 600, 0, 374), lines: chart.getDerivedInfo().points.length };
+      chart.setChartType("range-bars", { range: 1.5, upColor: "#00ff00", downColor: "#ff0000" });
+      img = await shot();
+      const rb = chart.getDerivedInfo();
+      out.rb = { green: count(img, is.green, 0, 600, 0, 374), red: count(img, is.red, 0, 600, 0, 374), bars: rb.points.length, reconstructed: rb.points.every((q) => q.reconstructed), forming: rb.points.at(-1).complete === false };
+      // Logical-axis zoom & pan, screenshot, light theme.
+      const before = chart.getVisibleLogicalRange();
+      chart.zoom(2); await frame();
+      const zoomed = chart.getVisibleLogicalRange();
+      chart.scrollBy(-10); await frame();
+      const panned = chart.getVisibleLogicalRange();
+      out.nav = { before, zoomed, panned };
+      const png = chart.takeScreenshot(2);
+      const im = new Image(); im.src = png; await im.decode();
+      out.png = [im.width, im.height];
+      chart.applyOptions({ theme: "light" }); await frame();
+      out.lightBg = [...pixels(el).img.data.slice(0, 3)];
+      out.dataSame = JSON.stringify(c.data()) === JSON.stringify(data);
+      window.chart = chart; window.data = data;
+      return out;
+    })()`);
+    assert.ok(r.renko.points > 20 && r.renko.green > 2000 && r.renko.red > 1000, `renko bricks (${JSON.stringify(r.renko)})`);
+    assert.ok(r.kagi.lines > 4, "kagi lines");
+    assert.ok(r.kagi.yang >= 4 && r.kagi.yin <= 2, `yang thick / yin thin (${r.kagi.yang} / ${r.kagi.yin} px)`);
+    assert.ok(r.pnf.cols >= 4 && r.pnf.green > 300 && r.pnf.red > 300, `X and O symbols (${JSON.stringify(r.pnf)})`);
+    assert.ok(r.oCentre && !(r.oCentre[0] > 200 && r.oCentre[1] < 60), `O symbols are rings, not filled (${r.oCentre})`);
+    assert.ok(r.oRing > 20, `O ring pixels (${r.oRing})`);
+    assert.ok(r.lb.lines > 3 && r.lb.green > 1000 && r.lb.red > 500, `line break (${JSON.stringify(r.lb)})`);
+    assert.ok(r.rb.bars > 20 && r.rb.green > 500 && r.rb.red > 300 && r.rb.reconstructed && r.rb.forming, `range bars (${JSON.stringify(r.rb)})`);
+    assert.ok(r.nav.zoomed.to - r.nav.zoomed.from < (r.nav.before.to - r.nav.before.from) * 0.7, "zoom narrows the logical range");
+    assert.ok(r.nav.panned.to < r.nav.zoomed.to - 5, "pan moves the logical range");
+    assert.deepEqual(r.png, [1340, 800], "PNG export at 2×");
+    assert.ok(r.lightBg[0] > 200, "light theme repaints");
+    assert.equal(r.dataSame, true, "source candles unchanged");
+    // Real pointer: crosshair reports the derived point and the source candle.
+    await page.evaluate(`(() => { window.ev = null; chart.subscribeCrosshairMove((e) => (window.ev = e && e.derived ? { logical: e.derived.logical, sourceTime: e.derived.sourceTime, time: e.time, src: [...e.seriesData.values()][0] } : null)); })()`);
+    await page.mouse.move(300, 150);
+    await page.evaluate(`frame()`);
+    const ev = await page.evaluate(`window.ev`);
+    assert.ok(ev && ev.time === ev.sourceTime && ev.src && ev.src.time === ev.sourceTime, `crosshair: derived point with its source candle (${JSON.stringify(ev)})`);
+    await page.evaluate(`chart.remove()`);
+  });
+});
+
+test("browser: touch creates a logical-domain drawing on a Renko chart", async (t) => {
+  const browser = await launch(t);
+  if (!browser) return;
+  try {
+    const page = await (await browser.newContext({ hasTouch: true, viewport: { width: 900, height: 800 } })).newPage();
+    const errors: string[] = [];
+    page.on("pageerror", (e: Error) => errors.push(e.message));
+    await page.route(`${ORIGIN}/**`, async (route: Any) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/") return route.fulfill({ contentType: "text/html", body: PAGE });
+      const file = normalize(join(ROOT, path));
+      if (!file.startsWith(ROOT) || !file.endsWith(".ts")) return route.fulfill({ status: 404, body: "" });
+      return route.fulfill({ contentType: "text/javascript", body: strip!(readFileSync(file, "utf8")) });
+    });
+    await page.goto(ORIGIN + "/");
+    await page.waitForFunction(() => (window as unknown as { ready?: boolean }).ready === true, null, { timeout: 15000 });
+    await page.evaluate(`(async () => { const chart = X.createChart(document.getElementById("a")); chart.addCandlestickSeries().setData(mk(80)); chart.setChartType("renko", { size: 1 }); chart.setDrawingTool("rectangle"); window.chart = chart; await frame(); })()`);
+    await page.touchscreen.tap(150, 120);
+    await page.touchscreen.tap(320, 220);
+    const d = await page.evaluate(`chart.getDrawings().map((x) => x.data())`);
+    assert.equal(d.length, 1);
+    assert.equal(d[0].domain, "logical");
+    assert.ok(d[0].points.every((p: { logical: number }) => Number.isInteger(p.logical)));
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
 });
 
 test("browser: benchmarks (1k / 10k / 50k candles)", { skip: process.env.XCHART_BENCH !== "1" && "set XCHART_BENCH=1 to run" }, async (t) => {

@@ -20,7 +20,8 @@ import { Decorations, type PriceLineApi, type PriceLineOptions, type SeriesMarke
 import type { EngineLayer } from "../../components/chart/engine.ts";
 import { TradingCalendar, type CalendarId } from "./calendar/index.ts";
 import { isCssColor } from "./validation.ts";
-import { engineType, heikinAshi, validateChartType, type ChartType, type ChartTypeStyle } from "./chart-types.ts";
+import { engineType, heikinAshi, isDerivedType, validateChartType, type ChartType, type ChartTypeStyle } from "./chart-types.ts";
+import { DerivedSeriesEngine, type DerivedKind, type DerivedPoint } from "./derived/index.ts";
 import type { AxisBar } from "./store.ts";
 import { PluginManager, type PluginInfo, type XChartPlugin } from "./plugins.ts";
 import { CALENDARS } from "./calendar/index.ts";
@@ -38,6 +39,7 @@ export type SessionHighlightOptions = {
 };
 import type {
   AreaSeriesOptions,
+  CandlestickData,
   CandlestickSeriesOptions,
   ChartApi,
   CloudSeriesOptions,
@@ -177,6 +179,8 @@ export class ChartImpl implements ChartApi {
   private chartStyle: ChartTypeStyle = {};
   /** Heikin Ashi display bars (the store keeps the original OHLCV). */
   private ha: AxisBar[] | null = null;
+  /** Price-based chart type state (null for time-based types). */
+  private derived: DerivedSeriesEngine | null = null;
   private plugins_: PluginManager;
   private sessionCalendar: string | null = null;
   private layerKey = "";
@@ -486,15 +490,16 @@ export class ChartImpl implements ChartApi {
       for (const k of Object.keys(o)) if (k !== "margins" && k !== "visible") throw new XChartError("INVALID_LAYOUT", `layout.priceScales.${id}.${k} is not allowed`);
       this.checkScaleOptions(id, o);
     }
+    if (isDerivedType(L.chartType.type) && !existing.some((x) => x.type === "candlestick") && !plan.some((p) => p.type === "candlestick" && p.create)) {
+      throw new XChartError("INVALID_LAYOUT", `Chart type "${L.chartType.type}" needs a candlestick series`);
+    }
     if (L.session && !(L.session.calendar in CALENDARS)) throw new XChartError("INVALID_LAYOUT", `Unknown session calendar "${L.session.calendar}"`);
 
     // ---- apply ----
     const report: LayoutLoadReport = { seriesMatched: 0, seriesCreated: 0, seriesSkipped: 0, indicatorsAdded: 0, indicatorsSkipped: skippedInd, drawings: L.drawings.length, pluginsNotInstalled: L.plugins.filter((id) => !this.plugins_.ids().includes(id)) };
     this.opts = nextOpts;
     this.adapter.setOptions(this.opts);
-    this.chartType = L.chartType.type as ChartType;
-    this.chartStyle = { ...(L.chartType.style as ChartTypeStyle) };
-    this.ha = null;
+    const loadType = { type: L.chartType.type as ChartType, style: { ...(L.chartType.style as ChartTypeStyle) } };
     const layoutSeries: (AnySeries | null)[] = [];
     for (const p of plan) {
       let s: AnySeries | null = p.match ?? null;
@@ -508,6 +513,7 @@ export class ChartImpl implements ChartApi {
       if (s && p.ls.data && applyData) s.setData(p.ls.data as never);
       layoutSeries.push(s);
     }
+    this.applyChartType(loadType.type, loadType.style);
     for (const i of [...this.indicators.values()]) i.remove();
     const newInd = inds.map((d) => {
       report.indicatorsAdded++;
@@ -563,18 +569,130 @@ export class ChartImpl implements ChartApi {
   /** Changes how the candlestick series is drawn. Display only: the series data is never modified. */
   setChartType(type: ChartType, style?: ChartTypeStyle): void {
     this.assertAlive();
-    validateChartType(type, style);
+    validateChartType(type, style); // atomic: throws before anything changes
+    this.applyChartType(type, style);
+    this.events.emit("layoutChange", { reason: "chart-type" });
+  }
+
+  private applyChartType(type: ChartType, style?: ChartTypeStyle) {
+    const wasDerived = this.derived !== null;
+    const prevKind = this.derived?.kind;
+    if (isDerivedType(type)) {
+      if (!this.store.candle()) throw new XChartError("UNSUPPORTED_CHART_TYPE", `"${type}" is built from a candlestick series; add one first`);
+      this.derived = new DerivedSeriesEngine(type as DerivedKind, style as never); // validates settings
+    } else this.derived = null;
     this.chartType = type;
     this.chartStyle = { ...(style ?? {}) };
     this.ha = null;
-    this.render({ kind: "full" });
-    this.events.emit("layoutChange", { reason: "chart-type" });
+    for (const i of this.indicators.values()) i.invalidate("full");
+    this.inputCache = null;
+    this.render({ kind: "full" }, wasDerived || this.derived ? null : undefined);
+    // Switching between the time axis and a logical axis (or between derived kinds) starts from a fitted view.
+    if (wasDerived !== (this.derived !== null) || (this.derived && this.derived.kind !== prevKind)) this.adapter.fit();
+    this.adapter.requestRedraw?.();
+  }
+
+  /** Price-based chart state: points (copies), methodology, compatibility of other chart content. */
+  getDerivedInfo(): null | { type: DerivedKind; settings: Record<string, unknown>; points: DerivedPoint[]; provisional: number; methodology: string; hidden: { series: number[]; indicators: string[]; markers: boolean; drawings: number; sessionHighlight: boolean } } {
+    this.assertAlive();
+    const d = this.derived;
+    if (!d) return null;
+    const snap = d.snapshot();
+    return {
+      type: d.kind,
+      settings: { ...d.settings },
+      points: snap.points,
+      provisional: d.provisionalCount(),
+      methodology: snap.methodology,
+      hidden: {
+        series: [...this.seriesById.values()].filter((x) => x.type !== "candlestick").map((x) => x.id),
+        indicators: [...this.indicators.values()].filter((i) => !this.indicatorUsable(i)).map((i) => i.id),
+        markers: [...this.decorations.values()].some((x) => x.getMarkers().length > 0),
+        drawings: this.drawings.serialize().filter((x) => (x.domain ?? "time") !== "logical").length,
+        sessionHighlight: this.sessionLayer !== null,
+      },
+    };
+  }
+
+  /** In derived mode only price-only indicators are meaningful (no volume, no session time). */
+  private indicatorUsable(i: IndicatorInstance): boolean {
+    if (!this.derived) return true;
+    const def = i.definition();
+    const needs = def.requires ?? (def.inputs.includes("volume") ? ["volume"] : []);
+    return !needs.length;
+  }
+
+  /** Bar index of a market time on the current axis (time axis, or the derived logical axis). */
+  private axisIndexOf(t: number): number {
+    const d = this.derived;
+    if (!d) return this.store.indexOfTime(t);
+    const b = d.bars;
+    if (!b.length) return 0;
+    let lo = 0, hi = b.length;
+    while (lo < hi) {
+      const m = (lo + hi) >> 1;
+      if (b[m].t < t) lo = m + 1;
+      else hi = m;
+    }
+    return Math.min(lo, b.length - 1);
+  }
+  private axisTimeAt(i: number): number {
+    const d = this.derived;
+    if (!d) return Number.isInteger(i) && i >= 0 && i < this.store.times.length ? this.store.times[i] : this.store.timeAt(i);
+    const b = d.bars;
+    if (!b.length) return 0;
+    const k = Math.max(0, Math.min(b.length - 1, Math.round(i)));
+    return b[k].t;
+  }
+  private axisLength(): number {
+    return this.derived ? this.derived.bars.length : this.store.times.length;
+  }
+
+  /** Visible range in bar indexes of the current axis (logical points on price-based types). */
+  getVisibleLogicalRange(): { from: number; to: number } | null {
+    this.assertAlive();
+    return this.adapter.getViewRange();
+  }
+  setVisibleLogicalRange(range: { from: number; to: number }): void {
+    this.assertAlive();
+    if (!range || typeof range.from !== "number" || typeof range.to !== "number" || !Number.isFinite(range.from) || !Number.isFinite(range.to) || range.to <= range.from) {
+      throw new XChartError("INVALID_RANGE", "setVisibleLogicalRange needs finite { from, to } with to > from");
+    }
+    this.adapter.setViewRange(range.from, range.to);
+  }
+
+  /** PNG data URL of the chart as drawn (scale = device pixels per CSS pixel; default the screen's). */
+  takeScreenshot(scale?: number): string {
+    this.assertAlive();
+    if (scale !== undefined && (typeof scale !== "number" || !(scale >= 0.5 && scale <= 8))) throw new XChartError("INVALID_NUMBER", "Screenshot scale must be between 0.5 and 8");
+    if (!this.adapter.toDataURL) throw new XChartError("UNSUPPORTED", "This renderer cannot export images");
+    return this.adapter.toDataURL(scale);
   }
   getChartType(): { type: ChartType; style: ChartTypeStyle } {
     return { type: this.chartType, style: { ...this.chartStyle } };
   }
 
-  private updateDisplayBars(change: Change) {
+  /** Updates display transforms; returns the change the renderer should apply. */
+  private updateDisplayBars(change: Change): Change {
+    const d = this.derived;
+    if (d) {
+      const cs = this.store.candle();
+      if (!cs) {
+        this.derived = null;
+        this.chartType = "candles";
+        return { kind: "full" };
+      }
+      if (d.sourceRevision === this.store.version && d.revision > 0 && change.kind !== "full") return { kind: "tick", appended: 0 };
+      const before = d.points.length;
+      const appended = d.sync(cs.points as CandlestickData[], this.store.version);
+      if (appended < 0 || change.kind === "full") return { kind: "full" };
+      return { kind: "tick", appended: Math.max(0, d.points.length - before) };
+    }
+    this.updateHa(change);
+    return change;
+  }
+
+  private updateHa(change: Change) {
     if (this.chartType !== "heikin-ashi") {
       this.ha = null;
       return;
@@ -585,7 +703,7 @@ export class ChartImpl implements ChartApi {
   }
 
   private realLast(): { price: number; prev: number | null } | undefined {
-    if (this.chartType !== "heikin-ashi") return undefined;
+    if (this.chartType !== "heikin-ashi" && !this.derived) return undefined;
     const b = this.store.bars;
     let i = b.length - 1;
     while (i >= 0 && !Number.isFinite(b[i].c)) i--;
@@ -631,7 +749,7 @@ export class ChartImpl implements ChartApi {
       pane: "main",
       z: "below",
       draw: (api) => {
-        if (!st.intraday()) return;
+        if (!st.intraday() || this.derived) return; // time-based shading has no meaning on a logical axis
         const { ctx } = api;
         const n = st.times.length;
         const from = Math.max(0, api.from), to = Math.min(n - 1, api.to);
@@ -666,8 +784,8 @@ export class ChartImpl implements ChartApi {
     this.assertAlive();
     if (typeof time !== "number" || !Number.isFinite(time)) throw new XChartError("INVALID_NUMBER", "setCrosshairPosition needs a finite time");
     if (price !== null && (typeof price !== "number" || !Number.isFinite(price))) throw new XChartError("INVALID_NUMBER", "price must be a finite number or null");
-    if (!this.store.times.length) return;
-    this.adapter.setCrosshair?.({ index: Math.round(this.store.indexOfTime(time)), price });
+    if (!this.axisLength()) return;
+    this.adapter.setCrosshair?.({ index: Math.round(this.axisIndexOf(time)), price });
   }
   clearCrosshairPosition(): void {
     this.assertAlive();
@@ -707,6 +825,7 @@ export class ChartImpl implements ChartApi {
       const st = this.store;
       d = new Decorations({
         indexOfTime: (t) => st.indexOfTime(t),
+        markersEnabled: () => !this.derived,
         valueAt: (i) => {
           const rec = st.series.get(id);
           if (!rec || i < 0 || i >= st.times.length) return null;
@@ -759,10 +878,11 @@ export class ChartImpl implements ChartApi {
   private drawingHost(): DrawingHost {
     const st = this.store;
     return {
-      indexOfTime: (t) => st.indexOfTime(t),
-      timeAt: (i) => (Number.isInteger(i) && i >= 0 && i < st.times.length ? st.times[i] : st.timeAt(i)),
-      bar: (i) => st.bars[i],
-      barCount: () => st.times.length,
+      indexOfTime: (t) => this.axisIndexOf(t),
+      timeAt: (i) => this.axisTimeAt(i),
+      bar: (i) => (this.derived ? this.derived.bars[i] : st.bars[i]),
+      barCount: () => this.axisLength(),
+      domain: () => (this.derived ? "logical" : "time"),
       geometry: () => {
         const a = this.adapter;
         const main = a.getPanes?.().find((p) => p.id === "main");
@@ -907,10 +1027,10 @@ export class ChartImpl implements ChartApi {
 
   private lastRangeKey = "";
   private emitVisibleRange() {
-    if (!this.events.has("visibleRangeChange") || !this.store.times.length) return;
+    if (!this.events.has("visibleRangeChange") || !this.axisLength()) return;
     const r = this.adapter.getViewRange();
     if (!r) return;
-    const range = { from: this.store.timeAt(r.from), to: this.store.timeAt(r.to) };
+    const range = this.derived ? { from: this.axisTimeAt(r.from), to: this.axisTimeAt(r.to) } : { from: this.store.timeAt(r.from), to: this.store.timeAt(r.to) };
     const key = `${range.from}|${range.to}|${r.from.toFixed(3)}|${r.to.toFixed(3)}`;
     if (key === this.lastRangeKey) return;
     this.lastRangeKey = key;
@@ -919,7 +1039,7 @@ export class ChartImpl implements ChartApi {
 
   private pointerPayload(p: { x: number; y: number; index: number; price: number | null; paneId: string | null }) {
     const i = Math.round(p.index);
-    return { time: this.store.times.length ? (i >= 0 && i < this.store.times.length ? this.store.times[i] : this.store.timeAt(i)) : null, price: p.price, paneId: p.paneId, point: { x: p.x, y: p.y }, logical: p.index };
+    return { time: this.axisLength() ? this.axisTimeAt(i) : null, price: p.price, paneId: p.paneId, point: { x: p.x, y: p.y }, logical: p.index };
   }
 
   // ---------- indicators ----------
@@ -942,8 +1062,17 @@ export class ChartImpl implements ChartApi {
 
   /** Existing bars of the candlestick series (or, without one, the first line/area series). Cached per data version. */
   private indicatorInput(): ReturnType<IndicatorHost["input"]> {
-    if (this.inputCache && this.inputCache.version === this.store.version) return this.inputCache.value;
+    const key = this.derived ? -1 - this.derived.revision : this.store.version;
+    if (this.inputCache && this.inputCache.version === key) return this.inputCache.value;
     const st = this.store;
+    if (this.derived) {
+      // Derived (logical) domain: indicators see the derived OHLC, one value per brick/line/column.
+      const b = this.derived.bars;
+      const input: IndicatorInput = { time: b.map((x) => x.t), open: b.map((x) => x.o), high: b.map((x) => x.h), low: b.map((x) => x.l), close: b.map((x) => x.c), volume: b.map(() => 0), intraday: st.intraday() };
+      const value = b.length ? { input, axisIdx: b.map((_, i) => i), axisLength: b.length } : null;
+      this.inputCache = { version: key, value };
+      return value;
+    }
     const time: number[] = [], open: number[] = [], high: number[] = [], low: number[] = [], close: number[] = [], volume: number[] = [], axisIdx: number[] = [];
     if (st.candle()) {
       for (let i = 0; i < st.bars.length; i++) {
@@ -963,13 +1092,13 @@ export class ChartImpl implements ChartApi {
     }
     const input: IndicatorInput = { time, open, high, low, close, volume, intraday: st.intraday() };
     const value = time.length ? { input, axisIdx, axisLength: st.times.length } : null;
-    this.inputCache = { version: st.version, value };
+    this.inputCache = { version: key, value };
     return value;
   }
 
   private flushIndicators(): boolean {
     let any = false;
-    for (const i of this.indicators.values()) any = i.flush() || any;
+    for (const i of this.indicators.values()) if (this.indicatorUsable(i)) any = i.flush() || any;
     return any;
   }
 
@@ -1083,7 +1212,7 @@ export class ChartImpl implements ChartApi {
     const change = fn(this.store);
     if (this.indicators.size) {
       const isInput = seriesId !== undefined && this.store.series.get(seriesId)?.type === "candlestick";
-      const kind = change.kind === "full" ? "full" : isInput ? "tail" : change.appended ? "full" : null;
+      const kind = change.kind === "full" ? "full" : this.derived ? (isInput ? "full" : null) : isInput ? "tail" : change.appended ? "full" : null;
       if (kind) for (const i of this.indicators.values()) i.invalidate(kind);
     }
     this.render(change, keep);
@@ -1108,25 +1237,34 @@ export class ChartImpl implements ChartApi {
     for (const [id, s] of this.seriesById) {
       const rec = this.store.series.get(id)!;
       if (s.type === "candlestick") candle = s.options() as CandlestickSeriesOptions;
-      else series.push({ id, type: s.type as Exclude<ChartSeriesType, "candlestick">, values: rec.values, values2: rec.values2, options: s.options() as LineSeriesOptions });
+      else if (!this.derived) series.push({ id, type: s.type as Exclude<ChartSeriesType, "candlestick">, values: rec.values, values2: rec.values2, options: s.options() as LineSeriesOptions });
     }
     let extraOverlays: RenderModel["extraOverlays"];
     let extraPanes: RenderModel["extraPanes"];
     let future = 0;
     if (this.indicators.size) {
       this.flushIndicators();
-      const p = indicatorPlots([...this.indicators.values()]);
+      const p = indicatorPlots([...this.indicators.values()].filter((i) => this.indicatorUsable(i)));
       extraOverlays = p.overlays;
       extraPanes = p.panes;
       future = p.future;
     }
     const scales = [...this.scaleOpts].map(([id, o]) => ({ id, margins: o.margins as { top: number; bottom: number } | undefined, visible: o.visible }));
-    const st = this.chartStyle;
+    const st = this.chartStyle as import("./chart-types.ts").TimeChartTypeStyle;
+    const d = this.derived;
+    const ds = d?.settings as Record<string, string | number | boolean | undefined> | undefined;
     return {
+      derived: d
+        ? {
+            kind: d.kind, points: d.points,
+            up: String(ds!.upColor ?? ds!.xColor ?? "#22c55e"), down: String(ds!.downColor ?? ds!.oColor ?? "#ef4444"),
+            wicks: ds!.wicks === true, yangWidth: Number(ds!.yangWidth ?? 3), yinWidth: Number(ds!.yinWidth ?? 1), boxLevel: d.boxLevel(),
+          }
+        : undefined,
       chartType: engineType(this.chartType),
       mainStyle: { line: st.lineColor, lineWidth: st.lineWidth, areaTop: st.areaTopColor, areaBottom: st.areaBottomColor, baseline: st.baseline, up: st.upColor, down: st.downColor, markers: this.chartType === "line-markers" },
       lastPrice: this.realLast(),
-      times: this.store.times, bars: this.ha ?? this.store.bars, intraday: this.store.intraday(), candle, series, followLatest: this.opts.followLatest === true, extraOverlays, extraPanes, future,
+      times: this.store.times, bars: d ? d.bars : this.ha ?? this.store.bars, intraday: this.store.intraday(), candle, series, followLatest: this.opts.followLatest === true, extraOverlays, extraPanes, future,
       scales, paneSizes: this.paneSizes, collapsed: [...this.collapsedPanes], paneOrder: this.paneOrder,
     };
   }
@@ -1135,7 +1273,7 @@ export class ChartImpl implements ChartApi {
     if (this.removed) return;
     // Full re-renders keep the viewport on the same TIMES (bars may shift index when the axis changes).
     const keep = change.kind === "full" ? (before === undefined ? this.captureView() : before) : null;
-    this.updateDisplayBars(change);
+    change = this.updateDisplayBars(change);
     this.adapter.render(this.model(), change);
     if (change.kind === "full") this.syncLayers();
     if (keep) this.restoreView(keep);
@@ -1144,6 +1282,7 @@ export class ChartImpl implements ChartApi {
   }
 
   private captureView(): { range: VisibleTimeRange; intraday: boolean } | null {
+    if (this.derived) return null; // the logical axis keeps its own index-based view
     const r = this.adapter.getViewRange();
     if (!r || !this.store.times.length) return null;
     return { range: { from: this.store.timeAt(r.from), to: this.store.timeAt(r.to) }, intraday: this.store.intraday() };
@@ -1202,6 +1341,7 @@ export class ChartImpl implements ChartApi {
   private buildEvent(p: { index: number; time: number | null; price: number | null } | null): CrosshairEvent {
     const seriesData = new Map<SeriesApi<ChartSeriesType>, SeriesData<ChartSeriesType>>();
     if (!p) return { time: null, price: null, seriesData, indicators: new Map(), projected: false };
+    if (this.derived) return this.buildDerivedEvent(p, seriesData);
     const T = this.store.times;
     const time = p.index < T.length ? T[p.index] : p.time ?? this.store.timeAt(p.index);
     for (const [id, d] of this.store.pointsAt(p.index)) {
@@ -1229,6 +1369,38 @@ export class ChartImpl implements ChartApi {
     return ev;
   }
 
+  private indicatorValuesAt(index: number) {
+    const indicators = new Map<IndicatorApi, Record<string, number>>();
+    for (const ind of this.indicators.values()) {
+      if (!this.indicatorUsable(ind)) continue;
+      const vals: Record<string, number> = {};
+      let any = false;
+      for (const [k, arr] of Object.entries(ind.aligned)) {
+        const v = arr[index];
+        if (Number.isFinite(v)) {
+          vals[k] = v;
+          any = true;
+        }
+      }
+      if (any) indicators.set(ind, vals);
+    }
+    return indicators;
+  }
+
+  /** Crosshair on a price-based chart: the derived point plus the ORIGINAL source candle. */
+  private buildDerivedEvent(p: { index: number; price: number | null }, seriesData: Map<SeriesApi<ChartSeriesType>, SeriesData<ChartSeriesType>>): CrosshairEvent {
+    const d = this.derived!;
+    const pt = d.points[Math.max(0, Math.min(d.points.length - 1, Math.round(p.index)))];
+    if (!pt) return { time: null, price: p.price, seriesData, indicators: new Map(), projected: false };
+    const cs = this.store.candle();
+    const src = cs?.points[pt.sourceIndex] as CandlestickData | undefined;
+    if (cs && src) {
+      const api = this.seriesById.get(cs.id);
+      if (api) seriesData.set(api, { ...src });
+    }
+    return { time: pt.sourceTime, price: p.price, seriesData, indicators: this.indicatorValuesAt(pt.logical), projected: false, derived: { ...pt } };
+  }
+
   private deliver(handlers: Handler[], e: CrosshairEvent) {
     for (const h of handlers) {
       // Skip handlers unsubscribed earlier in this same delivery.
@@ -1245,14 +1417,16 @@ export class ChartImpl implements ChartApi {
   setVisibleRange(range: VisibleTimeRange): void {
     this.assertAlive();
     validateRange(range);
-    if (!this.store.times.length) throw new XChartError("NO_DATA", "setVisibleRange needs data on the chart");
-    this.adapter.setViewRange(this.store.indexOfTime(range.from), this.store.indexOfTime(range.to));
+    if (!this.axisLength()) throw new XChartError("NO_DATA", "setVisibleRange needs data on the chart");
+    const a = this.axisIndexOf(range.from), b = this.axisIndexOf(range.to);
+    this.adapter.setViewRange(a, b > a ? b : a + 1);
   }
 
   getVisibleRange(): VisibleTimeRange | null {
     this.assertAlive();
     const r = this.adapter.getViewRange();
-    if (!r || !this.store.times.length) return null;
+    if (!r || !this.axisLength()) return null;
+    if (this.derived) return { from: this.axisTimeAt(r.from), to: this.axisTimeAt(r.to) };
     return { from: this.store.timeAt(r.from), to: this.store.timeAt(r.to) };
   }
 

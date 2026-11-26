@@ -80,6 +80,8 @@ export interface IndicatorDefinition {
   /** Optional exact incremental update from bar `from` onward (mutates and returns `prev`). */
   update?(input: IndicatorInput, p: IndicatorParams, prev: IndicatorResult, from: number): IndicatorResult;
   display?: { shortName?: string; precision?: number };
+  /** Data beyond OHLC that the indicator needs ("volume", "time" for session resets, …). Used to decide where it is meaningful (e.g. not on price-based charts, which have no volume). */
+  requires?: string[];
 }
 
 /** Per-instance display options (separate from calculation parameters). */

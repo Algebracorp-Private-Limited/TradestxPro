@@ -74,6 +74,8 @@ export function validatePriceLine(o: unknown, merged = false): asserts o is Pric
 /** What a decoration needs from the chart for one series. */
 export type DecorHost = {
   indexOfTime(t: number): number;
+  /** False on price-based (logical-axis) charts: markers are anchored to market time. */
+  markersEnabled?(): boolean;
   /** Value(s) at an axis index: candles give OHLC, value series give the value in o/h/l/c. */
   valueAt(i: number): { o: number; h: number; l: number; c: number } | null;
   /** Newest and previous finite close/value. */
@@ -216,7 +218,7 @@ export class Decorations {
       if (o.axisLabelVisible !== false) api.axisLabel(y, this.host.fmt(p), color);
     }
     // Markers (only those in view), stacked per bar and side.
-    if (!this.markers.length) return;
+    if (!this.markers.length || this.host.markersEnabled?.() === false) return;
     const stack = new Map<string, number>();
     for (const m of this.markers) {
       const i = Math.round(this.host.indexOfTime(m.time));

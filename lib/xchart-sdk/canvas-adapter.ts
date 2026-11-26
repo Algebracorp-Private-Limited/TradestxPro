@@ -4,7 +4,7 @@
  *
  * Browser-only: construct it from client code (createChart guards against SSR).
  */
-import { ChartEngine, type ChartData, type ChartType as EngineChartType, type MainStyle, type ScaleSpec, type EngineLayer, type EngineTheme, type InteractionDelegate, type PaneBox, type PaneSpec, type PlotSeries, type PointerInfo } from "../../components/chart/engine.ts";
+import { ChartEngine, type ChartData, type DerivedRender, type ChartType as EngineChartType, type MainStyle, type ScaleSpec, type EngineLayer, type EngineTheme, type InteractionDelegate, type PaneBox, type PaneSpec, type PlotSeries, type PointerInfo } from "../../components/chart/engine.ts";
 import { withAlpha } from "../chart/geometry.ts";
 import type { AxisBar, Change } from "./store.ts";
 import type {
@@ -40,6 +40,8 @@ export type RenderModel = {
   chartType?: EngineChartType;
   mainStyle?: MainStyle;
   lastPrice?: { price: number; prev: number | null };
+  /** v0.3.1: price-based chart type; `bars` then holds derived points on the logical axis. */
+  derived?: DerivedRender;
 };
 
 /** Engine pane id of a series: "main", its own "xs-<id>" pane, or a shared named pane. */
@@ -246,6 +248,7 @@ export class CanvasAdapter implements RenderAdapter {
       type: m.chartType ?? "candles",
       mainStyle: m.mainStyle,
       lastPrice: m.lastPrice,
+      derived: m.derived,
       overlays,
       panes,
       intraday: m.intraday,

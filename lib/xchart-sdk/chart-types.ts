@@ -3,19 +3,25 @@
  * OHLCV in the store is never modified (indicators, crosshair data and exports keep using it).
  *
  * Price-based types (Renko, Kagi, Point & Figure, Line Break, Range bars) build bricks/columns
- * whose count is independent of time: several can complete inside one bar. They cannot be drawn
- * on the shared, strictly increasing time axis without inventing timestamps, so rendering them is
- * reported as UNSUPPORTED_CHART_TYPE. Their calculations are exported and tested for use elsewhere.
+ * whose count is independent of time: several can complete inside one bar. Since v0.3.1 they are
+ * rendered on a separate LOGICAL axis (lib/xchart-sdk/derived) without inventing timestamps; the
+ * close-based helper functions below are kept for compatibility.
  */
 import type { AxisBar } from "./store.ts";
 import { XChartError, isCssColor } from "./validation.ts";
+import { resolveSettings } from "./derived/builders.ts";
+import type { DerivedSettings } from "./derived/types.ts";
 
 export const TIME_CHART_TYPES = ["candles", "hollow-candles", "bars", "heikin-ashi", "line", "step-line", "line-markers", "area", "baseline", "high-low", "columns"] as const;
 export const PRICE_CHART_TYPES = ["renko", "kagi", "point-and-figure", "line-break", "range-bars"] as const;
-export type ChartType = (typeof TIME_CHART_TYPES)[number];
+export type TimeChartType = (typeof TIME_CHART_TYPES)[number];
 export type PriceChartType = (typeof PRICE_CHART_TYPES)[number];
+/** Every chart type: time-based display transforms and price-based (derived, logical-axis) types. */
+export type ChartType = TimeChartType | PriceChartType;
 
-export type ChartTypeStyle = {
+/** Style of time-based types, or the settings of a price-based type (RenkoSettings, KagiSettings, …). */
+export type ChartTypeStyle = DerivedSettings | TimeChartTypeStyle;
+export type TimeChartTypeStyle = {
   lineColor?: string;
   lineWidth?: number;
   areaTopColor?: string;
@@ -26,14 +32,17 @@ export type ChartTypeStyle = {
   downColor?: string;
 };
 
+/** True for price-based types rendered on a logical axis (see derived/). */
+export function isDerivedType(t: unknown): t is PriceChartType {
+  return (PRICE_CHART_TYPES as readonly string[]).includes(t as string);
+}
+
 export function validateChartType(type: unknown, style?: unknown): asserts type is ChartType {
-  if ((PRICE_CHART_TYPES as readonly string[]).includes(type as string)) {
-    throw new XChartError(
-      "UNSUPPORTED_CHART_TYPE",
-      `"${String(type)}" is price-based: its bricks/columns are not tied to bar times, so it cannot be drawn on the time axis without inventing timestamps. Use the exported calculation (e.g. renko()) instead.`,
-    );
+  if (isDerivedType(type)) {
+    resolveSettings(type, style); // throws on invalid settings
+    return;
   }
-  if (!(TIME_CHART_TYPES as readonly string[]).includes(type as string)) throw new XChartError("INVALID_OPTION", `Unknown chart type "${String(type)}". Supported: ${TIME_CHART_TYPES.join(", ")}`);
+  if (!(TIME_CHART_TYPES as readonly string[]).includes(type as string)) throw new XChartError("INVALID_OPTION", `Unknown chart type "${String(type)}". Supported: ${[...TIME_CHART_TYPES, ...PRICE_CHART_TYPES].join(", ")}`);
   if (style === undefined) return;
   if (!style || typeof style !== "object") throw new XChartError("INVALID_OPTION", "Chart type style must be an object");
   const o = style as Record<string, unknown>;
@@ -51,6 +60,7 @@ export function engineType(t: ChartType): "candles" | "bars" | "line" | "area" |
     case "step-line": return "step";
     case "line-markers": return "line";
     case "heikin-ashi": return "candles";
+    case "renko": case "kagi": case "point-and-figure": case "line-break": case "range-bars": return "candles"; // drawn by the derived renderer
     default: return t;
   }
 }

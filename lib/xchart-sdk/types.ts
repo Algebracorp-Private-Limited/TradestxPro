@@ -160,6 +160,8 @@ export interface CrosshairEvent {
   projected?: boolean;
   /** v0.3: the drawn (transformed) candle when the chart type is a display transform such as Heikin Ashi; `seriesData` keeps the real OHLC. */
   display?: { open: number; high: number; low: number; close: number };
+  /** v0.3.1: on price-based chart types, the derived point under the pointer. `seriesData` then holds the ORIGINAL source candle (the observed market price); derived values are chart constructs, never executable prices. */
+  derived?: import("./derived/types.ts").DerivedPoint;
 }
 
 export type PriceScaleSettings = {
@@ -267,6 +269,10 @@ export interface ChartApi {
   drawingTools(): string[];
   setChartType(type: import("./chart-types.ts").ChartType, style?: import("./chart-types.ts").ChartTypeStyle): void;
   getChartType(): { type: import("./chart-types.ts").ChartType; style: import("./chart-types.ts").ChartTypeStyle };
+  getDerivedInfo(): ReturnType<import("./create-chart.ts").ChartImpl["getDerivedInfo"]>;
+  getVisibleLogicalRange(): { from: number; to: number } | null;
+  setVisibleLogicalRange(range: { from: number; to: number }): void;
+  takeScreenshot(scale?: number): string;
   setSessionHighlight(options: import("./create-chart.ts").SessionHighlightOptions | null): void;
   setCrosshairPosition(time: ChartTime, price?: number | null): void;
   clearCrosshairPosition(): void;

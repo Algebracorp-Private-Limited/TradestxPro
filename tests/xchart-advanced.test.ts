@@ -43,7 +43,7 @@ function candles(n: number): CandlestickData[] {
 const code = (c: string) => (e: unknown) => e instanceof XChartError && e.code === c;
 const near = (a: number, b: number) => assert.ok(Math.abs(a - b) < 1e-9, `${a} ≉ ${b}`);
 
-test("chart types: time-based types map to the renderer; price-based types are reported unsupported", () => {
+test("chart types: time-based types map to the renderer; price-based settings are validated", () => {
   const f = new Fake();
   const chart = createChartWithAdapter(f);
   const s = chart.addCandlestickSeries();
@@ -58,7 +58,8 @@ test("chart types: time-based types map to the renderer; price-based types are r
   chart.setChartType("line-markers", { lineColor: "#ff0000", lineWidth: 2 });
   assert.equal(f.last!.mainStyle!.markers, true);
   assert.equal(f.last!.mainStyle!.line, "#ff0000");
-  for (const t of PRICE_CHART_TYPES) assert.throws(() => chart.setChartType(t as never), code("UNSUPPORTED_CHART_TYPE"));
+  // v0.3.1: price-based types render on a logical axis; invalid settings are rejected atomically.
+  for (const t of PRICE_CHART_TYPES) assert.throws(() => chart.setChartType(t, { bogus: 1 } as never), XChartError);
   assert.throws(() => chart.setChartType("baseline", { baseline: NaN }), XChartError);
   assert.throws(() => chart.setChartType("line", { lineColor: "nope" }), XChartError);
   assert.throws(() => chart.setChartType("spiral" as never), XChartError);
@@ -212,7 +213,7 @@ test("layouts: validation is strict and atomic; nothing executes", () => {
     { ...good, extra: 1 },
     { ...good, chart: { ...good.chart, apiKey: "x" } },
     { ...good, chart: { ...good.chart, theme: "neon" } },
-    { ...good, chartType: { type: "renko", style: {} } },
+    { ...good, chartType: { type: "renko", style: { size: -1 } } },
     { ...good, indicators: [{ type: "sma", params: { period: -3 }, options: {} }] },
     { ...good, indicators: [{ type: "sma", params: {}, options: { onDraw: "alert(1)" } }] },
     { ...good, indicators: [{ type: "evil", params: {}, options: {} }] },

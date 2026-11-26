@@ -10,11 +10,13 @@ import { TOOLS, type ToolEnv, type ToolSpec } from "./tools.ts";
 
 export type ToolTable = Readonly<Record<string, ToolSpec>>;
 const minAnchors = (t: ToolSpec) => (t.anchors === "multi" ? 3 : t.anchors);
-import { type DrawingApi, type DrawingData, type DrawingEvent, type DrawingPoint, type DrawingSpec, type DrawingStyle, type DrawingType } from "./types.ts";
+import { type DrawingDomain, type DrawingApi, type DrawingData, type DrawingEvent, type DrawingPoint, type DrawingSpec, type DrawingStyle, type DrawingType } from "./types.ts";
 
 export type DrawingHost = {
   indexOfTime(t: number): number;
   timeAt(i: number): number;
+  /** Coordinate domain of the chart right now ("logical" on price-based chart types). */
+  domain(): DrawingDomain;
   bar(i: number): { o: number; h: number; l: number; c: number } | undefined;
   barCount(): number;
   /** Live geometry for hit-testing outside a frame; null before the first layout. */
@@ -81,6 +83,16 @@ export function validateSpec(spec: unknown, tools: ToolTable = TOOLS): asserts s
   if (s.id !== undefined && (typeof s.id !== "string" || !/^[A-Za-z0-9_.:-]{1,64}$/.test(s.id))) throw new XChartError("INVALID_DRAWING", "Drawing id must be 1–64 characters of letters, digits, _ . : -");
   if (s.text !== undefined && (typeof s.text !== "string" || s.text.length > 500)) throw new XChartError("INVALID_DRAWING", "Drawing text must be a string of at most 500 characters");
   for (const k of ["locked", "visible"] as const) if (s[k] !== undefined && typeof s[k] !== "boolean") throw new XChartError("INVALID_DRAWING", `Drawing ${k} must be a boolean`);
+  if (s.domain !== undefined && s.domain !== "time" && s.domain !== "logical") throw new XChartError("INVALID_DRAWING", 'Drawing domain must be "time" or "logical"');
+  if (s.domain === "logical") validateLogical(s.points);
+  if (s.paneId !== undefined && (typeof s.paneId !== "string" || !/^[A-Za-z0-9_-]{1,40}$/.test(s.paneId))) throw new XChartError("INVALID_DRAWING", "Drawing paneId must be a pane id");
+}
+
+function validateLogical(pts: unknown[]) {
+  pts.forEach((p, i) => {
+    const l = (p as { logical?: unknown }).logical;
+    if (typeof l !== "number" || !Number.isFinite(l) || Math.abs(l) > 1e9) throw new XChartError("INVALID_DRAWING", `Logical-domain drawing point ${i} needs a finite "logical" index`);
+  });
 }
 
 type Drag = { id: string; anchor: number; startIdx: number; startPrice: number; orig: DrawingData; moved: boolean };
@@ -159,13 +171,17 @@ export class DrawingManager {
   // ---------- public API ----------
   add(spec: DrawingSpec, record = true): DrawingApi {
     validateSpec(spec, this.tools);
+    const domain = spec.domain ?? this.host.domain();
+    if (domain === "logical" && spec.domain === undefined) validateLogical(spec.points);
     const id = spec.id ?? this.nextId(spec.type);
     if (this.items.has(id)) throw new XChartError("DUPLICATE_DRAWING", `A drawing with id "${id}" already exists`);
     if (record) this.checkpoint();
     const d: DrawingData = {
       id,
       type: spec.type,
-      points: spec.points.map((p) => ({ time: p.time, price: p.price })),
+      points: spec.points.map((p) => ({ time: p.time, price: p.price, ...(domain === "logical" ? { logical: p.logical! } : {}) })),
+      ...(domain === "logical" ? { domain } : {}),
+      ...(spec.paneId && spec.paneId !== "main" ? { paneId: spec.paneId } : {}),
       style: { ...spec.style },
       locked: spec.locked ?? false,
       visible: spec.visible ?? true,
@@ -192,12 +208,15 @@ export class DrawingManager {
   patch(id: string, p: { points?: DrawingPoint[]; text?: string; style?: Partial<DrawingStyle>; visible?: boolean; locked?: boolean }, record = true) {
     const d = this.items.get(id);
     if (!d) throw new XChartError("DRAWING_REMOVED", `Drawing "${id}" was removed`);
-    if (p.points !== undefined) validatePoints(d.type, p.points, this.tools);
+    if (p.points !== undefined) {
+      validatePoints(d.type, p.points, this.tools);
+      if (d.domain === "logical") validateLogical(p.points);
+    }
     if (p.style !== undefined) validateStyle(p.style);
     if (p.text !== undefined && (typeof p.text !== "string" || p.text.length > 500)) throw new XChartError("INVALID_DRAWING", "Drawing text must be a string of at most 500 characters");
     for (const k of ["visible", "locked"] as const) if (p[k] !== undefined && typeof p[k] !== "boolean") throw new XChartError("INVALID_DRAWING", `Drawing ${k} must be a boolean`);
     if (record) this.checkpoint();
-    if (p.points) d.points = p.points.map((q) => ({ time: q.time, price: q.price }));
+    if (p.points) d.points = p.points.map((q) => ({ time: q.time, price: q.price, ...(d.domain === "logical" ? { logical: q.logical! } : {}) }));
     if (p.text !== undefined) d.text = p.text;
     if (p.style) d.style = { ...d.style, ...p.style };
     if (p.visible !== undefined) d.visible = p.visible;
@@ -227,10 +246,24 @@ export class DrawingManager {
     const d = this.items.get(id);
     if (!d) return undefined;
     const shift = Math.max(1, Math.round(this.host.barCount() * 0.01)) * 2;
-    const points = d.points.map((p) => ({ time: this.host.timeAt(this.host.indexOfTime(p.time) + shift), price: p.price }));
-    const copy = this.add({ type: d.type, points, style: { ...d.style }, text: d.text, locked: false, visible: d.visible });
+    const points = d.points.map((p) => this.shifted(d, p, shift, 0));
+    const copy = this.add({ type: d.type, points, style: { ...d.style }, text: d.text, locked: false, visible: d.visible, domain: d.domain ?? "time", ...(d.paneId ? { paneId: d.paneId } : {}) });
     this.select(copy.id);
     return copy;
+  }
+
+  /** Bar index of an anchor in its drawing's domain. */
+  private idx(d: { domain?: DrawingDomain }, p: DrawingPoint): number {
+    return d.domain === "logical" ? p.logical ?? NaN : this.host.indexOfTime(p.time);
+  }
+  /** Anchor moved by `bars` whole bars and `dp` in price, in the drawing's domain. */
+  private shifted(d: { domain?: DrawingDomain }, p: DrawingPoint, bars: number, dp: number): DrawingPoint {
+    const i = Math.round(this.idx(d, p)) + bars;
+    return d.domain === "logical" ? { time: this.host.timeAt(i), price: p.price + dp, logical: i } : { time: this.host.timeAt(i), price: p.price + dp };
+  }
+  /** Drawings shown in the chart's current domain (others are kept, hidden and not hit-tested). */
+  private active(d: DrawingData) {
+    return d.visible && (d.domain ?? "time") === this.host.domain();
   }
 
   select(id: string | null) {
@@ -330,14 +363,14 @@ export class DrawingManager {
     ctx.rect(0, api.pane.top, api.pane.width, api.pane.height);
     ctx.clip();
     for (const d of this.items.values()) {
-      if (!d.visible) continue;
+      if (!this.active(d)) continue;
       this.renderOne(env, d, api.theme.select);
     }
     const c = this.creating;
     if (c && c.points.length) {
       const pts = c.preview ? [...c.points, c.preview] : c.points;
       const need = minAnchors(this.tools[c.type]);
-      const temp: DrawingData = { id: "__preview", type: c.type, points: pts, style: {}, locked: false, visible: true };
+      const temp: DrawingData = { id: "__preview", type: c.type, points: pts, style: {}, locked: false, visible: true, ...(this.host.domain() === "logical" ? { domain: "logical" as const } : {}) };
       const tool = this.tools[c.type];
       if (tool.anchors === "multi" || pts.length >= need) this.renderOne(env, temp, api.theme.select, true);
       else {
@@ -385,16 +418,18 @@ export class DrawingManager {
 
   private env(ctx: CanvasRenderingContext2D, g: Geo, color: string, text: string, bg: string): ToolEnv {
     const h = this.host;
+    const dom = { domain: h.domain() };
     return {
       ctx, width: g.width, top: g.top, height: g.height, color, text, bg,
-      px: (p) => ({ x: g.xOfIndex(h.indexOfTime(p.time)), y: g.yOfPrice(p.price) }),
+      px: (p) => ({ x: g.xOfIndex(this.idx(dom, p)), y: g.yOfPrice(p.price) }),
       fmt: (p) => h.fmt(p),
       timeLabel: (t) => h.timeLabel(t),
-      bars: (t1, t2) => h.indexOfTime(t2) - h.indexOfTime(t1),
-      xAfter: (t, n) => g.xOfIndex(h.indexOfTime(t) + n),
-      closes: (t1, t2) => {
+      bars: (p1, p2) => this.idx(dom, p2) - this.idx(dom, p1),
+      xAfter: (p, n) => g.xOfIndex(this.idx(dom, p) + n),
+      closes: (p1, p2) => {
         const x: number[] = [], price: number[] = [];
-        const a = Math.max(0, Math.ceil(h.indexOfTime(t1))), b = Math.min(h.barCount() - 1, Math.floor(h.indexOfTime(t2)));
+        const i1 = this.idx(dom, p1), i2 = this.idx(dom, p2);
+        const a = Math.max(0, Math.ceil(Math.min(i1, i2))), b = Math.min(h.barCount() - 1, Math.floor(Math.max(i1, i2)));
         for (let i = a; i <= b; i++) {
           const bar = h.bar(i);
           if (bar && Number.isFinite(bar.c)) {
@@ -421,7 +456,7 @@ export class DrawingManager {
     if (!g) return null;
     const env = this.env(this.measureCtx(), g, "", "", "");
     const p = { x, y };
-    const list = [...this.items.values()].filter((d) => d.visible).reverse();
+    const list = [...this.items.values()].filter((d) => this.active(d)).reverse();
     // The selected drawing's anchors take priority.
     const order = this.selected ? [...list.filter((d) => d.id === this.selected), ...list.filter((d) => d.id !== this.selected)] : list;
     for (const d of order) {
@@ -449,7 +484,7 @@ export class DrawingManager {
       const g = h.geometry();
       if (b && g) price = snapToOhlc(price, p.y, [b.o, b.h, b.l, b.c], g.yOfPrice);
     }
-    return { time: h.timeAt(i), price };
+    return h.domain() === "logical" ? { time: h.timeAt(i), price, logical: i } : { time: h.timeAt(i), price };
   }
 
   delegate(): InteractionDelegate {
@@ -515,7 +550,7 @@ export class DrawingManager {
         } else {
           const di = Math.round(p.index - dr.startIdx);
           const dp = p.price - dr.startPrice;
-          d.points = dr.orig.points.map((q) => ({ time: this.host.timeAt(Math.round(this.host.indexOfTime(q.time)) + di), price: q.price + dp }));
+          d.points = dr.orig.points.map((q) => this.shifted(dr.orig, q, di, dp));
         }
         this.host.redraw();
       },
@@ -530,7 +565,7 @@ export class DrawingManager {
             const first = c.points[0];
             const g = this.host.geometry();
             if (pt && g) {
-              const a = { x: g.xOfIndex(this.host.indexOfTime(first.time)), y: g.yOfPrice(first.price) };
+              const a = { x: g.xOfIndex(this.idx({ domain: this.host.domain() }, first)), y: g.yOfPrice(first.price) };
               if (Math.hypot(a.x - p.x, a.y - p.y) > 6) {
                 c.points.push(pt);
                 this.finishCreate();

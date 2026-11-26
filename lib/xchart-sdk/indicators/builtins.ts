@@ -175,6 +175,7 @@ function wrap(def: IndicatorDef): BuiltinDefinition {
       return w;
     },
     lookback: LOOKBACK[def.id],
+    requires: def.id === "vwap" ? ["volume", "time"] : ["obv", "mfi", "volume"].includes(def.id) ? ["volume"] : [],
     calculate: (input, p) => calc(input, p).result,
     display: { shortName: def.short },
   };
