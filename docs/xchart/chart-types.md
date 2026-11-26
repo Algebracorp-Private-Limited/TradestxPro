@@ -28,20 +28,37 @@ Style: `lineColor, lineWidth, areaTopColor, areaBottomColor, baseline, upColor, 
 The last-price label shows the **real** last close; `crosshairMove` gives the real candle in
 `seriesData` and the drawn candle in `display`.
 
-## Price-based types
+## Price-based types (v0.3.1)
 
-`renko`, `kagi`, `point-and-figure`, `line-break` and `range-bars` produce bricks/columns whose
-number is unrelated to time — several can complete within one bar. Drawing them on the shared,
-strictly increasing time axis would require inventing timestamps, so `setChartType` throws
-`UNSUPPORTED_CHART_TYPE`. Their calculations are exported and tested:
+`renko`, `kagi`, `point-and-figure`, `line-break` and `range-bars` are **rendered** on a logical
+axis (one slot per brick / line / column / bar), calculated incrementally from the stored candles:
 
 ```ts
-import { renko, kagi, pointAndFigure, lineBreak, rangeBars } from "@/lib/xchart-sdk";
-renko(closes, 5);                 // [{ open, close, up, time }]  classic, 2-box reversal
-kagi(closes, 10);                 // [{ from, to, up, thick, time }]
-pointAndFigure(closes, 1, 3);     // [{ kind: "X" | "O", low, high, boxes, time }]
-lineBreak(closes, 3);             // [{ open, close, up, time }]
-rangeBars(closes, 2);             // close-based approximation (true range bars need ticks)
+chart.setChartType("renko", { method: "atr", size: 1, atrPeriod: 14, reversal: 2, wicks: true });
+chart.setChartType("kagi", { reversal: 12, yangWidth: 3, yinWidth: 1 });
+chart.setChartType("point-and-figure", { boxSize: 5, reversal: 3, source: "high-low" });
+chart.setChartType("line-break", { lines: 3 });
+chart.setChartType("range-bars", { method: "ticks", range: 40, tickSize: 0.05 });
+chart.getDerivedInfo(); // { type, settings, points, provisional, methodology, error, hidden }
 ```
 
-`closes` = `[{ time, close }]`. Rendering them needs a sequence (non-time) axis — not in v0.3.
+| Type | Drawing |
+|---|---|
+| `renko` | bricks (optional wicks), up/down colours |
+| `kagi` | vertical lines with horizontal shoulders; thick (yang) / thin (yin) |
+| `point-and-figure` | X and O symbols on the box grid |
+| `line-break` | boxes from open to close of each line |
+| `range-bars` | OHLC bars of equal range |
+
+* Confirmed elements never change; elements formed by the live candle are `provisional`.
+* No timestamps are invented: the time axis shows the source candle of each element, empty
+  future slots are unlabelled, and `crosshairMove` reports the element (`derived`) and the real
+  source candle (`seriesData`).
+* Additional series, markers, session shading, time-domain drawings and indicators that need
+  volume or session time are hidden (listed in `hidden`) and come back when you switch to a
+  time-based type. Price-only indicators are calculated on the element closes.
+* Settings are validated before anything changes; runaway settings raise `DERIVED_LIMIT`.
+
+Details, rules and limitations: [derived-data-model.md](derived-data-model.md). The v0.3 helpers
+(`renko`, `kagi`, `pointAndFigure`, `lineBreak`, `rangeBars` on closes) remain exported for
+compatibility.

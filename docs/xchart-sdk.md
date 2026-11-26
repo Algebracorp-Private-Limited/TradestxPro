@@ -1,8 +1,29 @@
-# XChart SDK (v0.3.0)
+# XChart SDK (v0.3.1)
 
 A TypeScript API for building financial charts on top of TradestXPro's own canvas chart engine.
 It is **not published as an npm package**. It lives in `lib/xchart-sdk/` in this repository and is
 structured so it can later be published as `@tradestxpro/xchart`.
+
+## What's new in v0.3.1 (rendering, performance, SDK completion)
+
+* **Price-based chart types rendered**: Renko, Kagi, Point & Figure, Line Break and Range bars on a
+  logical axis, built incrementally from candles, with confirmed / provisional elements and no
+  invented timestamps ([derived-data-model.md](xchart/derived-data-model.md)).
+* **Incremental indicator engine**: all built-ins update in O(1)–O(window) per tick, exactly,
+  with shared nodes and checkpoints; live ticks at 100k candles × 20 indicators went from 264 ms
+  to 3.6 ms median ([incremental-indicators.md](xchart/incremental-indicators.md),
+  [performance.md](xchart/performance.md)).
+* **122 built-in indicators** with formula metadata, search and compatibility checks
+  ([indicator-catalog.md](xchart/indicator-catalog.md)).
+* **Indicator Web Worker** with versioned, validated protocol, coalescing, stale-result rejection
+  and cancellation ([worker-architecture.md](xchart/worker-architecture.md)).
+* **Independent price scales** (log / % / indexed / inverted / manual range on every scale),
+  **drawings on any pane**, crosshair-only redraws from a cached frame.
+* **Calendar providers**: versioned exchange-calendar datasets, `dayStatus`, overnight sessions
+  ([calendar-providers.md](xchart/calendar-providers.md)).
+* **Cross-browser CI**: Chromium, Firefox and WebKit are mandatory jobs
+  ([browser-compatibility.md](xchart/browser-compatibility.md)).
+* Upgrading: [migration-v0.3.1.md](xchart/migration-v0.3.1.md).
 
 ## What's new in v0.3.0 (Advanced API)
 
@@ -348,23 +369,26 @@ raised before any state changes: a rejected call leaves the chart and its series
   `tests/xchart-scales-panes.test.ts`, `tests/xchart-advanced.test.ts`, plus Chromium tests for
   indicators, clouds, drawings (real pointer), markers, price lines, overlay scales, panes,
   synchronised charts, session shading, chart types, plugin layers and layout restore.
-* Demo: `/xchart-demo` (synthetic data) — basics plus v0.3 sections.
+* v0.3.1 suites: `tests/xchart-derived.test.ts`, `tests/xchart-incremental.test.ts`,
+  `tests/xchart-catalog.test.ts`; the browser suite runs in Chromium, Firefox and WebKit (CI matrix
+  `browser (chromium|firefox|webkit)`, all mandatory).
+* Benchmarks: `scripts/xchart-bench.ts` compares two checkouts (see
+  [performance.md](xchart/performance.md)).
+* Demo: `/xchart-demo` (synthetic data) — basics, v0.3 and 15 v0.3.1 sections.
 
 
-## Known limitations (v0.3.0)
+## Known limitations (v0.3.1)
 
-See [docs/xchart/README.md](xchart/README.md#known-limitations) for the full, current list. In short:
+See [docs/xchart/README.md](xchart/README.md#known-limitations-v031) for the full, current list. In short:
 
 * One candlestick series per chart; bars are spaced by index (gaps collapse).
-* Price-based chart types (Renko, Kagi, Point & Figure, Line Break, Range bars) are calculated
-  but not rendered (`UNSUPPORTED_CHART_TYPE`): they need a sequence axis, not a time axis.
-* Overlay price scales are linear and auto-fitted (`UNSUPPORTED_SCALE` for log/%/manual).
-* Recursive indicators (EMA, RSI, MACD, ATR, ADX, Supertrend, PSAR, OBV, VWAP, Ichimoku, Keltner)
-  are recalculated in full on live ticks; with 10–20 of them on 50k–100k candles a tick costs
-  ~100–400 ms in our benchmark environment (see [performance.md](xchart/performance.md)).
-* No exchange holiday lists are bundled; supply them with a `HolidayProvider`.
+* Price-based chart types are built from candles (intrabar path assumed and flagged); tick-based
+  construction is not wired into charts.
+* The worker is not used by the live chart and computes only the 22 original built-ins.
+* Adding indicators is ~1.2–1.7× slower than v0.3.0 at large histories (one-off cost).
+* No exchange holiday datasets are bundled; uncovered weekdays are `unknown`.
 * Plugins are trusted code and are not sandboxed.
-* Browser tests run on Chromium only.
+* Volume profile is not implemented; Hurst is validated only directionally.
 
 ## Migrating from v0.2 (to v0.2.1)
 

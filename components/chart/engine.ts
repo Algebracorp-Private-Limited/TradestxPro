@@ -943,6 +943,9 @@ export class ChartEngine {
     if (i < 0 || !b.length) return null;
     const off = this.opts.utcOffsetSeconds ?? IST;
     const intra = !!this.data.intraday;
+    // Price-based (logical) axis: elements have no time spacing, so empty slots past the last
+    // element get no label (a projected date would be invented).
+    if (this.data.derived && i >= b.length) return null;
     const t = i < b.length ? b[i].t : futureTime(b.slice(-60).map((x) => x.t), i - (b.length - 1), intra);
     const custom = this.opts.timeFormatter?.(t, intra, long);
     return custom ?? fmtTime(t, intra, long, off);

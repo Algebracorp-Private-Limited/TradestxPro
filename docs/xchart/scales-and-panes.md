@@ -25,8 +25,12 @@ chart.priceScale("vol").seriesCount();
 * `priceScaleId` (main pane): `"right"` (default, the main scale), `"left"`, or any id — every id
   gets its own auto-fitted range in the main pane's rectangle.
 * `margins` are fractions in `[0, 1)` summing to ≤ 0.9; valid on any scale including `"right"`.
-* Overlay scales are **linear and auto-fitted**. `mode` other than normal or `autoScale: false`
-  throws `UNSUPPORTED_SCALE` instead of being ignored.
+* **v0.3.1: every scale is independent** — right, left, overlay and pane scales each take `mode`
+  (`normal`, `logarithmic`, `percentage`, `indexed`), `invert`, `autoScale` + `range`, `margins`,
+  `precision` / `minMove` / `formatter`. Address a pane's scale with `chart.priceScale(id, paneId)`.
+* Log scales cannot place values ≤ 0: they are skipped and a `scaleWarning` event is emitted.
+* `chart.priceToCoordinate(price, paneId, scaleId)` / `coordinateToPrice(y, paneId, scaleId)` and
+  plugin layers (`api.scaleY(scaleId, p)`) use the same mapping as the renderer.
 * The left scale's labels are drawn inside the plot's left edge on a translucent background.
 
 Events: `scaleChange { scaleId, paneId }`.

@@ -44,6 +44,13 @@ Style: `color, lineWidth (0.5–10), lineStyle, fillColor, fillOpacity (0–1), 
   **Ctrl/⌘+Shift+Z** redo, **Ctrl/⌘+D** duplicate, **Shift+L** lock/unlock, **Esc** cancel/deselect.
 * Presses that do not hit a drawing pan the chart as usual.
 
+**Panes and scales (v0.3.1).** A drawing belongs to a pane (`paneId`, default `"main"`) and a price
+scale (`scaleId`, default `"right"`); its prices are in that scale's units (e.g. RSI 70 on an RSI
+pane). Interactive tools draw on the pane under the pointer. Drawings of a removed pane are hidden
+and dropped from layouts (`pruneOrphanDrawings`). On price-based chart types drawings use
+`domain: "logical"` (element indexes); time-domain drawings are hidden there and return when the
+chart switches back.
+
 Drawings render through an engine layer and never touch series data. Custom tools can be
 registered by [plugins](plugins.md).
 

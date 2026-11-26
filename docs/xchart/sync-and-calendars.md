@@ -37,8 +37,12 @@ nse.nextOpen(t);  nse.tradingDaysBetween("2026-03-01", "2026-03-31");  nse.local
 
 * Time-zone conversion uses `Intl` with IANA zones, so daylight saving is exact (tested across the
   2026 US change).
-* **No holiday lists are bundled** — they change yearly and a stale list is wrong data. Pass a
-  `HolidayProvider` (or `holidayList(...)`) built from the exchange's published calendar.
+* **No holiday lists are bundled** — they change yearly and a stale list is wrong data. v0.3.1 adds
+  versioned, attributed calendar **datasets** loaded through a `CalendarRegistry`, with
+  `dayStatus(date)` → `trading` / `non-trading` / `unknown` (see
+  [calendar-providers.md](calendar-providers.md)). A plain `HolidayProvider` / `holidayList(...)`
+  still works.
+* Sessions whose end is earlier than their start are **overnight** sessions (v0.3.1).
 * Custom calendars: `new TradingCalendar({ id, name, timeZone, week: { 1: [{ kind: "regular", start: "10:00", end: "17:00" }], … }, adjust? })`.
 
 ## Session shading

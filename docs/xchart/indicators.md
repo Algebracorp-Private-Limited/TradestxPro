@@ -20,32 +20,30 @@ chart.removeIndicator(bb);           // or bb.remove()
 `hiddenOutputs`, `fills`). Unknown keys, out-of-range values and wrong types throw
 `INVALID_PARAMETER` / `INVALID_OPTION` before the indicator is added.
 
-## Built-ins (22)
+## Built-ins (122)
 
-`sma ema wma hma bb keltner donchian supertrend psar vwap ichimoku rsi macd stoch adx atr cci mfi
-willr roc obv volume` — `chart.listIndicators()` returns their definitions (params with
-defaults/limits, outputs, pane, levels).
+The 22 original built-ins (`sma ema wma hma bb keltner donchian supertrend psar vwap ichimoku rsi
+macd stoch adx atr cci mfi willr roc obv volume`, maths from `lib/ta/catalog.ts`) plus 100 native
+catalog indicators (v0.3.1). Full list with formulas, parameters and requirements:
+[indicator-catalog.md](indicator-catalog.md). `chart.listIndicators()` returns the definitions;
+`chart.searchIndicators()` and `chart.indicatorCompatibility()` help discovery.
 
-* The maths comes from TradestXPro's indicator catalogue (`lib/ta/catalog.ts`); the SDK wraps it,
-  it does not reimplement it. Accuracy is tested against independent textbook implementations
-  (SMA, EMA seeded with an SMA, Wilder RSI, MACD).
-* `source` (open/high/low/close/volume/hl2/hlc3/ohlc4) is available on sma, ema, wma, hma, bb,
-  rsi, macd and roc. `period` is accepted as an alias of `length`.
-* **No look-ahead:** for every built-in, values computed on a prefix of the data equal the values
-  of the full computation over that prefix (tested). Ichimoku's lagging span is, by definition,
-  plotted 26 bars back.
+* `source` (open/high/low/close/volume/hl2/hlc3/ohlc4) is available where a definition declares
+  it. `period` is accepted as an alias of `length`.
+* **No look-ahead:** values computed on a prefix of the data equal the values of the full
+  computation over that prefix (tested). Delayed or repainting indicators say so in `meta.repaint`.
 * **Input:** the candlestick series (gaps skipped and mapped back to the shared time axis), or the
-  first line/area series when the chart has no candles.
+  first line/area series when the chart has no candles. Benchmark indicators use
+  `chart.setBenchmarkSeries(series)`.
 
-## Live updates
+## Live updates (v0.3.1)
 
-| Change | Finite-memory indicators (sma, wma, hma, bb, donchian, stoch, cci, willr, roc, mfi, volume) | Recursive indicators (ema, rsi, macd, atr, adx, supertrend, psar, obv, vwap, ichimoku, keltner) |
-|---|---|---|
-| Last bar replaced / one bar appended | Window of `2·(lookback+2)` bars recalculated | Full recalculation |
-| Anything else | Full recalculation | Full recalculation |
-
-Recalculation is deferred to the next frame and coalesced (many ticks → one recalculation).
-Results are identical either way (tested).
+Every built-in is evaluated **incrementally and exactly**: a live tick or an appended bar costs
+O(1)–O(window) per indicator, independent of the history length, with results identical to a full
+recalculation (tested bitwise). Indicators share common intermediate nodes (e.g. one EMA(20) for
+MACD and Keltner). Updates are coalesced to one flush per frame. Custom indicators without a
+`stream` keep the v0.3 policy (tail window for `lookback`, otherwise full recalculation). See
+[incremental-indicators.md](incremental-indicators.md).
 
 ## Projections (Ichimoku)
 

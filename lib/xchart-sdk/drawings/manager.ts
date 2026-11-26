@@ -340,7 +340,9 @@ export class DrawingManager {
     }
     if (record) this.checkpoint();
     for (const id of [...this.items.keys()]) this.remove(id, false);
-    for (const d of data as DrawingSpec[]) this.add(d, false);
+    // Serialised drawings without a domain are time-domain (serialize() omits the default), whatever
+    // the chart's current type: never reinterpret them in the logical domain of a price-based chart.
+    for (const d of data as DrawingSpec[]) this.add({ ...d, domain: d.domain ?? "time" }, false);
   }
 
   destroy() {

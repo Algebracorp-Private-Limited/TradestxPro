@@ -273,6 +273,8 @@ export interface ChartApi {
   indicatorEngineStats(): ReturnType<import("./create-chart.ts").ChartImpl["indicatorEngineStats"]>;
   /** Renderer diagnostics: full vs crosshair-only frames and their last durations (null if the renderer does not report them). */
   renderStats(): { fullFrames: number; overlayFrames: number; lastDrawMs: number; lastOverlayMs: number } | null;
+  /** Duration of the renderer's last full redraw in ms (diagnostics), or null if not reported. */
+  renderTimeMs(): number | null;
   getIndicators(): IndicatorApi[];
   removeIndicator(indicator: IndicatorApi | string): boolean;
   registerIndicator(definition: IndicatorDefinition): void;

@@ -270,6 +270,24 @@ test("chart: drawings created on a derived chart use the logical domain; layouts
   assert.throws(() => empty.setChartType("kagi"), (e: unknown) => (e as XChartError).code === "UNSUPPORTED_CHART_TYPE", "needs a candlestick series");
 });
 
+test("layouts: time-domain drawings saved from a derived chart load as time-domain drawings", () => {
+  const data = walk(150, 9);
+  const a = createChartWithAdapter(new Fake());
+  a.addCandlestickSeries().setData(data);
+  a.addDrawing({ id: "h", type: "horizontal-line", points: [{ time: data[50].time, price: 101 }] });
+  a.setChartType("kagi", { reversal: 3 });
+  const layout = JSON.stringify(a.saveLayout());
+  const b = createChartWithAdapter(new Fake());
+  b.addCandlestickSeries().setData(data);
+  b.loadLayout(layout); // the chart type is applied before the drawings: they must not be read as logical
+  const d = b.getDrawing("h")!.data();
+  assert.equal(d.domain ?? "time", "time");
+  assert.equal(d.points[0].time, data[50].time);
+  assert.equal(b.getDerivedInfo()!.hidden.drawings, 1, "hidden (kept) while the derived type is active");
+  b.setChartType("candles");
+  assert.equal(b.getDrawings().length, 1);
+});
+
 test("resource limits: runaway derived settings are rejected atomically", () => {
   const f = new Fake();
   const chart = createChartWithAdapter(f);
