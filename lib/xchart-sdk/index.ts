@@ -29,6 +29,7 @@ export type { PaneApi, PriceScaleApi, PriceScaleSettings } from "./types.ts";
 export type { SessionHighlightOptions } from "./create-chart.ts";
 export { syncCharts, type SyncGroup, type SyncOptions } from "./sync.ts";
 export { CALENDARS, TradingCalendar, holidayList, offsetSeconds, zonedTime, type CalendarDef, type CalendarId, type HolidayProvider, type SessionDef, type SessionKind, type SessionState } from "./calendar/index.ts";
+export { CALENDAR_DATASET_FORMAT, CalendarRegistry, importCalendarDataset, type CalendarDataset, type CalendarProvider, type DayStatus, type ProviderStatus } from "./calendar/providers.ts";
 export { isTimeZone } from "./validation.ts";
 // v0.3 — chart types, layouts, plugins
 export { PRICE_CHART_TYPES, TIME_CHART_TYPES, heikinAshi, kagi, lineBreak, pointAndFigure, rangeBars, renko, type Brick, type BreakLine, type ChartType, type ChartTypeStyle, type KagiLine, type PnfColumn, type PriceChartType, type RangeBar } from "./chart-types.ts";

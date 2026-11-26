@@ -20,6 +20,7 @@ export type ChartEvents = {
   drawingTool: { tool: DrawingType | null };
   paneResize: { paneId: string; height: number };
   scaleChange: { scaleId: string; paneId: string };
+  scaleWarning: { scaleId: string; paneId: string; message: string };
   layoutChange: { reason: string };
   pluginError: { pluginId: string; error: string };
   destroy: Record<string, never>;

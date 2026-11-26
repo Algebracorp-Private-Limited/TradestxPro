@@ -58,7 +58,7 @@ test("price-scale modes and series scale/pane options validate atomically", () =
   assert.deepEqual(chart.panes().map((p) => p.id), ["main", "osc"], "series sharing a named pane share one pane");
 });
 
-test("priceScale(): margins, visibility, main-scale mode, honest overlay limits", () => {
+test("priceScale(): margins, visibility, main-scale mode, validation", () => {
   const f = new Fake();
   const chart = createChartWithAdapter(f);
   chart.addCandlestickSeries().setData(candles(20));
@@ -69,9 +69,11 @@ test("priceScale(): margins, visibility, main-scale mode, honest overlay limits"
   chart.priceScale("vol").applyOptions({ margins: { top: 0.8, bottom: 0 } });
   assert.deepEqual(chart.priceScale("vol").options().margins, { top: 0.8, bottom: 0 });
   assert.equal(chart.priceScale("vol").seriesCount(), 1);
-  assert.deepEqual(f.last!.scales, [{ id: "vol", margins: { top: 0.8, bottom: 0 }, visible: undefined }]);
+  assert.deepEqual(f.last!.scales!.map((x) => ({ id: x.id, pane: x.pane, margins: x.margins })), [{ id: "vol", pane: "main", margins: { top: 0.8, bottom: 0 } }]);
   assert.throws(() => chart.priceScale("vol").applyOptions({ margins: { top: 0.6, bottom: 0.6 } }), XChartError);
-  assert.throws(() => chart.priceScale("vol").applyOptions({ mode: "logarithmic" }), code("UNSUPPORTED_SCALE"));
+  // v0.3.1: overlay scales support every mode independently; autoScale: false needs a range.
+  assert.throws(() => chart.priceScale("vol").applyOptions({ autoScale: false }), XChartError);
+  assert.throws(() => chart.priceScale("vol").applyOptions({ range: [5, 1] }), XChartError);
   assert.throws(() => chart.priceScale("vol").applyOptions({ colour: 1 } as never), XChartError);
   assert.deepEqual(chart.priceScale("vol").options().margins, { top: 0.8, bottom: 0 }, "rejected calls change nothing");
   chart.priceScale().applyOptions({ mode: "logarithmic" });
@@ -95,7 +97,7 @@ test("panes(): heights, collapse, order and events", () => {
   chart.on("paneResize", (e) => log.push(`${e.paneId}:${e.height}`));
   chart.on("layoutChange", (e) => log.push(e.reason));
   chart.pane("vol")!.setHeight(150);
-  assert.equal(f.last!.paneSizes!.vol, 150);
+  assert.equal(f.last!.paneSizes!.vol, 151, "stored as the pane's slot height (pane + 1 px separator)");
   assert.throws(() => chart.pane("vol")!.setHeight(5), XChartError);
   assert.throws(() => chart.pane("main")!.collapse(), XChartError);
   chart.pane("vol")!.collapse();
@@ -212,7 +214,13 @@ test("calendars: US daylight saving, MCX evening session, forex week, crypto", (
   assert.equal(Object.keys(CALENDARS).length, 7);
   assert.throws(() => new TradingCalendar("LSE" as never), XChartError);
   assert.throws(() => new TradingCalendar({ id: "X", name: "x", timeZone: "Nowhere/Land", week: {} }), XChartError);
-  assert.throws(() => new TradingCalendar({ id: "X", name: "x", timeZone: "UTC", week: { 1: [{ kind: "regular", start: "10:00", end: "09:00" }] } }), XChartError);
+  assert.throws(() => new TradingCalendar({ id: "X", name: "x", timeZone: "UTC", week: { 1: [{ kind: "regular", start: "10:00", end: "10:00" }] } }), XChartError);
+  // v0.3.1: end before start is an overnight session (continues past midnight).
+  const night = new TradingCalendar({ id: "N", name: "night", timeZone: "UTC", week: { 1: [{ kind: "regular", start: "22:00", end: "02:00" }] } });
+  assert.equal(night.sessionAt(at("2026-03-02T23:00:00Z")), "regular");
+  assert.equal(night.sessionAt(at("2026-03-03T01:30:00Z")), "regular", "Tuesday 01:30 belongs to Monday's overnight session");
+  assert.equal(night.sessionAt(at("2026-03-03T02:30:00Z")), "closed");
+  assert.equal(night.regularBounds("2026-03-02")!.close, at("2026-03-03T02:00:00Z"));
 });
 
 test("time labels in an IANA zone and locale", () => {
@@ -237,4 +245,124 @@ test("session highlight validation and layer registration", () => {
   assert.throws(() => chart.setSessionHighlight({ calendar: "ABC" as never }), XChartError);
   chart.setSessionHighlight(null);
   assert.equal(f.layers!.length, n);
+});
+
+test("v0.3.1 independent scales: every scale has its own options; layouts keep them with portable pane refs", () => {
+  const f = new Fake();
+  const chart = createChartWithAdapter(f);
+  chart.addCandlestickSeries().setData(candles(40));
+  const vol = chart.addHistogramSeries({ pane: "main", priceScaleId: "vol" });
+  vol.setData(candles(40).map((c) => ({ time: c.time, value: c.close })));
+  const osc = chart.addLineSeries({ pane: "osc", priceScaleId: "left" });
+  osc.setData(candles(40).map((c, i) => ({ time: c.time, value: i - 20 })));
+  const rsi = chart.addIndicator("rsi");
+  const warn: string[] = [];
+  chart.on("scaleWarning", (e) => warn.push(`${e.paneId}/${e.scaleId}`));
+  chart.priceScale("vol").applyOptions({ mode: "logarithmic", invert: true, precision: 1 });
+  chart.priceScale("left", "osc").applyOptions({ mode: "logarithmic" });
+  assert.deepEqual(warn, ["osc/left"], "values ≤ 0 on a log scale are reported, not silently transformed");
+  chart.priceScale("right", `xind-${rsi.id}`).applyOptions({ autoScale: false, range: [0, 100], minMove: 5 });
+  assert.throws(() => chart.priceScale("vol").applyOptions({ mode: "logarithmic", autoScale: false, range: [-1, 5] }), XChartError);
+  assert.throws(() => chart.priceScale("vol").applyOptions({ formatter: "x" as never }), XChartError);
+  const specs = f.last!.scales!;
+  const vs = specs.find((x) => x.id === "vol")!;
+  assert.equal(vs.mode, "log");
+  assert.equal(vs.invert, true);
+  assert.equal(vs.format!(1234.567), "1234.6");
+  const rs = specs.find((x) => x.pane === `xind-${rsi.id}`)!;
+  assert.deepEqual(rs.range, [0, 100]);
+  assert.equal(rs.format!(72.4), "70", "labels rounded to the minimum move");
+  // Layout round-trip with pane references (indicator ids change in another chart).
+  const L = chart.saveLayout();
+  assert.ok(Object.keys(L.priceScales).includes("indicator:0:right"));
+  const g = new Fake();
+  const other = createChartWithAdapter(g);
+  other.addCandlestickSeries().setData(candles(40));
+  other.addIndicator("sma"); // shifts indicator ids
+  other.loadLayout(L);
+  const newRsi = other.getIndicators().find((i) => i.type === "rsi")!;
+  assert.deepEqual(other.priceScale("right", `xind-${newRsi.id}`).options().range, [0, 100]);
+  assert.equal(other.priceScale("vol").options().mode, "logarithmic");
+});
+
+test("v0.3.1 drawings on indicator panes: stored in pane units, mapped through layouts, removed with their pane", () => {
+  const f = new Fake();
+  const chart = createChartWithAdapter(f);
+  chart.addCandlestickSeries().setData(candles(60));
+  const rsi = chart.addIndicator("rsi");
+  const pane = `xind-${rsi.id}`;
+  const d = chart.addDrawing({ type: "horizontal-line", paneId: pane, points: [{ time: candles(60)[10].time, price: 70 }] });
+  assert.equal(d.data().paneId, pane);
+  assert.equal(d.data().points[0].price, 70);
+  assert.throws(() => chart.addDrawing({ type: "horizontal-line", paneId: "bad pane!", points: [{ time: 1, price: 1 }] }), XChartError);
+  const L = chart.saveLayout();
+  assert.equal(L.drawings[0] && (L.drawings[0] as { paneId: string }).paneId, "indicator:0");
+  const g = new Fake();
+  const other = createChartWithAdapter(g);
+  other.addCandlestickSeries().setData(candles(60));
+  other.addIndicator("ema");
+  other.loadLayout(L);
+  const newPane = `xind-${other.getIndicators().find((i) => i.type === "rsi")!.id}`;
+  assert.equal(other.getDrawings()[0].data().paneId, newPane, "pane ref mapped to the new indicator's pane");
+  // Removing the indicator removes its pane and therefore its drawings (reported, never moved elsewhere).
+  const removed: string[] = [];
+  chart.on("drawingRemove", (e) => removed.push(e.id));
+  rsi.remove();
+  assert.equal(chart.getDrawings().length, 0);
+  assert.deepEqual(removed, [d.id]);
+});
+
+import { CalendarRegistry, importCalendarDataset } from "../lib/xchart-sdk/calendar/index.ts";
+
+/** A test dataset. The dates are FICTIONAL test fixtures, not real exchange holidays. */
+const TEST_DATASET = {
+  format: "xchart-calendar", version: 1, revision: "test.1",
+  provider: { id: "test-provider", name: "Test fixture (not real data)", source: { name: "unit test" }, retrievedAt: "2026-01-01", validUntil: "2026-12-31" },
+  calendars: {
+    NSE: {
+      coverage: { from: "2026-01-01", to: "2026-06-30" },
+      holidays: [{ date: "2026-03-03", name: "Fixture holiday" }],
+      earlyCloses: [{ date: "2026-03-04", close: "13:00", name: "Fixture early close" }],
+      specialSessions: [{ date: "2026-03-08", name: "Fixture Sunday session", sessions: [{ kind: "regular", start: "18:15", end: "19:15" }] }],
+    },
+  },
+};
+
+test("calendar providers: three-state day status, special sessions, early closes, coverage", () => {
+  const reg = new CalendarRegistry();
+  const nse = new TradingCalendar("NSE", reg);
+  assert.equal(nse.dayStatus("2026-03-02").status, "unknown", "no provider: a weekday is NOT assumed to be a trading day");
+  assert.equal(nse.dayStatus("2026-03-07").status, "non-trading", "weekend without sessions");
+  reg.register(TEST_DATASET as never);
+  assert.deepEqual(nse.dayStatus("2026-03-02"), { status: "trading", reason: "Regular trading day", source: "test-provider@test.1" }, "cache invalidated by registration");
+  assert.deepEqual(nse.dayStatus("2026-03-03"), { status: "non-trading", reason: "Fixture holiday", source: "test-provider@test.1" });
+  assert.equal(nse.dayStatus("2026-03-08").status, "trading");
+  assert.equal(nse.dayStatus("2026-03-08").special, true);
+  assert.equal(nse.sessionAt(Date.parse("2026-03-08T13:00:00Z") / 1000), "regular", "Sunday special session (18:30 IST)");
+  assert.equal(nse.sessionAt(Date.parse("2026-03-04T08:00:00Z") / 1000), "closed", "after the early close");
+  assert.equal(nse.dayStatus("2026-09-01").status, "unknown", "outside the dataset's coverage");
+  assert.equal(reg.status("test-provider", "2026-06-01").state, "ok");
+  assert.equal(reg.status("test-provider", "2027-02-01").state, "stale", "past validUntil");
+  reg.unregister("test-provider");
+  assert.equal(nse.dayStatus("2026-03-03").status, "unknown");
+});
+
+test("calendar datasets are validated strictly; failed loads keep the last good data", async () => {
+  const bad: unknown[] = [
+    "{", { ...TEST_DATASET, format: "x" }, { ...TEST_DATASET, provider: { ...TEST_DATASET.provider, retrievedAt: "yesterday" } },
+    { ...TEST_DATASET, calendars: { NSE: { ...TEST_DATASET.calendars.NSE, holidays: [{ date: "2027-01-01", name: "outside" }] } } },
+    { ...TEST_DATASET, calendars: { NSE: { ...TEST_DATASET.calendars.NSE, holidays: [{ date: "2026-03-03", name: "a" }, { date: "2026-03-03", name: "b" }] } } },
+    { ...TEST_DATASET, calendars: { NSE: { ...TEST_DATASET.calendars.NSE, earlyCloses: [{ date: "2026-03-03", close: "13:00" }] } } },
+    { ...TEST_DATASET, calendars: JSON.parse('{"__proto__": {}}') },
+    { ...TEST_DATASET, calendars: { NSE: { ...TEST_DATASET.calendars.NSE, specialSessions: [{ date: "2026-03-08", sessions: [{ kind: "x", start: "1", end: "2" }] }] } } },
+  ];
+  for (const b of bad) assert.throws(() => importCalendarDataset(b), XChartError);
+  const reg = new CalendarRegistry();
+  assert.equal((await reg.load("test-provider", async () => TEST_DATASET)).state, "ok");
+  const st = await reg.load("test-provider", async () => { throw new Error("network unreachable"); });
+  assert.equal(st.state, "stale", "the previous dataset stays in use and is reported stale");
+  assert.match(st.error!, /network unreachable/);
+  assert.equal(new TradingCalendar("NSE", reg).dayStatus("2026-03-03").status, "non-trading");
+  const empty = new CalendarRegistry();
+  assert.equal((await empty.load("x", async () => ({ nope: 1 }))).state, "failed");
 });

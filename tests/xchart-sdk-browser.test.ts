@@ -805,6 +805,66 @@ test("browser: crosshair-only frames reuse the cached frame", async (t) => {
   });
 });
 
+test("browser: independent scales (log / inverted / percentage per scale) and RSI-pane drawings keep their values", async (t) => {
+  await withPage(t, async (page) => {
+    const r = await page.evaluate(`(async () => {
+      const el = document.getElementById("a");
+      const chart = X.createChart(el, { theme: "dark" });
+      const data = mk(60);
+      chart.addCandlestickSeries().setData(data);
+      const vol = chart.addHistogramSeries({ pane: "main", priceScaleId: "vol", colorMode: "single", color: "#ff00ff", opacity: 1 });
+      vol.setData(data.map((d, i) => ({ time: d.time, value: 100 * Math.pow(1.08, i) })));
+      const lft = chart.addLineSeries({ priceScaleId: "left", color: "#0000ff" });
+      lft.setData(data.map((d, i) => ({ time: d.time, value: 50 + i })));
+      chart.priceScale("vol").applyOptions({ mode: "logarithmic", margins: { top: 0.5, bottom: 0 } });
+      chart.priceScale("left").applyOptions({ invert: true, mode: "percentage" });
+      const rsi = chart.addIndicator("rsi");
+      chart.setVisibleRange({ from: data[0].time, to: data[59].time });
+      await frame();
+      const out = {};
+      // Log scale: equal ratios map to equal pixel distances.
+      const y1 = chart.priceToCoordinate(100, "main", "vol"), y2 = chart.priceToCoordinate(1000, "main", "vol"), y3 = chart.priceToCoordinate(10000, "main", "vol");
+      out.logEven = Math.abs((y1 - y2) - (y2 - y3)) < 0.01;
+      out.logRoundTrip = Math.abs(chart.coordinateToPrice(y2, "main", "vol") - 1000) < 1e-6;
+      out.logNonPositive = chart.priceToCoordinate(-5, "main", "vol");
+      // Inverted percentage scale: higher values are lower on the screen.
+      out.inverted = chart.priceToCoordinate(90, "main", "left") > chart.priceToCoordinate(60, "main", "left");
+      const rp = chart.priceScale("right", "xind-" + rsi.id);
+      out.rsiPaneMap = Math.abs(rp.coordinateToPrice(rp.priceToCoordinate(70)) - 70) < 1e-9;
+      window.chart = chart; window.rsiPane = "xind-" + rsi.id; window.data = data;
+      return out;
+    })()`);
+    assert.equal(r.logEven, true, "log overlay scale spaces decades evenly");
+    assert.equal(r.logRoundTrip, true);
+    assert.equal(r.logNonPositive, null, "non-positive values have no position on a log scale");
+    assert.equal(r.inverted, true);
+    assert.equal(r.rsiPaneMap, true);
+    // Draw a horizontal line on the RSI pane with the mouse at RSI 70.
+    const [x, y] = await page.evaluate(`[chart.timeToCoordinate(data[30].time), chart.priceToCoordinate(70, rsiPane)]`);
+    await page.evaluate(`chart.setDrawingSnap(false); chart.setDrawingTool("horizontal-line")`);
+    await page.mouse.click(x, y);
+    await page.evaluate(`chart.getDrawings()[0].applyOptions({ color: "#ffff00", lineWidth: 2 })`);
+    const d1 = await page.evaluate(`chart.getDrawings().map((d) => d.data())`);
+    assert.equal(d1.length, 1);
+    assert.equal(d1[0].paneId, await page.evaluate(`rsiPane`));
+    assert.ok(Math.abs(d1[0].points[0].price - 70) < 0.6, `anchored in RSI units (${d1[0].points[0].price})`);
+    // Resize and move the pane: the line follows RSI 70, not a pixel position.
+    const pixel = await page.evaluate(`(async () => {
+      chart.pane(rsiPane).setHeight(180); chart.pane(rsiPane).moveTo(1); await frame();
+      const price = chart.getDrawings()[0].data().points[0].price;
+      const y = Math.round(chart.priceToCoordinate(price, rsiPane));
+      const { img } = pixels(document.getElementById("a"));
+      return { y, line: count(img, is.yellow, 0, 600, y - 1, y + 2), height: chart.pane(rsiPane).height() };
+    })()`);
+    assert.ok(Math.abs(pixel.height - 180) < 2);
+    assert.ok(pixel.line > 300, `line drawn at RSI ${d1[0].points[0].price} after resize (${pixel.line} px)`);
+    // A press on the main pane at the same x never selects the RSI-pane drawing.
+    await page.mouse.click(300, 60);
+    assert.equal(await page.evaluate(`chart.selectedDrawing()`), null);
+    await page.evaluate(`chart.remove()`);
+  });
+});
+
 test("browser: benchmarks (1k / 10k / 50k candles)", { skip: process.env.XCHART_BENCH !== "1" && "set XCHART_BENCH=1 to run" }, async (t) => {
   const browser = await launch(t);
   if (!browser) return;

@@ -165,16 +165,30 @@ export interface CrosshairEvent {
 }
 
 export type PriceScaleSettings = {
-  /** Main ("right") scale only. */
+  /** Independent per scale (right, left, overlay and pane scales). Percentage / indexed are relative to the first visible value of the scale's first series. */
   mode?: "normal" | "logarithmic" | "percentage" | "indexed";
+  /** false needs a manual `range` (except the main right scale, which keeps its dragged range). */
   autoScale?: boolean;
+  /** Manual range [min, max] in price units. */
+  range?: [number, number];
   /** Fractions of the pane kept free above and below the data on this scale. */
   margins?: { top: number; bottom: number };
   /** "left" scale: show its axis labels (default true). */
   visible?: boolean;
+  /** Higher values drawn lower. */
+  invert?: boolean;
+  /** Axis label decimals. */
+  precision?: number;
+  /** Labels rounded to multiples of this tick size. */
+  minMove?: number;
+  /** Custom axis label (receives the displayed value: % / indexed value in those modes). Not saved in layouts. */
+  formatter?: (value: number) => string;
 };
 export interface PriceScaleApi {
   readonly id: string;
+  readonly paneId: string;
+  priceToCoordinate(price: number): number | null;
+  coordinateToPrice(y: number): number | null;
   applyOptions(o: Partial<PriceScaleSettings>): void;
   options(): PriceScaleSettings;
   /** Series currently on this scale (main pane). */
@@ -214,6 +228,7 @@ export interface SeriesApi<T extends ChartSeriesType> {
   clearMarkers(): void;
   createPriceLine(options: PriceLineOptions): PriceLineApi;
   priceLines(): PriceLineApi[];
+  removePriceLine(line: PriceLineApi): void;
 }
 
 export interface ChartApi {
@@ -245,6 +260,11 @@ export interface ChartApi {
   /** Typed events; returns an unsubscribe function. */
   on<K extends keyof ChartEvents>(type: K, handler: (payload: ChartEvents[K]) => void): Unsubscribe;
   once<K extends keyof ChartEvents>(type: K, handler: (payload: ChartEvents[K]) => void): Unsubscribe;
+  off<K extends keyof ChartEvents>(type: K, handler: (payload: ChartEvents[K]) => void): boolean;
+  subscribeClick(handler: (p: ChartEvents["click"]) => void): Unsubscribe;
+  exportLayout(options?: { includeData?: boolean }): import("./layout.ts").ChartLayout;
+  importLayout(layout: unknown, options?: import("./layout.ts").LayoutLoadOptions): import("./layout.ts").LayoutLoadReport;
+  timeScale(): ReturnType<import("./create-chart.ts").ChartImpl["timeScale"]>;
   addIndicator(type: string, config?: Record<string, unknown>): IndicatorApi;
   setBenchmarkSeries(series: SeriesApi<ChartSeriesType> | null): void;
   searchIndicators(q?: { text?: string; category?: string; requires?: string; incremental?: boolean; param?: string }): IndicatorDefinition[];
@@ -259,9 +279,9 @@ export interface ChartApi {
   timeToCoordinate(time: ChartTime): number | null;
   coordinateToTime(x: number): ChartTime | null;
   /** Canvas y (CSS px) of a price in a pane ("main" by default). */
-  priceToCoordinate(price: number, paneId?: string): number | null;
-  coordinateToPrice(y: number, paneId?: string): number | null;
-  priceScale(id?: string): PriceScaleApi;
+  priceToCoordinate(price: number, paneId?: string, scaleId?: string): number | null;
+  coordinateToPrice(y: number, paneId?: string, scaleId?: string): number | null;
+  priceScale(id?: string, paneId?: string): PriceScaleApi;
   panes(): PaneApi[];
   pane(id: string): PaneApi | undefined;
   saveLayout(options?: { includeData?: boolean }): import("./layout.ts").ChartLayout;

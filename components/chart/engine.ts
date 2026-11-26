@@ -31,7 +31,21 @@ export type PlotSeries = {
 };
 export type PaneSpec = { id: string; title: string; series: PlotSeries[]; levels?: number[]; bands?: { from: number; to: number; color: string }[]; range?: [number, number]; collapsed?: boolean };
 /** Overlay / main price-scale settings. `margins` are fractions of the pane kept free above and below the data. */
-export type ScaleSpec = { id: string; margins?: { top: number; bottom: number }; visible?: boolean };
+export type ScaleSpec = {
+  id: string;
+  /** Pane the scale belongs to (default "main"). "right" is each pane's own scale. */
+  pane?: string;
+  margins?: { top: number; bottom: number };
+  visible?: boolean;
+  /** Transform of this scale (independent of other scales). Non-positive values are not drawn on a log scale. */
+  mode?: "normal" | "log" | "percentage" | "indexed";
+  /** Higher values lower on the pane. */
+  invert?: boolean;
+  /** Manual range in price units (disables autoscale). */
+  range?: [number, number];
+  /** Axis label formatter (precision / minimum move / custom). */
+  format?: (v: number) => string;
+};
 export type Marker = { index: number; text: string; color: string; position: "above" | "below" };
 export type ChartType = "candles" | "bars" | "line" | "area" | "hollow" | "hilo" | "step" | "baseline" | "columns";
 /** Per-point data the renderer needs for derived chart types (structural subset of DerivedPoint). */
@@ -109,6 +123,9 @@ export type LayerApi = {
   bar(i: number): Bar | undefined;
   /** Queues a label on the price axis (drawn above series labels). */
   axisLabel(y: number, text: string, bg: string): void;
+  /** Price ↔ y on another scale of this pane (e.g. an overlay or the left scale); null when the scale is not present. */
+  scaleY?(scaleId: string, p: number): number | null;
+  scalePrice?(scaleId: string, y: number): number | null;
 };
 export type EngineLayer = { pane?: string; z?: "below" | "above"; draw(api: LayerApi): void };
 
@@ -199,8 +216,10 @@ type PaneLayout = {
   top: number; height: number; min: number; max: number; log: boolean; spec?: PaneSpec;
   /** Percentage / indexed transform of the main scale relative to `base`. */
   mode?: "pct" | "idx"; base?: number;
-  /** Overlay scales of the main pane (same rectangle, own range). */
+  /** Overlay scales of the pane (same rectangle, own range). */
   scales?: Map<string, PaneLayout>;
+  invert?: boolean;
+  fmt?: (v: number) => string;
   collapsed?: boolean;
 };
 const COLLAPSED_H = 20;
@@ -347,7 +366,12 @@ export class ChartEngine {
     this.invalidate();
   }
 
-  setScale(s: Partial<ScaleState>) {
+  setScale(s: Partial<ScaleState> & { range?: [number, number] }) {
+    if (s.range) {
+      const T = (v: number) => (this.scale.log ? Math.log(Math.max(v, 1e-9)) : v);
+      this.scale.min = T(s.range[0]);
+      this.scale.max = T(s.range[1]);
+    }
     if (s.log !== undefined && s.log !== this.scale.log) {
       const conv = s.log ? (x: number) => Math.log(Math.max(x, 1e-9)) : Math.exp;
       this.scale.min = conv(this.scale.min);
@@ -463,16 +487,19 @@ export class ChartEngine {
   getPanes(): PaneBox[] {
     return this.layouts.map((l, i) => ({ id: i === 0 ? "main" : l.spec!.id, top: l.top, height: l.height }));
   }
-  priceToY(p: number, paneId = "main"): number | null {
-    const L = this.layoutOf(paneId);
-    return L ? this.yOf(p, L) : null;
+  priceToY(p: number, paneId = "main", scaleId = "right"): number | null {
+    const L = this.layoutOf(paneId, scaleId);
+    if (!L || !Number.isFinite(p) || (L.log && p <= 0)) return null;
+    return this.yOf(p, L);
   }
-  yToPrice(y: number, paneId = "main"): number | null {
-    const L = this.layoutOf(paneId);
+  yToPrice(y: number, paneId = "main", scaleId = "right"): number | null {
+    const L = this.layoutOf(paneId, scaleId);
     return L ? this.priceAt(y, L) : null;
   }
-  private layoutOf(id: string) {
-    return id === "main" ? this.layouts[0] : this.layouts.find((l) => l.spec?.id === id);
+  private layoutOf(id: string, scaleId = "right") {
+    const L = id === "main" ? this.layouts[0] : this.layouts.find((l) => l.spec?.id === id);
+    if (!L || scaleId === "right") return L;
+    return L.scales?.get(scaleId);
   }
   /** PNG data URL of the current chart, re-rendered at `scale` × CSS pixels. */
   toDataURL(scale = this.dpr): string {
@@ -560,10 +587,12 @@ export class ChartEngine {
     return p;
   }
   private yOf(p: number, L: PaneLayout) {
-    return L.top + (1 - (this.tf(p, L) - L.min) / (L.max - L.min || 1)) * L.height;
+    const f = (this.tf(p, L) - L.min) / (L.max - L.min || 1);
+    return L.top + (L.invert ? f : 1 - f) * L.height;
   }
   private priceAt(y: number, L: PaneLayout) {
-    const v = L.min + (1 - (y - L.top) / L.height) * (L.max - L.min);
+    const f = (y - L.top) / L.height;
+    const v = L.min + (L.invert ? f : 1 - f) * (L.max - L.min);
     if (L.log) return Math.exp(v);
     if (L.mode === "pct") return (v / 100 + 1) * L.base!;
     if (L.mode === "idx") return (v / 100) * L.base!;
@@ -925,6 +954,73 @@ export class ChartEngine {
   }
 
   // ---------- drawing ----------
+  private scaleSpec(pane: string, id: string): ScaleSpec | undefined {
+    return this.data.scales?.find((x) => x.id === id && (x.pane ?? "main") === pane);
+  }
+
+  /** Layout of one independent scale: its own mode, autoscale or manual range, margins and inversion. */
+  private fitLayout(series: PlotSeries[], top: number, height: number, from: number, to: number, spec: ScaleSpec | undefined, opts: { pad: number; levels?: number[]; range?: [number, number] }): PaneLayout {
+    const L: PaneLayout = { top, height, min: 0, max: 1, log: spec?.mode === "log", invert: spec?.invert, fmt: spec?.format };
+    if (spec?.mode === "percentage" || spec?.mode === "indexed") {
+      let base = NaN;
+      for (let i = from; i <= to && !Number.isFinite(base); i++) for (const s of series) if (Number.isFinite(s.values[i]) && s.values[i] !== 0) { base = s.values[i]; break; }
+      if (Number.isFinite(base)) {
+        L.mode = spec.mode === "percentage" ? "pct" : "idx";
+        L.base = base;
+      }
+    }
+    const T = (v: number) => this.tf(v, L);
+    const manual = spec?.range ?? opts.range;
+    if (manual) {
+      L.min = T(manual[0]);
+      L.max = T(manual[1]);
+      return L;
+    }
+    let min = Infinity, max = -Infinity;
+    const add = (v: number) => {
+      if (!Number.isFinite(v) || (L.log && v <= 0)) return;
+      const t = T(v);
+      if (t < min) min = t;
+      if (t > max) max = t;
+    };
+    const hi = Math.max(to, Math.ceil(this.endIndex));
+    for (const s of series) {
+      for (let i = from; i <= hi; i++) {
+        const v = s.values[i];
+        if (!Number.isFinite(v)) continue;
+        add(v);
+        if (s.style === "histogram" && !L.log) add(0);
+      }
+    }
+    for (const l of opts.levels ?? []) add(l);
+    if (!Number.isFinite(min)) {
+      min = L.log ? 0 : 0;
+      max = 1;
+    }
+    const pad = (max - min || Math.abs(max) * 0.01 || 1) * opts.pad;
+    min -= pad;
+    max += pad;
+    const m = spec?.margins;
+    if (m) {
+      const free = Math.max(0.05, 1 - m.top - m.bottom);
+      const r = max - min;
+      [min, max] = [min - (r * m.bottom) / free, max + (r * m.top) / free];
+    }
+    L.min = min;
+    L.max = max;
+    return L;
+  }
+
+  /** Overlay scales of a pane (series whose `scale` is not the pane's right scale). */
+  private overlayScales(paneId: string, series: PlotSeries[], top: number, height: number, from: number, to: number): Map<string, PaneLayout> | undefined {
+    const groups = new Map<string, PlotSeries[]>();
+    for (const s of series) if (s.scale && s.scale !== "right") groups.set(s.scale, [...(groups.get(s.scale) ?? []), s]);
+    if (!groups.size) return undefined;
+    const out = new Map<string, PaneLayout>();
+    for (const [id, list] of groups) out.set(id, this.fitLayout(list, top, height, from, to, this.scaleSpec(paneId, id), { pad: 0.08 }));
+    return out;
+  }
+
   private computeLayouts(): PaneLayout[] {
     const panes = this.data.panes;
     const avail = this.h - TIME_H;
@@ -951,7 +1047,7 @@ export class ChartEngine {
     }
     const T = (v: number) => (log ? Math.log(Math.max(v, 1e-9)) : mode === "pct" ? (v / base - 1) * 100 : mode === "idx" ? (v / base) * 100 : v);
     const margins = (id: string, min: number, max: number): [number, number] => {
-      const m = this.data.scales?.find((x) => x.id === id)?.margins;
+      const m = this.scaleSpec("main", id)?.margins;
       if (!m) return [min, max];
       const free = Math.max(0.05, 1 - m.top - m.bottom);
       const r = max - min;
@@ -1017,63 +1113,23 @@ export class ChartEngine {
     const mainH = Math.max(MIN_PANE_H, slots[0]);
 
     const main: PaneLayout = { top: 0, height: mainH, min: this.scale.min, max: this.scale.max, log, mode, base: mode ? base : undefined };
-    // Overlay price scales: own auto-fitted range in the main pane's rectangle.
-    const groups = new Map<string, PlotSeries[]>();
-    for (const s of this.data.overlays) if (!onMain(s)) groups.set(s.scale!, [...(groups.get(s.scale!) ?? []), s]);
-    if (groups.size) {
-      main.scales = new Map();
-      for (const [id, list] of groups) {
-        let min = Infinity;
-        let max = -Infinity;
-        const hi = Math.max(to, Math.ceil(this.endIndex));
-        for (const s of list) {
-          for (let i = from; i <= hi; i++) {
-            const v = s.values[i];
-            if (!Number.isFinite(v)) continue;
-            min = Math.min(min, v, s.style === "histogram" ? 0 : v);
-            max = Math.max(max, v, s.style === "histogram" ? 0 : v);
-          }
-        }
-        if (!Number.isFinite(min)) {
-          min = 0;
-          max = 1;
-        }
-        const pad = (max - min || Math.abs(max) * 0.01 || 1) * 0.08;
-        const [a, b] = margins(id, min - pad, max + pad);
-        main.scales.set(id, { top: 0, height: mainH, min: a, max: b, log: false });
-      }
-    }
+    // Overlay price scales: each with its own mode, range, margins and inversion.
+    main.scales = this.overlayScales("main", this.data.overlays, 0, mainH, from, to);
+    const rs = this.scaleSpec("main", "right");
+    if (rs?.invert) main.invert = true;
+    if (rs?.format) main.fmt = rs.format;
     out.push(main);
 
     let top = mainH;
     panes.forEach((spec, k) => {
       const slot = slots[k + 1];
-      let pmin = Infinity;
-      let pmax = -Infinity;
-      if (spec.range) [pmin, pmax] = spec.range;
-      else {
-        for (let i = from; i <= to; i++) {
-          for (const s of spec.series) {
-            const v = s.values[i];
-            if (Number.isFinite(v)) {
-              pmin = Math.min(pmin, v, s.style === "histogram" ? 0 : v);
-              pmax = Math.max(pmax, v, s.style === "histogram" ? 0 : v);
-            }
-          }
-        }
-        for (const l of spec.levels ?? []) {
-          pmin = Math.min(pmin, l);
-          pmax = Math.max(pmax, l);
-        }
-        if (!Number.isFinite(pmin)) {
-          pmin = 0;
-          pmax = 1;
-        }
-        const pp = (pmax - pmin || 1) * 0.1;
-        pmin -= pp;
-        pmax += pp;
-      }
-      out.push({ top: top + PANE_GAP, height: Math.max(1, slot - PANE_GAP), min: pmin, max: pmax, log: false, spec, collapsed: spec.collapsed });
+      const ptop = top + PANE_GAP, ph = Math.max(1, slot - PANE_GAP);
+      const own = spec.series.filter((s) => !s.scale || s.scale === "right");
+      const L = this.fitLayout(own, ptop, ph, from, to, this.scaleSpec(spec.id, "right"), { pad: 0.1, levels: spec.levels, range: spec.range });
+      L.spec = spec;
+      L.collapsed = spec.collapsed;
+      L.scales = this.overlayScales(spec.id, spec.series, ptop, ph, from, to);
+      out.push(L);
       top += slot;
     });
     return out;
@@ -1237,8 +1293,8 @@ export class ChartEngine {
           ctx.stroke();
           ctx.setLineDash([]);
         }
-        for (const s of series) for (const f of s.fills ?? []) this.drawFill(s, f, L, from);
-        for (const s of series) this.drawSeries(s, L, from, to);
+        for (const s of series) for (const f of s.fills ?? []) this.drawFill(s, f, this.layoutFor(s, L), from);
+        for (const s of series) this.drawSeries(s, this.layoutFor(s, L), from, to);
         this.drawLayers(L, paneId, "above", from, to, tags);
       }
       ctx.restore();
@@ -1251,7 +1307,7 @@ export class ChartEngine {
       }
       this.drawPriceAxis(L, ticks);
       const left = L.scales?.get("left");
-      if (left && this.data.scales?.find((x) => x.id === "left")?.visible !== false) this.drawLeftAxis(left);
+      if (left && this.scaleSpec(paneId, "left")?.visible !== false) this.drawLeftAxis(left);
       // Last-value labels on the price scale for series that ask for it.
       for (const s of series) {
         if (!s.scaleLabel || s.style === "histogram") continue;
@@ -1323,6 +1379,14 @@ export class ChartEngine {
       axisLabel: (y, text, bg) => {
         if (y >= L.top && y <= L.top + L.height) tags.push({ y, text, color: bg });
       },
+      scaleY: (id, p) => {
+        const S = id === "right" ? L : L.scales?.get(id);
+        return S && Number.isFinite(p) && !(S.log && p <= 0) ? this.yOf(p, S) : null;
+      },
+      scalePrice: (id, y) => {
+        const S = id === "right" ? L : L.scales?.get(id);
+        return S ? this.priceAt(y, S) : null;
+      },
     };
     for (const layer of this.layers) {
       if ((layer.pane ?? "main") !== paneId || (layer.z ?? "above") !== z) continue;
@@ -1370,7 +1434,7 @@ export class ChartEngine {
     for (const t of this.ticks(L)) {
       const y = this.yOf(t.v, L);
       if (y < L.top + 6 || y > L.top + L.height - 6) continue;
-      const text = fmtPrice(t.v, t.step);
+      const text = L.fmt ? L.fmt(L.mode ? this.tf(t.v, L) : t.v) : L.mode ? (L.mode === "pct" ? `${fmtPrice(this.tf(t.v, L), t.step)}%` : fmtPrice(this.tf(t.v, L), t.step)) : fmtPrice(t.v, t.step);
       const w = ctx.measureText(text).width + 6;
       ctx.fillStyle = withAlpha(this.theme.bg, 0.75);
       ctx.fillRect(0, y - 7, w, 14);
@@ -1394,7 +1458,7 @@ export class ChartEngine {
     for (const t of ticks) {
       const y = this.yOf(t.v, L);
       if (y < L.top + 6 || y > L.top + L.height - 6 || taken.some((u) => Math.abs(u - y) < 12)) continue;
-      const text = L.mode ? (L.mode === "pct" ? `${fmtPrice(this.tf(t.v, L), t.step)}%` : fmtPrice(this.tf(t.v, L), t.step)) : L === this.layouts[0] && this.opts.pricePrecision !== undefined ? this.fmtAxis(t.v) : fmtPrice(t.v, t.step);
+      const text = L.fmt ? L.fmt(L.mode ? this.tf(t.v, L) : t.v) : L.mode ? (L.mode === "pct" ? `${fmtPrice(this.tf(t.v, L), t.step)}%` : fmtPrice(this.tf(t.v, L), t.step)) : L === this.layouts[0] && this.opts.pricePrecision !== undefined ? this.fmtAxis(t.v) : fmtPrice(t.v, t.step);
       ctx.fillText(text, this.plotW() + 6, y);
     }
   }

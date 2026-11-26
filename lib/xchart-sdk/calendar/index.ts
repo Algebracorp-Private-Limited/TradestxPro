@@ -7,6 +7,8 @@
  * Pure TypeScript, no DOM.
  */
 import { XChartError, isTimeZone } from "../validation.ts";
+import { CalendarRegistry, type CalendarProvider, type DayStatus } from "./providers.ts";
+export { CALENDAR_DATASET_FORMAT, CalendarRegistry, importCalendarDataset, type CalendarDataset, type CalendarProvider, type DayStatus, type ProviderStatus } from "./providers.ts";
 
 export type SessionKind = "pre" | "regular" | "post";
 export type SessionState = SessionKind | "closed";
@@ -120,7 +122,8 @@ function validateDef(def: CalendarDef) {
     if (!/^[0-6]$/.test(day) || !Array.isArray(list)) throw new XChartError("INVALID_CALENDAR", "week keys must be 0–6 with session arrays");
     for (const s of list) {
       const ok = (v: unknown) => typeof v === "string" && /^([01]\d|2[0-4]):[0-5]\d$/.test(v) && minutes(v) <= 1440;
-      if (!["pre", "regular", "post"].includes(s.kind) || !ok(s.start) || !ok(s.end) || minutes(s.end) <= minutes(s.start)) throw new XChartError("INVALID_CALENDAR", `Invalid session on day ${day}: ${JSON.stringify(s)}`);
+      // end ≤ start means the session runs past midnight into the next day (overnight session).
+      if (!["pre", "regular", "post"].includes(s.kind) || !ok(s.start) || !ok(s.end) || minutes(s.end) === minutes(s.start)) throw new XChartError("INVALID_CALENDAR", `Invalid session on day ${day}: ${JSON.stringify(s)}`);
     }
   }
 }
@@ -128,12 +131,56 @@ function validateDef(def: CalendarDef) {
 export class TradingCalendar {
   readonly def: CalendarDef;
   private holidays: HolidayProvider | null;
-  constructor(def: CalendarDef | CalendarId, holidays: HolidayProvider | null = null) {
+  private registry: CalendarRegistry | null;
+  private cache = new Map<string, DayStatus>();
+  private cacheRev = -1;
+  /**
+   * `holidays`: a HolidayProvider (e.g. holidayList), a CalendarProvider (imported dataset) or a
+   * CalendarRegistry. Plain HolidayProviders without covers() are treated as covering every date
+   * (you vouch for the list); datasets cover only their declared range.
+   */
+  constructor(def: CalendarDef | CalendarId, holidays: HolidayProvider | CalendarRegistry | null = null) {
     const d = typeof def === "string" ? (CALENDARS as Record<string, CalendarDef>)[def] : def;
     if (!d) throw new XChartError("INVALID_CALENDAR", `Unknown calendar "${String(def)}". Built in: ${Object.keys(CALENDARS).join(", ")}`);
     validateDef(d);
     this.def = d;
-    this.holidays = holidays;
+    this.registry = holidays instanceof CalendarRegistry ? holidays : null;
+    this.holidays = holidays instanceof CalendarRegistry ? null : holidays;
+  }
+
+  /** Provider authoritative for a date (null → the schedule for that date is unverified). */
+  private providerFor(date: string): HolidayProvider | null {
+    if (this.registry) return this.registry.providerFor(this.def.id, date);
+    const h = this.holidays as (HolidayProvider & { covers?: (c: string, d: string) => boolean }) | null;
+    if (!h) return null;
+    return !h.covers || h.covers(this.def.id, date) ? h : null;
+  }
+
+  /**
+   * Confirmed status of a local date. Weekly-schedule facts (a weekday with sessions, a weekend
+   * without) are only CONFIRMED when a provider covers the date; otherwise weekdays are "unknown"
+   * (holidays unverified). Weekend days with no sessions are non-trading unless a provider lists a
+   * special session.
+   */
+  dayStatus(date: string): DayStatus {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new XChartError("INVALID_CALENDAR", "date must be YYYY-MM-DD");
+    const rev = this.registry?.revision ?? 0;
+    if (rev !== this.cacheRev) {
+      this.cache.clear();
+      this.cacheRev = rev;
+    }
+    const hit = this.cache.get(date);
+    if (hit) return hit;
+    const prov = this.providerFor(date) as (CalendarProvider | (HolidayProvider & Partial<CalendarProvider>)) | null;
+    const src = prov && "id" in prov && prov.id ? `${prov.id}@${prov.revision ?? ""}` : prov ? "holiday list" : undefined;
+    const weekly = (this.def.week[new Date(`${date}T12:00:00Z`).getUTCDay() as 0] ?? []).some((s) => s.kind === "regular");
+    let st: DayStatus;
+    if (!prov) st = weekly ? { status: "unknown", reason: "No calendar provider covers this date: holidays are unverified" } : { status: "non-trading", reason: "No session in the weekly schedule (special sessions unverified)" };
+    else if (prov.isHoliday(this.def.id, date)) st = { status: "non-trading", reason: prov.holidayName?.(this.def.id, date) ?? "Holiday", source: src };
+    else if (prov.specialSessions?.(this.def.id, date)) st = { status: "trading", reason: "Special session", source: src, special: true };
+    else st = weekly ? { status: "trading", reason: "Regular trading day", source: src } : { status: "non-trading", reason: "Weekend / no scheduled session", source: src };
+    this.cache.set(date, st);
+    return st;
   }
   get id() {
     return this.def.id;
@@ -146,16 +193,19 @@ export class TradingCalendar {
     return ymd(parts(this.def.timeZone, t));
   }
   isHoliday(date: string): boolean {
-    return this.holidays?.isHoliday(this.def.id, date) ?? false;
+    return this.providerFor(date)?.isHoliday(this.def.id, date) ?? false;
   }
-  /** Sessions of a local date after weekends, holidays, adjustments and early closes. */
+  /** Sessions of a local date after weekends, holidays, special sessions, adjustments and early closes. */
   sessions(date: string): SessionDef[] {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new XChartError("INVALID_CALENDAR", "date must be YYYY-MM-DD");
-    if (this.isHoliday(date)) return [];
+    const prov = this.providerFor(date) as (HolidayProvider & Partial<CalendarProvider>) | null;
+    if (prov?.isHoliday(this.def.id, date)) return [];
+    const special = prov?.specialSessions?.(this.def.id, date);
+    if (special) return special;
     const dow = new Date(`${date}T12:00:00Z`).getUTCDay() as 0 | 1 | 2 | 3 | 4 | 5 | 6;
     let list = this.def.week[dow] ?? [];
     if (this.def.adjust) list = this.def.adjust(date, list);
-    const early = this.holidays?.earlyClose?.(this.def.id, date);
+    const early = prov?.earlyClose?.(this.def.id, date);
     if (early) {
       const e = minutes(early);
       list = list.filter((s) => minutes(s.start) < e).map((s) => (minutes(s.end) > e ? { ...s, end: early } : s));
@@ -165,11 +215,17 @@ export class TradingCalendar {
   isTradingDay(date: string): boolean {
     return this.sessions(date).some((s) => s.kind === "regular");
   }
-  /** Session state at an instant. */
+  /** Session state at an instant (overnight sessions continue past midnight). */
   sessionAt(t: number): SessionState {
     const p = parts(this.def.timeZone, t);
     const m = p.hh * 60 + p.mm;
-    for (const s of this.sessions(ymd(p))) if (m >= minutes(s.start) && m < minutes(s.end)) return s.kind;
+    const date = ymd(p);
+    for (const s of this.sessions(date)) {
+      const a = minutes(s.start), b = minutes(s.end);
+      if (b > a ? m >= a && m < b : m >= a) return s.kind;
+    }
+    // The tail of yesterday's overnight sessions.
+    for (const s of this.sessions(addDays(date, -1))) if (minutes(s.end) <= minutes(s.start) && m < minutes(s.end)) return s.kind;
     return "closed";
   }
   isOpen(t: number, includeExtended = false): boolean {
@@ -180,10 +236,12 @@ export class TradingCalendar {
   regularBounds(date: string): { open: number; close: number } | null {
     const reg = this.sessions(date).filter((s) => s.kind === "regular");
     if (!reg.length) return null;
-    const close = reg[reg.length - 1].end;
+    const last = reg[reg.length - 1];
+    const close = last.end;
+    const overnight = minutes(close) <= minutes(last.start);
     return {
       open: zonedTime(this.def.timeZone, date, reg[0].start),
-      close: close === "24:00" ? zonedTime(this.def.timeZone, addDays(date, 1), "00:00") : zonedTime(this.def.timeZone, date, close),
+      close: close === "24:00" ? zonedTime(this.def.timeZone, addDays(date, 1), "00:00") : zonedTime(this.def.timeZone, overnight ? addDays(date, 1) : date, close),
     };
   }
   /** Next regular-session open at or after t (searches up to 30 days ahead). */

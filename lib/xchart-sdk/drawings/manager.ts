@@ -19,8 +19,10 @@ export type DrawingHost = {
   domain(): DrawingDomain;
   bar(i: number): { o: number; h: number; l: number; c: number } | undefined;
   barCount(): number;
-  /** Live geometry for hit-testing outside a frame; null before the first layout. */
-  geometry(): Geo | null;
+  /** Live geometry of a pane (and scale) for hit-testing outside a frame; null when absent. */
+  geometry(paneId?: string, scaleId?: string): Geo | null;
+  /** Values a drawing anchor may snap to at bar i in a pane (OHLC on the main pane, series/indicator values elsewhere). */
+  snapValues?(paneId: string, i: number): number[];
   fmt(price: number): string;
   timeLabel(t: number): string;
   redraw(): void;
@@ -85,7 +87,8 @@ export function validateSpec(spec: unknown, tools: ToolTable = TOOLS): asserts s
   for (const k of ["locked", "visible"] as const) if (s[k] !== undefined && typeof s[k] !== "boolean") throw new XChartError("INVALID_DRAWING", `Drawing ${k} must be a boolean`);
   if (s.domain !== undefined && s.domain !== "time" && s.domain !== "logical") throw new XChartError("INVALID_DRAWING", 'Drawing domain must be "time" or "logical"');
   if (s.domain === "logical") validateLogical(s.points);
-  if (s.paneId !== undefined && (typeof s.paneId !== "string" || !/^[A-Za-z0-9_-]{1,40}$/.test(s.paneId))) throw new XChartError("INVALID_DRAWING", "Drawing paneId must be a pane id");
+  if (s.paneId !== undefined && (typeof s.paneId !== "string" || !/^[A-Za-z0-9_:-]{1,48}$/.test(s.paneId))) throw new XChartError("INVALID_DRAWING", "Drawing paneId must be a pane id");
+  if (s.scaleId !== undefined && (typeof s.scaleId !== "string" || !/^[A-Za-z0-9_-]{1,32}$/.test(s.scaleId))) throw new XChartError("INVALID_DRAWING", "Drawing scaleId must be a price-scale id");
 }
 
 function validateLogical(pts: unknown[]) {
@@ -96,7 +99,7 @@ function validateLogical(pts: unknown[]) {
 }
 
 type Drag = { id: string; anchor: number; startIdx: number; startPrice: number; orig: DrawingData; moved: boolean };
-type Creating = { type: DrawingType; points: DrawingPoint[]; preview: DrawingPoint | null; dragging: boolean };
+type Creating = { type: DrawingType; points: DrawingPoint[]; preview: DrawingPoint | null; dragging: boolean; paneId: string | null };
 
 class DrawingHandle implements DrawingApi {
   readonly id: string;
@@ -182,6 +185,7 @@ export class DrawingManager {
       points: spec.points.map((p) => ({ time: p.time, price: p.price, ...(domain === "logical" ? { logical: p.logical! } : {}) })),
       ...(domain === "logical" ? { domain } : {}),
       ...(spec.paneId && spec.paneId !== "main" ? { paneId: spec.paneId } : {}),
+      ...(spec.scaleId && spec.scaleId !== "right" ? { scaleId: spec.scaleId } : {}),
       style: { ...spec.style },
       locked: spec.locked ?? false,
       visible: spec.visible ?? true,
@@ -247,7 +251,7 @@ export class DrawingManager {
     if (!d) return undefined;
     const shift = Math.max(1, Math.round(this.host.barCount() * 0.01)) * 2;
     const points = d.points.map((p) => this.shifted(d, p, shift, 0));
-    const copy = this.add({ type: d.type, points, style: { ...d.style }, text: d.text, locked: false, visible: d.visible, domain: d.domain ?? "time", ...(d.paneId ? { paneId: d.paneId } : {}) });
+    const copy = this.add({ type: d.type, points, style: { ...d.style }, text: d.text, locked: false, visible: d.visible, domain: d.domain ?? "time", ...(d.paneId ? { paneId: d.paneId } : {}), ...(d.scaleId ? { scaleId: d.scaleId } : {}) });
     this.select(copy.id);
     return copy;
   }
@@ -277,7 +281,7 @@ export class DrawingManager {
   /** Starts interactive creation of `tool` (null cancels). */
   setTool(tool: DrawingType | (string & {}) | null) {
     if (tool !== null && !Object.prototype.hasOwnProperty.call(this.tools, tool)) throw new XChartError("UNKNOWN_DRAWING", `Unknown drawing type "${String(tool)}"`);
-    this.creating = tool ? { type: tool as DrawingType, points: [], preview: null, dragging: false } : null;
+    this.creating = tool ? { type: tool as DrawingType, points: [], preview: null, dragging: false, paneId: null } : null;
     this.host.emit({ type: "tool", tool: tool as DrawingType | null });
     this.host.redraw();
   }
@@ -350,24 +354,38 @@ export class DrawingManager {
   }
 
   // ---------- rendering ----------
-  layer(): EngineLayer {
-    return { pane: "main", z: "above", draw: (api) => this.draw(api) };
+  /** Engine layer drawing this manager's drawings on one pane. */
+  layer(paneId = "main"): EngineLayer {
+    return { pane: paneId, z: "above", draw: (api) => this.draw(api) };
+  }
+
+  /** Panes that currently hold drawings (plus the main pane). */
+  paneIds(): string[] {
+    const s = new Set(["main"]);
+    for (const d of this.items.values()) s.add(d.paneId ?? "main");
+    if (this.creating?.paneId) s.add(this.creating.paneId);
+    return [...s];
   }
 
   private draw(api: LayerApi) {
     if (!this.items.size && !this.creating) return;
-    const geo: Geo = { xOfIndex: api.xOfIndex, yOfPrice: api.yOfPrice, priceOfY: api.priceOfY, width: api.pane.width, top: api.pane.top, height: api.pane.height };
-    const env = this.env(api.ctx, geo, api.theme.draw, api.theme.text, api.theme.bg);
+    const pane = api.pane.id;
+    const base: Geo = { xOfIndex: api.xOfIndex, yOfPrice: api.yOfPrice, priceOfY: api.priceOfY, width: api.pane.width, top: api.pane.top, height: api.pane.height };
+    const envFor = (scaleId?: string) => {
+      const geo = scaleId && scaleId !== "right" && api.scaleY ? { ...base, yOfPrice: (p: number) => api.scaleY!(scaleId, p) ?? NaN, priceOfY: (y: number) => api.scalePrice!(scaleId, y) ?? NaN } : base;
+      return this.env(api.ctx, geo, api.theme.draw, api.theme.text, api.theme.bg);
+    };
+    const env = envFor();
     const { ctx } = api;
     ctx.beginPath();
     ctx.rect(0, api.pane.top, api.pane.width, api.pane.height);
     ctx.clip();
     for (const d of this.items.values()) {
-      if (!this.active(d)) continue;
-      this.renderOne(env, d, api.theme.select);
+      if (!this.active(d) || (d.paneId ?? "main") !== pane) continue;
+      this.renderOne(d.scaleId ? envFor(d.scaleId) : env, d, api.theme.select);
     }
     const c = this.creating;
-    if (c && c.points.length) {
+    if (c && c.points.length && (c.paneId ?? "main") === pane) {
       const pts = c.preview ? [...c.points, c.preview] : c.points;
       const need = minAnchors(this.tools[c.type]);
       const temp: DrawingData = { id: "__preview", type: c.type, points: pts, style: {}, locked: false, visible: true, ...(this.host.domain() === "logical" ? { domain: "logical" as const } : {}) };
@@ -450,16 +468,27 @@ export class DrawingManager {
     return this.scratch ?? ({ measureText: (s: string) => ({ width: s.length * 7 }), set font(_v: string) {} } as unknown as CanvasRenderingContext2D);
   }
 
-  /** Topmost drawing under (x, y) and which anchor (or -1 for the body). */
-  hitTest(x: number, y: number): { id: string; anchor: number } | null {
-    const g = this.host.geometry();
-    if (!g) return null;
-    const env = this.env(this.measureCtx(), g, "", "", "");
+  /** Topmost drawing of `paneId` under (x, y) and which anchor (or -1 for the body). Other panes are never hit. */
+  hitTest(x: number, y: number, paneId = "main"): { id: string; anchor: number } | null {
+    const g0 = this.host.geometry(paneId);
+    if (!g0) return null;
+    const envs = new Map<string, ToolEnv>();
+    const envOf = (sid = "right") => {
+      let e = envs.get(sid);
+      if (!e) {
+        const g = sid === "right" ? g0 : this.host.geometry(paneId, sid);
+        if (!g) return null;
+        envs.set(sid, (e = this.env(this.measureCtx(), g, "", "", "")));
+      }
+      return e;
+    };
     const p = { x, y };
-    const list = [...this.items.values()].filter((d) => this.active(d)).reverse();
+    const list = [...this.items.values()].filter((d) => this.active(d) && (d.paneId ?? "main") === paneId).reverse();
     // The selected drawing's anchors take priority.
     const order = this.selected ? [...list.filter((d) => d.id === this.selected), ...list.filter((d) => d.id !== this.selected)] : list;
     for (const d of order) {
+      const env = envOf(d.scaleId);
+      if (!env) continue;
       const pts = d.points.map((q) => env.px(q));
       const a = pts.findIndex((q) => Math.hypot(q.x - x, q.y - y) <= ANCHOR_HIT);
       if (a >= 0) return { id: d.id, anchor: a };
@@ -473,16 +502,19 @@ export class DrawingManager {
   }
 
   // ---------- interaction ----------
-  private pointAt(p: PointerInfo, snap: boolean): DrawingPoint | null {
-    if (p.paneId !== "main" || p.price === null) return null;
+  /** Anchor at the pointer, in `paneId`'s own value units (the pointer may be over another pane while dragging). */
+  private pointAt(p: PointerInfo, snap: boolean, paneId: string | null = p.paneId, scaleId?: string): DrawingPoint | null {
+    if (!paneId) return null;
     const h = this.host;
+    const g = h.geometry(paneId, scaleId);
+    if (!g) return null;
     const n = h.barCount();
     const i = Math.round(p.index);
-    let price = p.price;
+    let price = g.priceOfY(p.y);
+    if (!Number.isFinite(price)) return null;
     if (snap && this.snap && !p.ctrl && i >= 0 && i < n) {
-      const b = h.bar(i);
-      const g = h.geometry();
-      if (b && g) price = snapToOhlc(price, p.y, [b.o, b.h, b.l, b.c], g.yOfPrice);
+      const vals = paneId === "main" ? (() => { const b = h.bar(i); return b ? [b.o, b.h, b.l, b.c] : []; })() : h.snapValues?.(paneId, i) ?? [];
+      if (vals.length) price = snapToOhlc(price, p.y, vals, g.yOfPrice);
     }
     return h.domain() === "logical" ? { time: h.timeAt(i), price, logical: i } : { time: h.timeAt(i), price };
   }
@@ -492,11 +524,11 @@ export class DrawingManager {
       hover: (p) => {
         const c = this.creating;
         if (c) {
-          c.preview = this.pointAt(p, true);
+          c.preview = this.pointAt(p, true, c.paneId ?? p.paneId);
           this.host.redraw();
           return "crosshair";
         }
-        const hit = this.hitTest(p.x, p.y);
+        const hit = p.paneId ? this.hitTest(p.x, p.y, p.paneId) : null;
         const id = hit?.id ?? null;
         if (id !== this.hovered) {
           this.hovered = id;
@@ -509,8 +541,10 @@ export class DrawingManager {
       down: (p) => {
         const c = this.creating;
         if (c) {
-          const pt = this.pointAt(p, true);
-          if (!pt) return true; // swallow presses outside the main pane while a tool is active
+          // The first anchor fixes the pane; later anchors use that pane's scale.
+          if (!c.points.length) c.paneId = p.paneId;
+          const pt = this.pointAt(p, true, c.paneId);
+          if (!pt) return true; // swallow presses outside any pane while a tool is active
           c.points.push(pt);
           c.preview = pt;
           c.dragging = true;
@@ -518,38 +552,41 @@ export class DrawingManager {
           this.host.redraw();
           return true;
         }
-        const hit = this.hitTest(p.x, p.y);
+        const hit = p.paneId ? this.hitTest(p.x, p.y, p.paneId) : null;
         if (!hit) {
           if (this.selected) this.select(null);
           return false; // let the engine pan
         }
         this.select(hit.id);
         const d = this.items.get(hit.id)!;
-        if (!d.locked) this.drag = { id: hit.id, anchor: hit.anchor, startIdx: p.index, startPrice: p.price ?? 0, orig: clone(d), moved: false };
+        const g = this.host.geometry(d.paneId ?? "main", d.scaleId);
+        if (!d.locked && g) this.drag = { id: hit.id, anchor: hit.anchor, startIdx: p.index, startPrice: g.priceOfY(p.y), orig: clone(d), moved: false };
         return true;
       },
       move: (p) => {
         const c = this.creating;
         if (c) {
           // Press-drag-release creation for two-anchor tools (and touch).
-          c.preview = this.pointAt(p, true) ?? c.preview;
+          c.preview = this.pointAt(p, true, c.paneId) ?? c.preview;
           this.host.redraw();
           return;
         }
         const dr = this.drag;
-        if (!dr || p.price === null) return;
+        if (!dr) return;
         const d = this.items.get(dr.id);
         if (!d) return;
+        const dg = this.host.geometry(d.paneId ?? "main", d.scaleId);
+        if (!dg) return;
         if (!dr.moved) {
           this.checkpointFrom(dr.orig);
           dr.moved = true;
         }
         if (dr.anchor >= 0) {
-          const pt = this.pointAt(p, true);
+          const pt = this.pointAt(p, true, d.paneId ?? "main", d.scaleId);
           if (pt) d.points = d.points.map((q, i) => (i === dr.anchor ? pt : q));
         } else {
           const di = Math.round(p.index - dr.startIdx);
-          const dp = p.price - dr.startPrice;
+          const dp = dg.priceOfY(p.y) - dr.startPrice;
           d.points = dr.orig.points.map((q) => this.shifted(dr.orig, q, di, dp));
         }
         this.host.redraw();
@@ -561,9 +598,9 @@ export class DrawingManager {
           // A drag that ends away from the first anchor completes a two-anchor tool.
           const need = this.tools[c.type].anchors;
           if (need === 2 && c.points.length === 1) {
-            const pt = this.pointAt(p, true);
+            const pt = this.pointAt(p, true, c.paneId);
             const first = c.points[0];
-            const g = this.host.geometry();
+            const g = this.host.geometry(c.paneId ?? "main");
             if (pt && g) {
               const a = { x: g.xOfIndex(this.idx({ domain: this.host.domain() }, first)), y: g.yOfPrice(first.price) };
               if (Math.hypot(a.x - p.x, a.y - p.y) > 6) {
@@ -591,8 +628,7 @@ export class DrawingManager {
           return true;
         }
         if (c) return true;
-        const hit = this.hitTest(p.x, p.y);
-        return Boolean(hit);
+        return Boolean(p.paneId && this.hitTest(p.x, p.y, p.paneId));
       },
       key: (e) => this.onKey(e),
     };
@@ -637,7 +673,7 @@ export class DrawingManager {
     if (!c) return;
     this.creating = null;
     try {
-      const api = this.add({ type: c.type, points: c.points });
+      const api = this.add({ type: c.type, points: c.points, ...(c.paneId && c.paneId !== "main" ? { paneId: c.paneId } : {}) });
       this.select(api.id);
     } catch (e) {
       console.error("[XChart] drawing could not be created", e);

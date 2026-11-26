@@ -83,8 +83,10 @@ export interface RenderAdapter {
   requestRedraw?(): void;
   xOfIndex?(i: number): number;
   indexOfX?(x: number): number;
-  priceToY?(p: number, paneId?: string): number | null;
-  yToPrice?(y: number, paneId?: string): number | null;
+  priceToY?(p: number, paneId?: string, scaleId?: string): number | null;
+  yToPrice?(y: number, paneId?: string, scaleId?: string): number | null;
+  /** Manual range of the main right scale. */
+  setPriceRange?(min: number, max: number): void;
   getPanes?(): PaneBox[];
   getSpacing?(): number;
   setSpacing?(px: number): void;
@@ -227,6 +229,8 @@ export class CanvasAdapter implements RenderAdapter {
         overlays.push(...(scale && scale !== "right" ? ps.map((p) => ({ ...p, scale })) : ps));
       } else {
         const shared = panes.find((p) => p.id === paneId);
+        const pscale = (s.options as { priceScaleId?: string }).priceScaleId;
+        if (pscale && pscale !== "right") for (const q of ps) q.scale = pscale;
         if (shared) {
           shared.series.push(...ps);
           shared.title = `${shared.title} · ${ps[0].label}`;
@@ -341,11 +345,14 @@ export class CanvasAdapter implements RenderAdapter {
   indexOfX(x: number) {
     return this.engine.indexOfX(x);
   }
-  priceToY(p: number, paneId = "main") {
-    return this.engine.priceToY(p, paneId);
+  priceToY(p: number, paneId = "main", scaleId = "right") {
+    return this.engine.priceToY(p, paneId, scaleId);
   }
-  yToPrice(y: number, paneId = "main") {
-    return this.engine.yToPrice(y, paneId);
+  yToPrice(y: number, paneId = "main", scaleId = "right") {
+    return this.engine.yToPrice(y, paneId, scaleId);
+  }
+  setPriceRange(min: number, max: number) {
+    this.engine.setScale({ auto: false, range: [min, max] });
   }
   getPanes() {
     return this.engine.getPanes();

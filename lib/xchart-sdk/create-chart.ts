@@ -36,6 +36,8 @@ export type SessionHighlightOptions = {
   closedColor?: string;
   /** Vertical line where the exchange-local date changes (default true). */
   dayBreaks?: boolean;
+  /** Shading of bars on dates whose schedule no calendar provider confirms (default none). */
+  unknownColor?: string;
   dayBreakColor?: string;
 };
 import type {
@@ -58,6 +60,9 @@ import type {
   PriceScaleApi,
   PriceScaleSettings,
 } from "./types.ts";
+
+/** Price-scale fields a layout may carry (the formatter function is never serialised). */
+const SCALE_LAYOUT_KEYS = ["mode", "autoScale", "range", "margins", "visible", "invert", "precision", "minMove"];
 
 const DEFAULTS: ChartOptions = { theme: "dark", autoSize: true, crosshair: true, followLatest: false };
 
@@ -133,6 +138,11 @@ class SeriesImpl<T extends ChartSeriesType> implements SeriesApi<T> {
   }
   priceLines(): PriceLineApi[] {
     return this.owner().decor(this.id).priceLines();
+  }
+  /** Alias of line.remove(). */
+  removePriceLine(line: PriceLineApi): void {
+    this.owner();
+    line.remove();
   }
 
   remove(): void {
@@ -245,29 +255,36 @@ export class ChartImpl implements ChartApi {
 
   // ---------- price scales ----------
   /** Settings of a price scale: "right" (the main scale), "left", or an overlay scale id. */
-  priceScale(id = "right"): PriceScaleApi {
+  priceScale(id = "right", paneId = "main"): PriceScaleApi {
     this.assertAlive();
     if (typeof id !== "string" || !PANE_ID.test(id)) throw new XChartError("INVALID_OPTION", "Price scale id must be 1–32 letters, digits, _ or -");
+    if (typeof paneId !== "string" || !/^[A-Za-z0-9_-]{1,40}$/.test(paneId)) throw new XChartError("INVALID_OPTION", "Invalid pane id");
+    const key = `${paneId}|${id}`;
     return {
       id,
-      applyOptions: (o: Partial<PriceScaleSettings>) => {
-        this.applyScaleOptions(id, o);
-      },
+      paneId,
+      applyOptions: (o: Partial<PriceScaleSettings>) => this.applyScaleOptions(paneId, id, o),
       options: (): PriceScaleSettings => {
-        const base = { ...this.scaleOpts.get(id) };
-        if (id === "right") Object.assign(base, { mode: this.opts.priceScale?.mode ?? "normal", autoScale: this.opts.priceScale?.autoScale ?? true });
+        const base = { ...this.scaleOpts.get(key) };
+        if (key === "main|right") Object.assign(base, { mode: this.opts.priceScale?.mode ?? "normal", autoScale: this.opts.priceScale?.autoScale ?? true });
         return base;
       },
-      seriesCount: () => {
-        return [...this.seriesById.values()].filter((s) => s.type !== "candlestick" && this.paneOf(s.id) === "main" && ((s.options() as { priceScaleId?: string }).priceScaleId ?? "right") === id).length;
-      },
+      seriesCount: () => this.seriesOnScale(paneId, id).length,
+      priceToCoordinate: (price: number) => this.priceToCoordinate(price, paneId, id),
+      coordinateToPrice: (y: number) => this.coordinateToPrice(y, paneId, id),
     };
   }
 
-  private checkScaleOptions(id: string, o: Partial<PriceScaleSettings>) {
+  private seriesOnScale(paneId: string, id: string) {
+    return [...this.seriesById.values()].filter((s) => (s.type === "candlestick" ? paneId === "main" && id === "right" : this.paneOf(s.id) === paneId && ((s.options() as { priceScaleId?: string }).priceScaleId ?? "right") === id));
+  }
+
+  private checkScaleOptions(id: string, o: Partial<PriceScaleSettings>, paneId = "main") {
     if (typeof id !== "string" || !PANE_ID.test(id)) throw new XChartError("INVALID_OPTION", "Price scale id must be 1–32 letters, digits, _ or -");
     if (!o || typeof o !== "object") throw new XChartError("INVALID_OPTION", "Price scale options must be an object");
-    for (const k of Object.keys(o)) if (!["mode", "autoScale", "margins", "visible"].includes(k)) throw new XChartError("INVALID_OPTION", `Unknown price scale option "${k}"`);
+    const KEYS = ["mode", "autoScale", "margins", "visible", "invert", "range", "precision", "minMove", "formatter"];
+    for (const k of Object.keys(o)) if (!KEYS.includes(k)) throw new XChartError("INVALID_OPTION", `Unknown price scale option "${k}"`);
+    if (o.mode !== undefined && !["normal", "logarithmic", "percentage", "indexed"].includes(o.mode)) throw new XChartError("INVALID_OPTION", 'mode must be "normal", "logarithmic", "percentage" or "indexed"');
     if (o.margins !== undefined) {
       const m = o.margins as { top?: unknown; bottom?: unknown };
       const ok = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v < 1;
@@ -275,28 +292,63 @@ export class ChartImpl implements ChartApi {
         throw new XChartError("INVALID_OPTION", "margins must be { top, bottom } fractions in [0, 1) that sum to at most 0.9");
       }
     }
-    if (o.visible !== undefined && typeof o.visible !== "boolean") throw new XChartError("INVALID_OPTION", "visible must be a boolean");
-    if (id !== "right" && ((o.mode !== undefined && o.mode !== "normal") || o.autoScale === false)) {
-      throw new XChartError("UNSUPPORTED_SCALE", "Overlay price scales are linear and auto-fitted in this version; use the main (\"right\") scale for log, percentage or indexed modes");
+    for (const k of ["visible", "invert", "autoScale"] as const) if (o[k] !== undefined && typeof o[k] !== "boolean") throw new XChartError("INVALID_OPTION", `${k} must be a boolean`);
+    if (o.range !== undefined) {
+      const r = o.range as unknown;
+      if (!Array.isArray(r) || r.length !== 2 || !r.every((v) => typeof v === "number" && Number.isFinite(v)) || !(r[0] < r[1])) throw new XChartError("INVALID_RANGE", "range must be [min, max] with min < max");
     }
+    if (o.precision !== undefined && !(Number.isInteger(o.precision) && o.precision >= 0 && o.precision <= 10)) throw new XChartError("INVALID_OPTION", "precision must be an integer from 0 to 10");
+    if (o.minMove !== undefined && !(typeof o.minMove === "number" && Number.isFinite(o.minMove) && o.minMove > 0)) throw new XChartError("INVALID_OPTION", "minMove must be a positive number");
+    if (o.formatter !== undefined && typeof o.formatter !== "function") throw new XChartError("INVALID_OPTION", "formatter must be a function (value) => string");
+    const merged = { ...this.scaleOpts.get(`${paneId}|${id}`), ...o };
+    if (merged.autoScale === false && !merged.range && !(paneId === "main" && id === "right")) throw new XChartError("INVALID_OPTION", "autoScale: false needs a range [min, max]");
+    const mode = paneId === "main" && id === "right" ? o.mode ?? this.opts.priceScale?.mode : merged.mode;
+    if (mode === "logarithmic" && merged.range && merged.range[0] <= 0) throw new XChartError("INVALID_RANGE", "A logarithmic scale needs a positive range");
   }
 
-  private applyScaleOptions(id: string, o: Partial<PriceScaleSettings>) {
+  private applyScaleOptions(paneId: string, id: string, o: Partial<PriceScaleSettings>) {
     this.assertAlive();
-    this.checkScaleOptions(id, o);
-    if (id === "right" && (o.mode !== undefined || o.autoScale !== undefined)) {
+    this.checkScaleOptions(id, o, paneId);
+    const key = `${paneId}|${id}`;
+    if (key === "main|right" && (o.mode !== undefined || o.autoScale !== undefined)) {
       const ps: Record<string, unknown> = {};
       if (o.mode !== undefined) ps.mode = o.mode;
       if (o.autoScale !== undefined) ps.autoScale = o.autoScale;
       this.applyOptions({ priceScale: ps }); // validated there (atomic)
     }
-    const cur = this.scaleOpts.get(id) ?? {};
-    const next: PriceScaleSettings = { ...cur };
-    if (o.margins !== undefined) next.margins = { top: o.margins.top, bottom: o.margins.bottom };
-    if (o.visible !== undefined) next.visible = o.visible;
-    this.scaleOpts.set(id, next);
+    const next: PriceScaleSettings = { ...this.scaleOpts.get(key) };
+    for (const [k, v] of Object.entries(o)) if (!(key === "main|right" && (k === "mode" || k === "autoScale"))) (next as Record<string, unknown>)[k] = Array.isArray(v) ? [...v] : v && typeof v === "object" ? { ...v } : v;
+    this.scaleOpts.set(key, next);
+    if (key === "main|right" && o.range) this.adapter.setPriceRange?.(o.range[0], o.range[1]);
+    // Non-positive values cannot be shown on a log scale: they are left out of the drawing — say so.
+    const mode = key === "main|right" ? this.opts.priceScale?.mode : next.mode;
+    if (mode === "logarithmic") {
+      const bad = this.seriesOnScale(paneId, id).filter((s) => (s.type === "candlestick" ? this.store.bars.some((b) => b.l <= 0) : this.store.series.get(s.id)!.values.some((v) => v <= 0)));
+      if (bad.length) this.events.emit("scaleWarning", { scaleId: id, paneId, message: `${bad.length} series on this logarithmic scale have values ≤ 0; those points are not drawn` });
+    }
     this.render({ kind: "full" });
-    this.events.emit("scaleChange", { scaleId: id, paneId: "main" });
+    this.events.emit("scaleChange", { scaleId: id, paneId });
+  }
+
+  /** Engine scale specs from the stored settings (label formatter built from precision / minMove / formatter). */
+  private scaleSpecs() {
+    return [...this.scaleOpts].map(([key, o]) => {
+      const [pane, id] = key.split("|");
+      const fmt = o.formatter || o.precision !== undefined || o.minMove !== undefined
+        ? (v: number) => {
+            if (o.formatter) return String(o.formatter(v));
+            const x = o.minMove ? Math.round(v / o.minMove) * o.minMove : v;
+            const dec = o.precision ?? (o.minMove ? Math.max(0, Math.min(10, Math.ceil(-Math.log10(o.minMove) - 1e-9))) : 2);
+            return x.toFixed(dec);
+          }
+        : undefined;
+      const main = key === "main|right";
+      return {
+        id, pane, margins: o.margins as { top: number; bottom: number } | undefined, visible: o.visible, invert: o.invert, format: fmt,
+        mode: main ? undefined : o.mode === "logarithmic" ? ("log" as const) : (o.mode as "normal" | "percentage" | "indexed" | undefined),
+        range: !main && o.autoScale === false ? o.range : undefined,
+      };
+    });
   }
 
   // ---------- panes ----------
@@ -340,9 +392,20 @@ export class ChartImpl implements ChartApi {
         if (typeof px !== "number" || !Number.isFinite(px) || px < 30 || px > 5000) throw new XChartError("INVALID_NUMBER", "Pane height must be a number of pixels from 30 to 5000");
         const ids = this.paneIds();
         const boxes = this.adapter.getPanes?.() ?? [];
+        // Sizes are pane SLOT heights in px (a pane's slot = its height + the 1 px separator).
+        const slot = (p: string) => {
+          const b = boxes.find((x) => x.id === p);
+          return b ? (p === "main" ? b.height : b.height + 1) : this.paneSizes?.[p] ?? (p === "main" ? 300 : 100);
+        };
         const sizes: Record<string, number> = {};
-        for (const p of ids) sizes[p] = this.paneSizes?.[p] ?? boxes.find((b) => b.id === p)?.height ?? (p === "main" ? 300 : 100);
-        sizes[id] = px;
+        for (const p of ids) sizes[p] = slot(p);
+        const total = ids.reduce((acc, p) => acc + sizes[p], 0);
+        if (id === "main") sizes.main = px;
+        else {
+          sizes[id] = px + 1;
+          // The main pane absorbs the difference (never below 30 px).
+          sizes.main = Math.max(30, total - ids.filter((p) => p !== "main").reduce((acc, p) => acc + sizes[p], 0));
+        }
         this.paneSizes = sizes;
         this.render({ kind: "full" });
         this.events.emit("paneResize", { paneId: id, height: px });
@@ -421,8 +484,13 @@ export class ChartImpl implements ChartApi {
       chartType: { type: this.chartType, style: { ...this.chartStyle } as Record<string, unknown> },
       series,
       indicators,
-      drawings: this.drawings.serialize(),
-      priceScales: Object.fromEntries([...this.scaleOpts].map(([id, o]) => [id, { ...(o.margins ? { margins: { ...o.margins } } : {}), ...(o.visible !== undefined ? { visible: o.visible } : {}) }])),
+      drawings: this.drawings.serialize().map((d) => (d.paneId ? { ...d, paneId: ref(d.paneId) } : d)),
+      priceScales: Object.fromEntries([...this.scaleOpts].map(([key, o]) => {
+        const [pane, id] = key.split("|");
+        const v: Record<string, unknown> = {};
+        for (const k of SCALE_LAYOUT_KEYS) if ((o as Record<string, unknown>)[k] !== undefined) v[k] = JSON.parse(JSON.stringify((o as Record<string, unknown>)[k]));
+        return [pane === "main" ? id : `${ref(pane)}:${id}`, v];
+      })),
       panes: { sizes, collapsed: [...this.collapsedPanes].map(ref), order: this.paneOrder.map(ref) },
       session: this.sessionCalendar && this.sessionCalendar in CALENDARS ? { calendar: this.sessionCalendar } : null,
       plugins: this.plugins_.ids(),
@@ -494,10 +562,11 @@ export class ChartImpl implements ChartApi {
       return true;
     });
     this.drawings.check(L.drawings);
-    for (const [id, o] of Object.entries(L.priceScales)) {
-      if (!o || typeof o !== "object") throw new XChartError("INVALID_LAYOUT", `layout.priceScales.${id} must be an object`);
-      for (const k of Object.keys(o)) if (k !== "margins" && k !== "visible") throw new XChartError("INVALID_LAYOUT", `layout.priceScales.${id}.${k} is not allowed`);
-      this.checkScaleOptions(id, o);
+    for (const [key, o] of Object.entries(L.priceScales)) {
+      if (!o || typeof o !== "object") throw new XChartError("INVALID_LAYOUT", `layout.priceScales.${key} must be an object`);
+      for (const k of Object.keys(o)) if (!SCALE_LAYOUT_KEYS.includes(k)) throw new XChartError("INVALID_LAYOUT", `layout.priceScales.${key}.${k} is not allowed`);
+      const id = key.includes(":") ? key.slice(key.lastIndexOf(":") + 1) : key;
+      this.checkScaleOptions(id, o as Partial<PriceScaleSettings>, key.includes(":") ? "__layout__" : "main");
     }
     if (isDerivedType(L.chartType.type) && !existing.some((x) => x.type === "candlestick") && !plan.some((p) => p.type === "candlestick" && p.create)) {
       throw new XChartError("INVALID_LAYOUT", `Chart type "${L.chartType.type}" needs a candlestick series`);
@@ -528,8 +597,8 @@ export class ChartImpl implements ChartApi {
       report.indicatorsAdded++;
       return this.addIndicator(d.type, { ...d.params, ...d.options });
     });
-    this.drawings.load(L.drawings);
-    this.scaleOpts = new Map(Object.entries(L.priceScales).map(([id, o]) => [id, { ...(o.margins ? { margins: { ...o.margins } } : {}), ...(o.visible !== undefined ? { visible: o.visible } : {}) }]));
+    this.scaleOpts = new Map();
+    const scaleEntries = Object.entries(L.priceScales);
     const unref = (r: string): string | null => {
       const m = /^(series|indicator):(-?\d+)$/.exec(r);
       if (!m) return r;
@@ -541,6 +610,13 @@ export class ChartImpl implements ChartApi {
       const ind = newInd[k];
       return ind ? `xind-${ind.id}` : null;
     };
+    // Drawings on indicator/series panes: map their portable pane references to the new pane ids.
+    this.drawings.load((L.drawings as DrawingData[]).filter((d) => !d.paneId || unref(d.paneId) !== null).map((d) => (d.paneId ? { ...d, paneId: unref(d.paneId)! } : d)));
+    for (const [key, o] of scaleEntries) {
+      const at = key.lastIndexOf(":");
+      const pane = at < 0 ? "main" : unref(key.slice(0, at));
+      if (pane) this.scaleOpts.set(`${pane}|${at < 0 ? key : key.slice(at + 1)}`, JSON.parse(JSON.stringify(o)) as PriceScaleSettings);
+    }
     const sizes = L.panes.sizes ? Object.fromEntries(Object.entries(L.panes.sizes).flatMap(([k, v]) => (unref(k) ? [[unref(k)!, v]] : []))) : undefined;
     this.paneSizes = sizes && Object.keys(sizes).length ? sizes : undefined;
     this.collapsedPanes = new Set(L.panes.collapsed.map(unref).filter((x): x is string => x !== null && x !== "main"));
@@ -737,10 +813,10 @@ export class ChartImpl implements ChartApi {
     if (!o || typeof o !== "object") throw new XChartError("INVALID_OPTION", "setSessionHighlight expects options or null");
     const cal = o.calendar instanceof TradingCalendar ? o.calendar : new TradingCalendar(o.calendar);
     this.sessionCalendar = cal.id;
-    for (const k of ["preColor", "postColor", "closedColor", "dayBreakColor"] as const) if (o[k] !== undefined && !isCssColor(o[k])) throw new XChartError("INVALID_COLOR", `Invalid ${k}`);
+    for (const k of ["preColor", "postColor", "closedColor", "dayBreakColor", "unknownColor"] as const) if (o[k] !== undefined && !isCssColor(o[k])) throw new XChartError("INVALID_COLOR", `Invalid ${k}`);
     if (o.dayBreaks !== undefined && typeof o.dayBreaks !== "boolean") throw new XChartError("INVALID_OPTION", "dayBreaks must be a boolean");
     const st = this.store;
-    const colors = { pre: o.preColor ?? "rgba(56,189,248,0.07)", post: o.postColor ?? "rgba(168,85,247,0.07)", closed: o.closedColor ?? "rgba(148,163,184,0.08)" };
+    const colors = { pre: o.preColor ?? "rgba(56,189,248,0.07)", post: o.postColor ?? "rgba(168,85,247,0.07)", closed: o.closedColor ?? "rgba(148,163,184,0.08)", unknown: o.unknownColor ?? "transparent" };
     const breaks = o.dayBreaks !== false;
     const breakColor = o.dayBreakColor ?? "rgba(148,163,184,0.35)";
     // Per-bar cache: the session of a timestamp never changes.
@@ -748,7 +824,8 @@ export class ChartImpl implements ChartApi {
     const info = (t: number) => {
       let v = cache.get(t);
       if (!v) {
-        v = { state: cal.sessionAt(t), date: cal.localDate(t) };
+        const date = cal.localDate(t);
+        v = { state: o.unknownColor && cal.dayStatus(date).status === "unknown" ? "unknown" : cal.sessionAt(t), date };
         if (cache.size > 200_000) cache.clear();
         cache.set(t, v);
       }
@@ -805,14 +882,28 @@ export class ChartImpl implements ChartApi {
   syncLayers(force = false) {
     if (this.removed) return;
     const decor = [...this.decorations].filter(([id, d]) => !d.isEmpty() && this.seriesById.has(id));
-    const key = decor.map(([id]) => `${id}:${this.paneOf(id)}`).join(",") + `|${this.extraLayers.length}|${this.sessionLayer ? 1 : 0}`;
+    const drawPanes = this.paneIds();
+    const key = decor.map(([id]) => `${id}:${this.paneOf(id)}`).join(",") + `|${this.extraLayers.length}|${this.sessionLayer ? 1 : 0}|${drawPanes.join(",")}`;
     if (!force && key === this.layerKey) return;
     this.layerKey = key;
     const layers: EngineLayer[] = [...(this.sessionLayer ? [this.sessionLayer] : []), ...this.extraLayers.filter((l) => (l.z ?? "above") === "below")];
     for (const [id, d] of decor) layers.push(d.layer(this.paneOf(id)));
     layers.push(...this.extraLayers.filter((l) => (l.z ?? "above") === "above"));
-    layers.push(this.drawings.layer());
+    // A drawing layer on every pane: drawings can be created and shown on any pane.
+    for (const pane of drawPanes) layers.push(this.drawings.layer(pane));
     this.adapter.setLayers?.(layers);
+  }
+
+  /**
+   * Pane-removal policy: a drawing whose pane no longer exists (its indicator or series was removed)
+   * is deleted and reported with a drawingRemove event. Drawings never move to another pane.
+   */
+  private pruneOrphanDrawings() {
+    const panes = new Set(this.paneIds());
+    for (const d of this.drawings.serialize()) {
+      const pane = d.paneId ?? "main";
+      if (!panes.has(pane)) this.drawings.remove(d.id, false);
+    }
   }
 
   /** @internal Layers added by plugins (rendered between series decorations and drawings). */
@@ -835,6 +926,10 @@ export class ChartImpl implements ChartApi {
       d = new Decorations({
         indexOfTime: (t) => st.indexOfTime(t),
         markersEnabled: () => !this.derived,
+        scaleId: () => {
+          const ser = this.seriesById.get(id);
+          return ser && ser.type !== "candlestick" ? (ser.options() as { priceScaleId?: string }).priceScaleId ?? "right" : "right";
+        },
         valueAt: (i) => {
           const rec = st.series.get(id);
           if (!rec || i < 0 || i >= st.times.length) return null;
@@ -892,18 +987,33 @@ export class ChartImpl implements ChartApi {
       bar: (i) => (this.derived ? this.derived.bars[i] : st.bars[i]),
       barCount: () => this.axisLength(),
       domain: () => (this.derived ? "logical" : "time"),
-      geometry: () => {
+      geometry: (paneId = "main", scaleId = "right") => {
         const a = this.adapter;
-        const main = a.getPanes?.().find((p) => p.id === "main");
-        if (!main || !a.xOfIndex || !a.priceToY || !a.yToPrice || !a.getPlotWidth) return null;
+        const box = a.getPanes?.().find((p) => p.id === paneId);
+        if (!box || !a.xOfIndex || !a.priceToY || !a.yToPrice || !a.getPlotWidth) return null;
+        if (scaleId !== "right" && a.priceToY(1, paneId, scaleId) === null && a.priceToY(-1, paneId, scaleId) === null) return null;
         return {
           xOfIndex: (i) => a.xOfIndex!(i),
-          yOfPrice: (p) => a.priceToY!(p, "main") ?? NaN,
-          priceOfY: (y) => a.yToPrice!(y, "main") ?? NaN,
+          yOfPrice: (p) => a.priceToY!(p, paneId, scaleId) ?? NaN,
+          priceOfY: (y) => a.yToPrice!(y, paneId, scaleId) ?? NaN,
           width: a.getPlotWidth(),
-          top: main.top,
-          height: main.height,
+          top: box.top,
+          height: box.height,
         };
+      },
+      snapValues: (paneId, i) => {
+        const out: number[] = [];
+        for (const s of this.seriesById.values()) {
+          if (s.type === "candlestick" || this.paneOf(s.id) !== paneId) continue;
+          const rec = this.store.series.get(s.id)!;
+          out.push(rec.values[i], rec.values2?.[i] ?? NaN);
+        }
+        for (const ind of this.indicators.values()) {
+          const pane = ind.options().pane ?? (ind.definition().pane === "overlay" ? "overlay" : "separate");
+          const id = pane === "separate" ? `xind-${ind.id}` : pane;
+          if (id === paneId) for (const arr of Object.values(ind.aligned)) out.push(arr[i]);
+        }
+        return out.filter((v) => Number.isFinite(v));
       },
       fmt: (p) => this.fmtPrice(p),
       timeLabel: (t) => this.fmtTime(t),
@@ -938,15 +1048,15 @@ export class ChartImpl implements ChartApi {
     const i = Math.round(this.adapter.indexOfX(x));
     return i >= 0 && i < this.store.times.length ? this.store.times[i] : this.store.timeAt(i);
   }
-  priceToCoordinate(price: number, paneId = "main"): number | null {
+  priceToCoordinate(price: number, paneId = "main", scaleId = "right"): number | null {
     this.assertAlive();
     if (typeof price !== "number" || !Number.isFinite(price)) return null;
-    return this.adapter.priceToY?.(price, paneId) ?? null;
+    return this.adapter.priceToY?.(price, paneId, scaleId) ?? null;
   }
-  coordinateToPrice(y: number, paneId = "main"): number | null {
+  coordinateToPrice(y: number, paneId = "main", scaleId = "right"): number | null {
     this.assertAlive();
     if (!Number.isFinite(y)) return null;
-    return this.adapter.yToPrice?.(y, paneId) ?? null;
+    return this.adapter.yToPrice?.(y, paneId, scaleId) ?? null;
   }
 
   // ---------- drawings ----------
@@ -1025,6 +1135,38 @@ export class ChartImpl implements ChartApi {
     this.assertAlive();
     if (typeof handler !== "function") throw new XChartError("INVALID_HANDLER", `once("${String(type)}") expects a function`);
     return this.events.once(type, handler);
+  }
+
+  /** Removes a handler added with on(). */
+  off<K extends keyof ChartEvents>(type: K, handler: (payload: ChartEvents[K]) => void): boolean {
+    return this.events.off(type, handler);
+  }
+  /** Alias of on("click", …). */
+  subscribeClick(handler: (p: ChartEvents["click"]) => void): Unsubscribe {
+    return this.on("click", handler);
+  }
+  /** Aliases of saveLayout / loadLayout. */
+  exportLayout(options?: { includeData?: boolean }) {
+    return this.saveLayout(options);
+  }
+  importLayout(layout: unknown, options?: LayoutLoadOptions) {
+    return this.loadLayout(layout, options);
+  }
+  /** Time-scale facade (the same operations as the chart methods, grouped). */
+  timeScale() {
+    this.assertAlive();
+    return {
+      setVisibleRange: (r: VisibleTimeRange) => this.setVisibleRange(r),
+      getVisibleRange: () => this.getVisibleRange(),
+      setVisibleLogicalRange: (r: { from: number; to: number }) => this.setVisibleLogicalRange(r),
+      getVisibleLogicalRange: () => this.getVisibleLogicalRange(),
+      fitContent: () => this.fitContent(),
+      scrollToRealTime: () => this.scrollToRealTime(),
+      scrollBy: (bars: number) => this.scrollBy(bars),
+      timeToCoordinate: (t: number) => this.timeToCoordinate(t),
+      coordinateToTime: (x: number) => this.coordinateToTime(x),
+      subscribeVisibleTimeRangeChange: (h: (r: VisibleTimeRange) => void) => this.on("visibleRangeChange", (e) => h(e.range)),
+    };
   }
 
   /** Subscribes to a typed chart event; returns an unsubscribe function. */
@@ -1369,7 +1511,7 @@ export class ChartImpl implements ChartApi {
       extraPanes = p.panes;
       future = p.future;
     }
-    const scales = [...this.scaleOpts].map(([id, o]) => ({ id, margins: o.margins as { top: number; bottom: number } | undefined, visible: o.visible }));
+    const scales = this.scaleSpecs();
     const st = this.chartStyle as import("./chart-types.ts").TimeChartTypeStyle;
     const d = this.derived;
     const ds = d?.settings as Record<string, string | number | boolean | undefined> | undefined;
@@ -1395,7 +1537,10 @@ export class ChartImpl implements ChartApi {
     const keep = change.kind === "full" ? (before === undefined ? this.captureView() : before) : null;
     change = this.updateDisplayBars(change);
     this.adapter.render(this.model(), change);
-    if (change.kind === "full") this.syncLayers();
+    if (change.kind === "full") {
+      this.pruneOrphanDrawings();
+      this.syncLayers();
+    }
     if (keep) this.restoreView(keep);
     // Data under a stationary pointer may have changed: let the next frame re-emit.
     if (this.pointer && this.subs.size) this.lastKey = "";

@@ -76,6 +76,8 @@ export type DecorHost = {
   indexOfTime(t: number): number;
   /** False on price-based (logical-axis) charts: markers are anchored to market time. */
   markersEnabled?(): boolean;
+  /** Price scale of the series (decorations follow it). */
+  scaleId?(): string;
   /** Value(s) at an axis index: candles give OHLC, value series give the value in o/h/l/c. */
   valueAt(i: number): { o: number; h: number; l: number; c: number } | null;
   /** Newest and previous finite close/value. */
@@ -189,7 +191,10 @@ export class Decorations {
     this.lines.clear();
   }
 
-  draw(api: LayerApi) {
+  draw(api0: LayerApi) {
+    // Follow the series' own scale (overlay / left / pane scales).
+    const sid = this.host.scaleId?.() ?? "right";
+    const api: LayerApi = sid !== "right" && api0.scaleY ? { ...api0, yOfPrice: (p) => api0.scaleY!(sid, p) ?? NaN } : api0;
     const { ctx } = api;
     const w = api.pane.width;
     // Price lines

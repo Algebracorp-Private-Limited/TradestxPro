@@ -29,7 +29,8 @@ export type ChartLayout = {
   series: LayoutSeries[];
   indicators: LayoutIndicator[];
   drawings: unknown[];
-  priceScales: Record<string, { margins?: { top: number; bottom: number }; visible?: boolean }>;
+  /** Keyed by scale id (main pane) or "<pane ref>:<scale id>". */
+  priceScales: Record<string, { margins?: { top: number; bottom: number }; visible?: boolean; mode?: string; autoScale?: boolean; range?: [number, number]; invert?: boolean; precision?: number; minMove?: number }>;
   /** Pane refs: "main", "series:<n>" (n-th series), "indicator:<n>" or a named pane id. */
   panes: { sizes?: Record<string, number>; collapsed: string[]; order: string[] };
   session?: { calendar: string } | null;

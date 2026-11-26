@@ -42,6 +42,8 @@ export type DrawingSpec = {
   domain?: DrawingDomain;
   /** Pane the drawing lives on (default "main"). Prices are values of that pane's scale. */
   paneId?: string;
+  /** Price scale of the pane the anchors refer to (default the pane's right scale). */
+  scaleId?: string;
   /** A built-in tool or a tool registered on the chart (plugins). */
   type: DrawingType | (string & {});
   points: DrawingPoint[];
@@ -52,7 +54,7 @@ export type DrawingSpec = {
 };
 
 /** Serialised drawing (JSON-safe). */
-export type DrawingData = Required<Pick<DrawingSpec, "id" | "type" | "points" | "locked" | "visible">> & { style: DrawingStyle; text?: string; domain?: DrawingDomain; paneId?: string };
+export type DrawingData = Required<Pick<DrawingSpec, "id" | "type" | "points" | "locked" | "visible">> & { style: DrawingStyle; text?: string; domain?: DrawingDomain; paneId?: string; scaleId?: string };
 /** Rendering/hit-testing environment given to drawing tools (see tools.ts). */
 export type { ToolEnv, ToolSpec } from "./tools.ts";
 

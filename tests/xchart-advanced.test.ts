@@ -166,7 +166,7 @@ test("layouts: save is JSON-safe, allow-listed and excludes market data by defau
   assert.deepEqual(L.indicators.map((i) => [i.type, i.params.length ?? i.params.period]), [["sma", 7], ["rsi", 10]]);
   assert.deepEqual(L.priceScales, { vol: { margins: { top: 0.75, bottom: 0 } } });
   assert.deepEqual(L.panes.collapsed, ["indicator:1"], "pane ids are saved as portable references");
-  assert.equal(L.panes.sizes!["series:2"], 120);
+  assert.equal(L.panes.sizes!["series:2"], 121, "slot height: 120 px pane + 1 px separator");
   assert.deepEqual(L.session, { calendar: "NSE" });
   assert.equal(L.drawings.length, 1);
   const withData = chart.saveLayout({ includeData: true });

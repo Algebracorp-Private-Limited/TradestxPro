@@ -30,6 +30,11 @@ export class Emitter<Events extends Record<string, unknown>> {
     return off;
   }
 
+  /** Removes a handler added with on() (the unsubscribe function returned by on() does the same). */
+  off<K extends keyof Events>(type: K, handler: Handler<Events[K]>): boolean {
+    return this.handlers.get(type)?.delete(handler as Handler<never>) ?? false;
+  }
+
   has(type: keyof Events): boolean {
     return (this.handlers.get(type)?.size ?? 0) > 0;
   }
