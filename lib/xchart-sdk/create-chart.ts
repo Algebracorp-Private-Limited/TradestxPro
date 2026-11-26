@@ -171,6 +171,8 @@ export class ChartImpl implements ChartApi {
   private graphRev = -1;
   /** First input bar changed since the graph's last sync (undefined = unknown → compare). */
   private pendingFrom: number | undefined = undefined;
+  /** Series used as the benchmark input of correlation/beta/alpha-type indicators. */
+  private benchmarkId: number | null = null;
   private decorations = new Map<number, Decorations>();
   private drawingSubs = new Set<(e: DrawingEvent) => void>();
   private drawings: DrawingManager;
@@ -1082,6 +1084,13 @@ export class ChartImpl implements ChartApi {
    */
   private patchInput(change: Change, isCandle: boolean) {
     const c = this.inputCache;
+    if (this.benchmarkId !== null && !isCandle) {
+      // The benchmark series moved: rebuild the aligned input.
+      this.inputCache = null;
+      this.pendingFrom = undefined;
+      this.inputRev++;
+      return;
+    }
     const drop = () => {
       this.inputCache = null;
       this.pendingFrom = undefined;
@@ -1098,8 +1107,10 @@ export class ChartImpl implements ChartApi {
     if (isCandle) {
       const cs = st.candle()!;
       const p = cs.points[cs.points.length - 1] as CandlestickData;
+      const bs = this.benchmarkId !== null ? st.series.get(this.benchmarkId) : undefined;
       const at = (i: number) => {
         inp.time[i] = p.time; inp.open[i] = p.open; inp.high[i] = p.high; inp.low[i] = p.low; inp.close[i] = p.close; inp.volume[i] = p.volume ?? 0;
+        if (inp.benchmark && bs) inp.benchmark[i] = bs.values[search(st.times, p.time)] ?? NaN;
       };
       if (n && inp.time[n - 1] === p.time) {
         at(n - 1);
@@ -1155,6 +1166,8 @@ export class ChartImpl implements ChartApi {
       }
     }
     const input: IndicatorInput = { time, open, high, low, close, volume, intraday: st.intraday(), revision: 0 };
+    const bs = this.benchmarkId !== null ? st.series.get(this.benchmarkId) : undefined;
+    if (bs) input.benchmark = axisIdx.map((i) => (bs.type === "candlestick" ? st.bars[i].c : bs.values[i]));
     const value = time.length ? { input, axisIdx, axisLength: st.times.length } : null;
     this.inputCache = { version: key, value };
     this.pendingFrom = undefined; // rebuilt: the graph compares against its committed copy
@@ -1168,11 +1181,46 @@ export class ChartImpl implements ChartApi {
     return any;
   }
 
+  /**
+   * Sets the series used as the benchmark input of indicators that require one (rolling
+   * correlation, covariance, beta, alpha). Values are aligned to the candles by time; bars where
+   * the benchmark has no value are NaN (never filled in). null clears it.
+   */
+  setBenchmarkSeries(series: SeriesApi<ChartSeriesType> | null): void {
+    this.assertAlive();
+    if (series === null) {
+      if ([...this.indicators.values()].some((i) => i.definition().requires?.includes("benchmark"))) throw new XChartError("INDICATOR_IN_USE", "Remove the indicators that use the benchmark first");
+      this.benchmarkId = null;
+    } else {
+      const id = (series as unknown as { id?: number }).id;
+      if (typeof id !== "number" || !this.seriesById.has(id)) throw new XChartError("SERIES_REMOVED", "setBenchmarkSeries needs a series of this chart");
+      this.benchmarkId = id;
+    }
+    this.inputCache = null;
+    this.pendingFrom = undefined;
+    for (const i of this.indicators.values()) i.invalidate("full");
+    this.render({ kind: "full" });
+  }
+
+  /** Indicator discovery (see IndicatorRegistry.search). */
+  searchIndicators(q: Parameters<IndicatorRegistry["search"]>[0] = {}): IndicatorDefinition[] {
+    return this.registry.search(q);
+  }
+  /** Whether an indicator can run on this chart's data, with reasons when not. */
+  indicatorCompatibility(id: string): { ok: boolean; reasons: string[] } {
+    const st = this.store;
+    const hasVolume = st.bars.some((b) => b.v > 0);
+    return this.registry.compatibility(id, { hasVolume, hasBenchmark: this.benchmarkId !== null, derived: this.derived !== null });
+  }
+
   /** Adds an indicator. `config` mixes calculation parameters (e.g. period) and display options (color, pane...). */
   addIndicator(type: string, config: Record<string, unknown> = {}): IndicatorApi {
     this.assertAlive();
     const def = this.registry.get(type);
     if (!def) throw new XChartError("UNKNOWN_INDICATOR", `Unknown indicator "${type}". Registered: ${this.registry.list().map((d) => d.id).join(", ")}`);
+    if (def.requires?.includes("benchmark") && this.benchmarkId === null) {
+      throw new XChartError("MISSING_INPUT", `"${type}" needs a benchmark series: call chart.setBenchmarkSeries(series) first (no benchmark data is assumed or fabricated)`);
+    }
     if (!config || typeof config !== "object") throw new XChartError("INVALID_OPTION", "addIndicator config must be an object");
     const OPTION_KEYS = ["color", "colors", "lineWidth", "lineStyle", "pane", "priceScaleId", "visible", "title", "hiddenOutputs", "fills"];
     const opts: Record<string, unknown> = {};
@@ -1262,6 +1310,11 @@ export class ChartImpl implements ChartApi {
   /** @internal Removes a series (its unique timestamps leave the shared axis). */
   detachSeries(s: AnySeries) {
     if (this.removed || !this.seriesById.has(s.id)) return;
+    if (this.benchmarkId === s.id) {
+      // Indicators needing the benchmark cannot continue without it: they are removed, not left with silent NaNs.
+      for (const i of [...this.indicators.values()]) if (i.definition().requires?.includes("benchmark")) i.remove();
+      this.benchmarkId = null;
+    }
     const keep = this.captureView();
     this.seriesById.delete(s.id);
     this.decorations.get(s.id)?.clear();

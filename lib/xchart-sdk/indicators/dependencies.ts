@@ -18,7 +18,7 @@ import { Checkpoints } from "./checkpoints.ts";
 import { XChartError } from "../validation.ts";
 
 /** Columnar input (existing bars only). */
-export type StreamInput = { time: ArrayLike<number>; open: ArrayLike<number>; high: ArrayLike<number>; low: ArrayLike<number>; close: ArrayLike<number>; volume: ArrayLike<number> };
+export type StreamInput = { time: ArrayLike<number>; open: ArrayLike<number>; high: ArrayLike<number>; low: ArrayLike<number>; close: ArrayLike<number>; volume: ArrayLike<number>; benchmark?: ArrayLike<number> };
 
 type Entry = { def: NodeDef; state: Kernel; refs: number; slot: number; outputs: number; values: number[] | null };
 
@@ -34,9 +34,9 @@ export class StreamGraph {
   private dirty = true; // rebuild from scratch on the next sync
   /** Nodes added to an already-initialised graph: replayed alone over the committed history. */
   private pending = new Set<string>();
-  private copy: { t: number[]; o: number[]; h: number[]; l: number[]; c: number[]; v: number[] } = { t: [], o: [], h: [], l: [], c: [], v: [] };
+  private copy: { t: number[]; o: number[]; h: number[]; l: number[]; c: number[]; v: number[]; b: number[] } = { t: [], o: [], h: [], l: [], c: [], v: [], b: [] };
   private checkpoints = new Checkpoints<Kernel[]>(4096);
-  private row: Row = { t: 0, o: 0, h: 0, l: 0, c: 0, v: 0 };
+  private row: Row = { t: 0, o: 0, h: 0, l: 0, c: 0, v: 0, b: NaN };
   /** First bar index whose outputs changed in the last sync (Infinity when nothing changed). */
   changedFrom = Infinity;
   readonly stats: GraphStats = { nodes: 0, shared: 0, committed: 0, rebuilds: 0, replays: 0, lastSyncMs: 0 };
@@ -110,7 +110,7 @@ export class StreamGraph {
     const vals = new Float64Array(this.order.length), aux = new Float64Array(this.order.length);
     const c = this.copy, r = this.row;
     for (let i = 0; i < this.committed; i++) {
-      r.t = c.t[i]; r.o = c.o[i]; r.h = c.h[i]; r.l = c.l[i]; r.c = c.c[i]; r.v = c.v[i];
+      r.t = c.t[i]; r.o = c.o[i]; r.h = c.h[i]; r.l = c.l[i]; r.c = c.c[i]; r.v = c.v[i]; r.b = c.b[i];
       for (let k = 0; k < sub.length; k++) {
         const x = temp[k].step(i, r, vals, aux, sub[k].slot);
         vals[sub[k].slot] = x;
@@ -183,6 +183,7 @@ export class StreamGraph {
     r.l = inp.low[i];
     r.c = inp.close[i];
     r.v = inp.volume[i];
+    r.b = inp.benchmark ? inp.benchmark[i] : NaN;
   }
 
   /** Folds bar i into the committed states (in place). */
@@ -195,7 +196,7 @@ export class StreamGraph {
       if (e.values) e.values[i] = x;
     }
     const c = this.copy;
-    c.t[i] = row.t; c.o[i] = row.o; c.h[i] = row.h; c.l[i] = row.l; c.c[i] = row.c; c.v[i] = row.v;
+    c.t[i] = row.t; c.o[i] = row.o; c.h[i] = row.h; c.l[i] = row.l; c.c[i] = row.c; c.v[i] = row.v; c.b[i] = row.b;
     this.committed = i + 1;
     if (this.checkpoints.due(this.committed)) this.checkpoints.put(this.committed, this.order.map((e) => e.state.clone()));
   }
@@ -216,9 +217,8 @@ export class StreamGraph {
   private firstDiff(inp: StreamInput, limit: number): number {
     const c = this.copy;
     for (let i = 0; i < limit; i++) {
-      if (inp.time[i] !== c.t[i] || inp.open[i] !== c.o[i] || inp.high[i] !== c.h[i] || inp.low[i] !== c.l[i] || inp.close[i] !== c.c[i] || inp.volume[i] !== c.v[i]) {
-        if (!(Number.isNaN(inp.volume[i]) && Number.isNaN(c.v[i]))) return i;
-      }
+      const b = inp.benchmark ? inp.benchmark[i] : NaN;
+      if (inp.time[i] !== c.t[i] || inp.open[i] !== c.o[i] || inp.high[i] !== c.h[i] || inp.low[i] !== c.l[i] || inp.close[i] !== c.c[i] || !Object.is(inp.volume[i], c.v[i]) || !Object.is(b, c.b[i])) return i;
     }
     return limit;
   }

@@ -16,7 +16,8 @@ export type {
 // v0.3 — indicators, drawings, markers, price lines, events
 export { BUILTIN_INDICATORS } from "./indicators/builtins.ts";
 export { IndicatorRegistry } from "./indicators/registry.ts";
-export { builtinRegistry, defaultRegistry, registerIndicator, unregisterIndicator, listIndicators, getIndicatorDefinition } from "./indicators/index.ts";
+export { ALL_BUILTIN_INDICATORS, NATIVE_INDICATORS, builtinRegistry, defaultRegistry, registerIndicator, unregisterIndicator, listIndicators, getIndicatorDefinition } from "./indicators/index.ts";
+export type { CatalogMeta, Category as IndicatorCategory, NativeDefinition } from "./indicators/native/index.ts";
 export type { IndicatorApi, IndicatorDefinition, IndicatorInput, IndicatorOptions, IndicatorParams, IndicatorPoint, IndicatorResult, IndicatorSource, OutputDef, ParamSchema } from "./indicators/types.ts";
 export { DRAWING_TYPES } from "./drawings/types.ts";
 export type { DrawingApi, DrawingData, DrawingEvent, DrawingPoint, DrawingSpec, DrawingStyle, DrawingType } from "./drawings/types.ts";

@@ -282,6 +282,37 @@ function builtinStream(id: string, P: Record<string, number>, srcName: S.SourceN
   return null;
 }
 
+const MISSING = "Bars that do not exist on the time axis (gaps) are skipped; values are written back to their bars.";
+const BUILTIN_META: Record<string, { formula: string; conventions?: string; limitations?: string; repaint?: string }> = {
+  sma: { formula: "SMA = Σx/n over the last n values." },
+  ema: { formula: "EMA = α·x + (1 − α)·EMA[1], α = 2/(n+1), seeded with the SMA of the first n values." },
+  wma: { formula: "WMA = Σ (n − k)·x[k] / (n(n+1)/2), k = 0 newest." },
+  hma: { formula: "HMA = WMA(2·WMA(x, n/2) − WMA(x, n), √n)." },
+  bb: { formula: "Mid = SMA(x,n); Upper/Lower = Mid ± m·σ (population σ)." },
+  keltner: { formula: "Mid = EMA(C,n); Upper/Lower = Mid ± m·ATR(atr) (Wilder)." },
+  donchian: { formula: "Upper = HH(H,n); Lower = LL(L,n); Mid = (Upper + Lower)/2." },
+  supertrend: { formula: "Bands = hl2 ± m·ATR(n) with trailing rules; the line follows the lower band in an uptrend and the upper band in a downtrend; direction flips when the close crosses the active band." },
+  psar: { formula: "SAR = SAR[1] + AF·(EP − SAR[1]); AF starts at step, +step on each new extreme, capped at max; reverses when price crosses the SAR." },
+  vwap: { formula: "VWAP = Σ(src·V)/ΣV within each anchor period (IST session/week/month); bands = VWAP ± m·σ_vw or ± m%.", conventions: "Anchors follow the India Standard Time calendar." },
+  ichimoku: { formula: "Tenkan/Kijun/Span B = (HH + LL)/2 over 9/26/52; Span A = (Tenkan + Kijun)/2; spans plotted displacement − 1 bars ahead; Chikou = close plotted displacement − 1 bars back.", repaint: "Projected spans occupy future slots without candles; Chikou is a lagging display of past closes." },
+  rsi: { formula: "RSI = 100 − 100/(1 + RMA(up,n)/RMA(down,n)), Wilder smoothing." },
+  macd: { formula: "MACD = EMA(f) − EMA(s); Signal = EMA(MACD, k); Hist = MACD − Signal." },
+  stoch: { formula: "%K raw = 100·(C − LL)/(HH − LL) (50 when HH = LL); %K = SMA(raw, smooth); %D = SMA(%K, d)." },
+  adx: { formula: "±DI = 100·RMA(±DM)/RMA(TR); DX = 100·|+DI − −DI|/(+DI + −DI); ADX = RMA(DX)." },
+  atr: { formula: "ATR = RMA(TR, n), TR = max(H − L, |H − C[1]|, |L − C[1]|)." },
+  cci: { formula: "CCI = (TP − SMA(TP))/(0.015·mean absolute deviation), TP = (H+L+C)/3." },
+  mfi: { formula: "MFI = 100 − 100/(1 + Σpositive flow/Σnegative flow), flow = TP·V." },
+  willr: { formula: "%R = −100·(HH − C)/(HH − LL) (−50 when HH = LL)." },
+  roc: { formula: "ROC = 100·(x − x[n])/x[n]." },
+  obv: { formula: "OBV = Σ ±V by close direction (0 when unchanged).", limitations: "Cumulative: the level depends on where the history starts." },
+  volume: { formula: "Volume histogram and SMA(V, n).", limitations: "Shows nothing when no bar has volume (e.g. index data)." },
+};
+
+for (const b of BUILTIN_INDICATORS) {
+  const m = BUILTIN_META[b.id];
+  if (m) b.meta = { incremental: "exact", missing: MISSING, ...m };
+}
+
 for (const b of BUILTIN_INDICATORS) {
   const cat = INDICATORS.find((d) => d.id === b.id)!;
   if (!builtinStream(b.id, toCatalogParams(cat, Object.fromEntries(b.params.map((p) => [p.key, p.default]))), "close", true)) continue;

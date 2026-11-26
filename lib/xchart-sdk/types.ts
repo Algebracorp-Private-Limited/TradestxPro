@@ -246,6 +246,9 @@ export interface ChartApi {
   on<K extends keyof ChartEvents>(type: K, handler: (payload: ChartEvents[K]) => void): Unsubscribe;
   once<K extends keyof ChartEvents>(type: K, handler: (payload: ChartEvents[K]) => void): Unsubscribe;
   addIndicator(type: string, config?: Record<string, unknown>): IndicatorApi;
+  setBenchmarkSeries(series: SeriesApi<ChartSeriesType> | null): void;
+  searchIndicators(q?: { text?: string; category?: string; requires?: string; incremental?: boolean; param?: string }): IndicatorDefinition[];
+  indicatorCompatibility(id: string): { ok: boolean; reasons: string[] };
   getIndicators(): IndicatorApi[];
   removeIndicator(indicator: IndicatorApi | string): boolean;
   registerIndicator(definition: IndicatorDefinition): void;

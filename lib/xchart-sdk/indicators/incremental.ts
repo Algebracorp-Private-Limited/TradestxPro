@@ -11,7 +11,8 @@
  * evaluated on clones, so replacing the live candle any number of times never advances a
  * recursive calculation twice.
  */
-export type Row = { t: number; o: number; h: number; l: number; c: number; v: number };
+/** One bar. `b` is the benchmark value at this bar (NaN when no benchmark series is set). */
+export type Row = { t: number; o: number; h: number; l: number; c: number; v: number; b: number };
 
 /** Runtime state of one node. `d` holds the value slots of its dependencies (assigned by the graph). */
 export abstract class Kernel {
@@ -35,7 +36,7 @@ export type NodeDef = {
 const node = (key: string, deps: NodeDef[], create: () => Kernel): NodeDef => ({ key, deps, create });
 
 // ---------- sources ----------
-export type SourceName = "open" | "high" | "low" | "close" | "volume" | "hl2" | "hlc3" | "ohlc4" | "time";
+export type SourceName = "open" | "high" | "low" | "close" | "volume" | "hl2" | "hlc3" | "ohlc4" | "time" | "benchmark";
 class SourceK extends Kernel {
   private f: (r: Row) => number;
   constructor(f: (r: Row) => number) {
@@ -50,7 +51,7 @@ class SourceK extends Kernel {
   }
 }
 const SOURCES: Record<SourceName, (r: Row) => number> = {
-  open: (r) => r.o, high: (r) => r.h, low: (r) => r.l, close: (r) => r.c, volume: (r) => r.v, time: (r) => r.t,
+  open: (r) => r.o, high: (r) => r.h, low: (r) => r.l, close: (r) => r.c, volume: (r) => r.v, time: (r) => r.t, benchmark: (r) => r.b,
   hl2: (r) => (r.h + r.l) / 2,
   hlc3: (r) => (r.h + r.l + r.c) / 3,
   ohlc4: (r) => (r.o + r.h + r.l + r.c) / 4,
@@ -697,4 +698,57 @@ export class ReducerK<S> extends Kernel {
 /** A node defined by a reducer over its dependencies. `id` must uniquely describe the reducer and its parameters. */
 export function reducer<S>(id: string, deps: NodeDef[], init: () => S, fn: (s: S, i: number, r: Row, x: number[]) => number, copy: (s: S) => S): NodeDef {
   return node(`red:${id}(${deps.map((d) => d.key).join(",")})`, deps, () => new ReducerK(init, fn, copy));
+}
+
+/**
+ * Generic rolling-window node: keeps the last n values of each dependency and evaluates `fn` once
+ * n consecutive bars have valid (non-NaN) values in every dependency; a NaN restarts the count.
+ * `get(d, k)` = value of dependency d, k bars ago (k = 0 is the current bar). Exact (no running sums).
+ */
+class RollingK extends Kernel {
+  ws: Window[];
+  count = 0;
+  private n: number;
+  private fn: (get: (d: number, k: number) => number, n: number, i: number, r: Row) => number;
+  constructor(n: number, deps: number, fn: (get: (d: number, k: number) => number, n: number, i: number, r: Row) => number) {
+    super();
+    this.n = n;
+    this.fn = fn;
+    this.ws = Array.from({ length: deps }, () => new Window(n));
+  }
+  step(i: number, r: Row, v: Float64Array) {
+    let ok = true;
+    for (let k = 0; k < this.ws.length; k++) {
+      const x = v[this.d[k]];
+      this.ws[k].push(i, x);
+      if (Number.isNaN(x)) ok = false;
+    }
+    this.count = ok ? this.count + 1 : 0;
+    if (this.count < this.n) return NaN;
+    return this.fn((d, k) => this.ws[d].at(i, k), this.n, i, r);
+  }
+  clone() {
+    const k = this.base(new RollingK(this.n, 0, this.fn));
+    k.ws = this.ws.map((w) => w.clone());
+    k.count = this.count;
+    return k;
+  }
+}
+/** `id` must uniquely describe `fn` (and its parameters). */
+export const rolling = (id: string, deps: NodeDef[], n: number, fn: (get: (d: number, k: number) => number, n: number, i: number, r: Row) => number): NodeDef =>
+  node(`roll:${id}(${deps.map((d) => d.key).join(",")};${n})`, deps, () => new RollingK(n, deps.length, fn));
+
+/** Running sum of the last n values (NaN until n values; a NaN restarts). Exact loop. */
+export const sum = (x: NodeDef, n: number): NodeDef => rolling("sum", [x], n, (g, m) => {
+  let s = 0;
+  for (let k = m - 1; k >= 0; k--) s += g(0, k);
+  return s;
+});
+
+/** Calendar period key of a bar time in IST (same convention as VWAP anchors). */
+export function periodKey(t: number, period: "day" | "week" | "month"): string {
+  const d = new Date((t + 19800) * 1000);
+  if (period === "month") return `${d.getUTCFullYear()}-${d.getUTCMonth()}`;
+  if (period === "week") return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - ((d.getUTCDay() + 6) % 7))).toISOString().slice(0, 10);
+  return d.toISOString().slice(0, 10);
 }

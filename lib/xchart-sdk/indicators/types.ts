@@ -52,6 +52,8 @@ export type IndicatorInput = {
   volume: number[];
   /** True when the series has real intraday timestamps. */
   intraday: boolean;
+  /** Benchmark series values aligned to the bars (chart.setBenchmarkSeries); absent when none is set. */
+  benchmark?: number[];
 };
 
 export type IndicatorParams = Record<string, number | boolean | string>;
@@ -92,6 +94,8 @@ export interface IndicatorDefinition {
    * other indicators. `calculate` remains the reference full calculation.
    */
   stream?(p: IndicatorParams, ctx: { intraday: boolean }): StreamSpec;
+  /** Catalogue metadata: formula, incremental support, missing-data policy, conventions, limitations. */
+  meta?: { formula: string; incremental: "exact" | "full"; missing: string; conventions?: string; limitations?: string; repaint?: string };
   /** Data beyond OHLC that the indicator needs ("volume", "time" for session resets, …). Used to decide where it is meaningful (e.g. not on price-based charts, which have no volume). */
   requires?: string[];
 }
