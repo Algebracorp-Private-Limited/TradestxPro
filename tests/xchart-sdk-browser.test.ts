@@ -13,10 +13,13 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import * as nodeModule from "node:module";
 import { join, normalize } from "node:path";
+import { createServer, type Server } from "node:http";
 
 const require = createRequire(import.meta.url);
 const ROOT = join(import.meta.dirname, "..");
-const ORIGIN = "http://xchart.test";
+/** Browser engine: chromium (default), firefox or webkit (XCHART_BROWSER). */
+const ENGINE = (process.env.XCHART_BROWSER ?? "chromium") as "chromium" | "firefox" | "webkit";
+let ORIGIN = "";
 const REQUIRED = process.env.XCHART_REQUIRE_BROWSER === "1";
 const strip = (nodeModule as unknown as { stripTypeScriptTypes?: (code: string) => string }).stripTypeScriptTypes;
 
@@ -40,14 +43,56 @@ async function launch(t: { skip: (m: string) => void }): Promise<Any | null> {
   if (!strip) return unavailable("node:module stripTypeScriptTypes is unavailable (Node ≥ 22.13 needed)");
   if (!pw) return unavailable(`playwright is not installed (${loadError})`);
   try {
-    return await pw.chromium.launch();
+    await ensureServer();
+    return await pw[ENGINE].launch();
   } catch (e) {
-    return unavailable(`Chromium could not start: ${(e as Error).message.split("\n")[0]}`);
+    return unavailable(`${ENGINE} could not start: ${(e as Error).message.split("\n")[0]}`);
   }
 }
 
+/**
+ * Local HTTP server for the test page and the unbundled SDK (TypeScript stripped by Node). A real
+ * server (instead of request interception) lets module Web Workers load identically in every engine.
+ */
+let server: Server | null = null;
+async function ensureServer() {
+  if (server) return;
+  server = createServer((req, res) => {
+    const path = decodeURIComponent(new URL(req.url ?? "/", "http://x").pathname);
+    if (path === "/") {
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end(PAGE);
+    }
+    const file = normalize(join(ROOT, path));
+    if (!file.startsWith(ROOT) || !file.endsWith(".ts")) {
+      res.writeHead(404);
+      return res.end("");
+    }
+    try {
+      const body = strip!(readFileSync(file, "utf8"));
+      res.writeHead(200, { "content-type": "text/javascript" });
+      res.end(body);
+    } catch {
+      res.writeHead(404);
+      res.end("");
+    }
+  });
+  await new Promise<void>((r) => server!.listen(0, "127.0.0.1", () => r()));
+  const addr = server.address();
+  ORIGIN = `http://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 0}`;
+  server.unref();
+}
+
+/** Engine-specific capability gaps are skipped with an explicit, logged reason (never silently). */
+function engineSkip(t: { skip: (m: string) => void }, engines: string[], why: string): boolean {
+  if (!engines.includes(ENGINE)) return false;
+  console.log(`    [${ENGINE}] skipped by design: ${why}`);
+  t.skip(`[${ENGINE}] ${why}`);
+  return true;
+}
+
 // Test page: two chart containers plus pixel helpers. W×H chosen so plot width = 600 (axis = 70).
-const PAGE = `<!doctype html><html><body style="margin:0;background:#000">
+const PAGE = `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0;background:#000">
 <div id="a" style="width:670px;height:400px"></div><div id="b" style="width:400px;height:240px"></div>
 <script type="module">
   // Instrument global listeners/observers to prove cleanup.
@@ -93,13 +138,6 @@ async function openPage(browser: Any) {
   const page = await browser.newPage({ viewport: { width: 900, height: 800 }, deviceScaleFactor: 1 });
   const errors: string[] = [];
   page.on("pageerror", (e: Error) => errors.push(e.message));
-  await page.route(`${ORIGIN}/**`, async (route: Any) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === "/") return route.fulfill({ contentType: "text/html", body: PAGE });
-    const file = normalize(join(ROOT, path));
-    if (!file.startsWith(ROOT) || !file.endsWith(".ts")) return route.fulfill({ status: 404, body: "" });
-    return route.fulfill({ contentType: "text/javascript", body: strip!(readFileSync(file, "utf8")) });
-  });
   await page.goto(ORIGIN + "/");
   await page.waitForFunction(() => (window as unknown as { ready?: boolean }).ready === true, null, { timeout: 15000 });
   return { page, errors };
@@ -699,19 +737,13 @@ test("browser: price-based chart types render real geometry (Renko, Kagi, P&F X/
 });
 
 test("browser: touch creates a logical-domain drawing on a Renko chart", async (t) => {
+  if (engineSkip(t, ["firefox"], "Playwright cannot emulate touch input (hasTouch) in Firefox")) return;
   const browser = await launch(t);
   if (!browser) return;
   try {
     const page = await (await browser.newContext({ hasTouch: true, viewport: { width: 900, height: 800 } })).newPage();
     const errors: string[] = [];
     page.on("pageerror", (e: Error) => errors.push(e.message));
-    await page.route(`${ORIGIN}/**`, async (route: Any) => {
-      const path = new URL(route.request().url()).pathname;
-      if (path === "/") return route.fulfill({ contentType: "text/html", body: PAGE });
-      const file = normalize(join(ROOT, path));
-      if (!file.startsWith(ROOT) || !file.endsWith(".ts")) return route.fulfill({ status: 404, body: "" });
-      return route.fulfill({ contentType: "text/javascript", body: strip!(readFileSync(file, "utf8")) });
-    });
     await page.goto(ORIGIN + "/");
     await page.waitForFunction(() => (window as unknown as { ready?: boolean }).ready === true, null, { timeout: 15000 });
     await page.evaluate(`(async () => { const chart = X.createChart(document.getElementById("a")); chart.addCandlestickSeries().setData(mk(80)); chart.setChartType("renko", { size: 1 }); chart.setDrawingTool("rectangle"); window.chart = chart; await frame(); })()`);
@@ -863,6 +895,61 @@ test("browser: independent scales (log / inverted / percentage per scale) and RS
     assert.equal(await page.evaluate(`chart.selectedDrawing()`), null);
     await page.evaluate(`chart.remove()`);
   });
+});
+
+test("browser: high-DPI canvas, container resize and a mobile viewport", async (t) => {
+  const browser = await launch(t);
+  if (!browser) return;
+  try {
+    // High-DPI: the backing store follows devicePixelRatio; drawing stays crisp and aligned.
+    const hd = await browser.newPage({ viewport: { width: 900, height: 800 }, deviceScaleFactor: 2 });
+    await hd.goto(ORIGIN + "/");
+    await hd.waitForFunction(() => (window as unknown as { ready?: boolean }).ready === true, null, { timeout: 15000 });
+    const r = await hd.evaluate(`(async () => {
+      const el = document.getElementById("a");
+      const chart = X.createChart(el, {});
+      chart.addCandlestickSeries({ upColor: "#00ff00", downColor: "#ff0000" }).setData(mk(40));
+      await frame();
+      const cv = el.querySelector("canvas");
+      const out = { css: [cv.clientWidth, cv.clientHeight], px: [cv.width, cv.height], green: count(cv.getContext("2d").getImageData(0, 0, cv.width, cv.height), is.green) };
+      el.style.width = "500px"; el.style.height = "300px";
+      await new Promise((r) => setTimeout(r, 120)); await frame(); await frame();
+      out.resized = [cv.clientWidth, cv.clientHeight, cv.width, cv.height];
+      out.plot = chart.timeToCoordinate !== undefined && chart.getVisibleLogicalRange() !== null;
+      chart.remove();
+      return out;
+    })()`);
+    assert.deepEqual(r.css, [670, 400]);
+    assert.deepEqual(r.px, [1340, 800], "backing store at 2× device pixels");
+    assert.ok(r.green > 1000, `candles drawn at 2× (${r.green} px)`);
+    assert.deepEqual(r.resized, [500, 300, 1000, 600], "canvas follows the container size");
+    await hd.close();
+    // Mobile viewport (375×667, DPR 3); isMobile is unavailable in Firefox, the viewport itself is tested everywhere.
+    const mobile = await browser.newPage({ viewport: { width: 375, height: 667 }, deviceScaleFactor: 3, ...(ENGINE === "firefox" ? {} : { isMobile: true, hasTouch: true }) });
+    await mobile.goto(ORIGIN + "/");
+    await mobile.waitForFunction(() => (window as unknown as { ready?: boolean }).ready === true, null, { timeout: 15000 });
+    const m = await mobile.evaluate(`(async () => {
+      const el = document.getElementById("b");
+      el.style.width = "100%"; el.style.height = "320px";
+      const chart = X.createChart(el, {});
+      chart.addCandlestickSeries({ upColor: "#00ff00", downColor: "#ff0000" }).setData(mk(80));
+      chart.addIndicator("rsi");
+      await frame();
+      const cv = el.querySelector("canvas");
+      const img = cv.getContext("2d").getImageData(0, 0, cv.width, cv.height);
+      const scroll = document.documentElement.scrollWidth <= window.innerWidth;
+      const out = { w: cv.clientWidth, dpr: cv.width / cv.clientWidth, drawn: count(img, is.green) + count(img, is.red), noHScroll: scroll };
+      chart.remove();
+      return out;
+    })()`);
+    assert.equal(m.w, 375);
+    assert.equal(m.dpr, 3);
+    assert.ok(m.drawn > 500, `candles drawn on the phone-sized chart (${m.drawn} px)`);
+    assert.equal(m.noHScroll, true, "no horizontal page scroll at phone width");
+    await mobile.close();
+  } finally {
+    await browser.close();
+  }
 });
 
 test("browser: benchmarks (1k / 10k / 50k candles)", { skip: process.env.XCHART_BENCH !== "1" && "set XCHART_BENCH=1 to run" }, async (t) => {
