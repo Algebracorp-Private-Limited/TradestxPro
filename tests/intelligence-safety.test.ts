@@ -44,7 +44,7 @@ test("every AI Intelligence route requires a signed-in user and checks a feature
 });
 
 test("routes that can return plan levels apply the regulatory presentation gate", () => {
-  const gated = ["equity/analyze", "options/analyze", "strategy/analyze", "futures/analyze", "scan/results", "tradevision", "tradevision/scenario", "plans"];
+  const gated = ["equity/analyze", "options/analyze", "strategy/analyze", "strategy/optimize", "futures/analyze", "scan/results", "tradevision", "tradevision/scenario", "plans", "watchlist"];
   for (const g of gated) {
     const s = readFileSync(join(ROOT, "app/api/intelligence", g, "route.ts"), "utf8");
     assert.match(s, /gate\(\)/, `${g} must evaluate the presentation gate`);
@@ -52,10 +52,10 @@ test("routes that can return plan levels apply the regulatory presentation gate"
 });
 
 test("costly routes are rate limited per user; plan-producing routes validate independently", () => {
-  for (const g of ["backtest", "strategy/analyze", "tradevision", "tradevision/scenario", "options/analyze", "options/compare", "equity/analyze", "futures/analyze", "option-chain/analyze"]) {
+  for (const g of ["backtest", "strategy/analyze", "strategy/optimize", "tradevision", "tradevision/scenario", "options/analyze", "options/compare", "equity/analyze", "futures/analyze", "option-chain/analyze", "paper", "watchlist"]) {
     assert.match(readFileSync(join(ROOT, "app/api/intelligence", g, "route.ts"), "utf8"), /rateLimit\(/, `${g} must be rate limited`);
   }
-  for (const g of ["options/analyze", "strategy/analyze", "equity/analyze", "futures/analyze"]) {
+  for (const g of ["options/analyze", "strategy/analyze", "strategy/optimize", "equity/analyze", "futures/analyze"]) {
     assert.match(readFileSync(join(ROOT, "app/api/intelligence", g, "route.ts"), "utf8"), /validation\/plans/, `${g} must validate plans`);
   }
   assert.match(readFileSync(join(ROOT, "lib/intelligence/market-scan/jobs.ts"), "utf8"), /applyEquityValidation/);

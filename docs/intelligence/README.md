@@ -13,7 +13,8 @@
 | Option-chain analysis, contract ranking, Greeks formulas, pricing models | [options.md](options.md) |
 | Strategy selection, payoff formulas, Futures AI, F&O scanner | [strategy-and-futures.md](strategy-and-futures.md) |
 | Chart specification schema, TradeVision, scenarios and risk calculations | [tradevision.md](tradevision.md) |
-| Monitoring architecture, backtesting methodology, performance evaluation | [monitoring.md](monitoring.md) |
+| Monitoring architecture, alerts, notifications, AI watchlist, backtesting, performance evaluation | [monitoring.md](monitoring.md) |
+| Paper trading (simulation) | [paper-trading.md](paper-trading.md) |
 | Security | [security.md](security.md) |
 | Regulatory dependencies and market-data licensing | [regulatory.md](regulatory.md) |
 
@@ -28,6 +29,7 @@ Developer platform: [`docs/developers/`](../developers). XChart: [`docs/xchart/`
 | `003-market-scan` | `scan_jobs`, `scan_results`, `scan_configs`, `fundamentals_companies` |
 | `004-fo-futures` | `fo_futures` |
 | `005-trade-monitoring` | `trade_plans`, `trade_plan_events`, `price_alerts` |
+| `007-paper-trading` | `paper_accounts`, `paper_orders`, `paper_positions`, `paper_fills` |
 | `006-alerts-notifications` | extended `price_alerts` conditions and `params`, `notifications`, `notification_settings`, `ai_watch_items` |
 
 To preview changes (dry run, the default), then apply them after review:
@@ -73,10 +75,8 @@ The migrator checksums each applied migration and refuses to run if an applied o
 **Charts and option workspaces**
 - Option-premium analytical charts.
 - A synchronised underlying + derivatives chart workspace.
-- Strategy optimisation by search over strikes and expiries (ranking covers the registry at ATM-relative strikes).
 
 **Trading and research tiers**
-- Paper-trading order simulation (`PAPER_TRADING`).
 - Live execution (blocked in code).
 - Forward-testing results (tracking exists; no results have accumulated).
 - Regulatory prerequisites for public advisory features (see [regulatory.md](regulatory.md)).

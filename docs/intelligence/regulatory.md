@@ -13,7 +13,7 @@ The official SEBI and exchange texts were **not** retrieved or verified for this
 | Research outputs: setups, scores, contract and strategy rankings, backtests, paper plans | **off** | `RESEARCH` |
 | Actionable levels: entry, stop, targets, strategy legs, futures plan levels | **off** | `ACTIONABLE_RECOMMENDATIONS` |
 | Personalised outputs: position size from the user's capital, cost of that size | **off** | `PERSONALIZED_RECOMMENDATIONS` |
-| Paper trading (simulated orders) | **off**, not built | `PAPER_TRADING` |
+| Paper trading (simulated orders on end-of-day data; never sent to a broker) | **off** | `PAPER_TRADING` |
 | Live execution | **can never be enabled**: `isEnabled("LIVE_EXECUTION")` always returns false (tested) | `LIVE_EXECUTION` |
 
 The gate is enforced on the server (`lib/intelligence/present.ts`, `presentFutures`). When a flag is off, the restricted fields are **removed from API responses**, not just hidden in the UI.

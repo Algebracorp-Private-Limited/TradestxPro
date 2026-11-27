@@ -12,10 +12,11 @@ import { MARKET_SCAN } from "./003-market-scan.ts";
 import { FO_FUTURES } from "./004-fo-futures.ts";
 import { TRADE_MONITORING } from "./005-trade-monitoring.ts";
 import { ALERTS_NOTIFICATIONS } from "./006-alerts-notifications.ts";
+import { PAPER_TRADING } from "./007-paper-trading.ts";
 
 export type Migration = { id: string; description: string; sql: string };
 
-export const MIGRATIONS: Migration[] = [DEVELOPER_ACCOUNTS, INTELLIGENCE_CORE, MARKET_SCAN, FO_FUTURES, TRADE_MONITORING, ALERTS_NOTIFICATIONS];
+export const MIGRATIONS: Migration[] = [DEVELOPER_ACCOUNTS, INTELLIGENCE_CORE, MARKET_SCAN, FO_FUTURES, TRADE_MONITORING, ALERTS_NOTIFICATIONS, PAPER_TRADING];
 
 /** Bookkeeping table for applied migrations. */
 export const MIGRATIONS_TABLE_SQL = `
