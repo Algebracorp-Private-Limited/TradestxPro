@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Info } from "./info";
+import { AIViewCell, type QuickView } from "@/components/intelligence/ai-view-cell";
+import { ContractPanel } from "@/components/intelligence/contract-panel";
 
 type Leg = {
   token: string; ltp: number | null; change: number | null; changePct: number | null; bid: number | null; bidQty: number | null; ask: number | null; askQty: number | null;
@@ -273,6 +275,9 @@ export function OptionsTerminal() {
   const [loading, setLoading] = useState(true);
   const [sel, setSel] = useState<Sel | null>(null);
   const [range, setRange] = useState(15);
+  const [views, setViews] = useState<{ key: string; map: Record<string, QuickView> | null; restricted: boolean; source: string | null } | null>(null);
+  const [panel, setPanel] = useState<Sel | null>(null);
+  const closePanel = useCallback(() => setPanel(null), []);
   const scrollRef = useRef<HTMLDivElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const loadRef = useRef<() => void>(() => {});
@@ -312,6 +317,25 @@ export function OptionsTerminal() {
     if (box && row) box.scrollTop = row.offsetTop - box.clientHeight / 2 + row.clientHeight / 2;
   }, [chain?.underlying, chain?.expiry, chain?.atm]);
 
+  // AI View cells: one deterministic request per underlying/expiry (no language model, none on hover).
+  const viewKey = chain ? `${chain.underlying}|${chain.expiry ?? ""}` : null;
+  useEffect(() => {
+    if (!viewKey) return;
+    const [vu, ve] = viewKey.split("|");
+    let alive = true;
+    const q = new URLSearchParams({ u: vu });
+    if (ve) q.set("expiry", ve);
+    fetch(`/api/intelligence/option-chain/analyze?${q}`).then(async (r) => {
+      const j = await r.json().catch(() => ({}));
+      if (!alive) return;
+      // Views computed for a different expiry (e.g. EOD fallback) are not shown against this chain.
+      const ok = r.ok && j.views && (!ve || j.expiry === ve);
+      setViews({ key: viewKey, map: ok ? j.views : null, restricted: !r.ok || j.viewsRestricted === true || !ok, source: ok ? j.source : null });
+    }, () => alive && setViews({ key: viewKey, map: null, restricted: true, source: null }));
+    return () => { alive = false; };
+  }, [viewKey]);
+  const viewMap = views?.key === viewKey ? views : null;
+
   const nav = (next: { u?: string; expiry?: string; exchange?: string }) => {
     const q = new URLSearchParams({ u: next.u ?? u });
     const ex = next.expiry ?? (next.u ? "" : expiry);
@@ -333,7 +357,7 @@ export function OptionsTerminal() {
     const picked = sel?.strike === strike && sel.side === side;
     const cls = `px-2 py-1.5 text-right font-mono cursor-pointer ${itm ? (side === "CE" ? "bg-up/[0.06]" : "bg-down/[0.06]") : ""} ${picked ? "outline outline-1 outline-accent" : ""}`;
     const click = () => leg && setSel({ strike, side });
-    if (!leg) return Array.from({ length: 6 }, (_, k) => <td key={side + k} className="px-2 py-1.5 text-center text-muted/40">·</td>);
+    if (!leg) return Array.from({ length: 9 }, (_, k) => <td key={side + k} className="px-2 py-1.5 text-center text-muted/40">·</td>);
     const oiBar = (
       <span className="relative block">
         <span aria-hidden className={`absolute inset-y-0 ${side === "CE" ? "right-0 bg-up/20" : "left-0 bg-down/20"}`} style={{ width: `${((leg.oi ?? 0) / maxOi) * 100}%` }} />
@@ -341,11 +365,16 @@ export function OptionsTerminal() {
       </span>
     );
     const cellsCE = [
+      <td key="ai" className={`px-1.5 py-1 ${side === "CE" ? "text-left" : "text-right"}`}>
+        <AIViewCell view={viewMap?.map?.[`${strike}|${side}`]} side={side} strike={strike} restricted={viewMap?.restricted} onOpen={() => setPanel({ strike, side })} />
+      </td>,
       <td key="oi" onClick={click} className={cls}>{oiBar}</td>,
       <td key="oic" onClick={click} className={`${cls} ${tone(leg.oiChange)}`}>{fi(leg.oiChange)}</td>,
       <td key="vol" onClick={click} className={`${cls} text-muted`}>{fi(leg.volume)}</td>,
       <td key="iv" onClick={click} className={cls}>{leg.iv !== null ? f(leg.iv * 100, 1) : "—"}</td>,
       <td key="d" onClick={click} className={`${cls} text-muted`}>{f(leg.delta, 2)}</td>,
+      <td key="bid" onClick={click} className={`${cls} text-muted`}>{f(leg.bid)}</td>,
+      <td key="ask" onClick={click} className={`${cls} text-muted`}>{f(leg.ask)}</td>,
       <td key="ltp" onClick={click} className={`${cls} font-semibold`}>
         {f(leg.ltp)}
         <span className={`block text-[10px] font-normal ${tone(leg.changePct)}`}>{leg.changePct !== null ? `${leg.changePct >= 0 ? "+" : ""}${f(leg.changePct, 1)}%` : ""}</span>
@@ -391,6 +420,7 @@ export function OptionsTerminal() {
         </dl>
         <div className="ml-auto flex items-center gap-2">
           <Link href={`/options/strategies?u=${encodeURIComponent(chain?.underlying ?? u)}`} className="rounded-lg border border-line px-3 py-1.5 text-xs hover:bg-white/5">Strategy builder →</Link>
+          <Link href={`/ai-intelligence/option-chain?u=${encodeURIComponent(chain?.underlying ?? u)}`} className="rounded-lg border border-line px-3 py-1.5 text-xs hover:bg-white/5">Chain Intelligence →</Link>
           <span className={`rounded-full px-2 py-0.5 text-[10px] ${chain?.broker ? "bg-up/15 text-up" : "bg-gold/15 text-gold"}`}>
             {chain?.broker ? `Live · ${chain.broker} · 15s` : <Link href="/brokers" className="underline">Connect a broker for live prices</Link>}
           </span>
@@ -432,16 +462,16 @@ export function OptionsTerminal() {
         </div>
         {(err || chain?.error) && <p role="alert" className="border-b border-line bg-gold/10 px-3 py-1.5 text-xs text-gold">{err ?? chain?.error}</p>}
         <div ref={scrollRef} className={`max-h-[62vh] overflow-auto ${loading ? "opacity-60" : ""}`}>
-          <table className="w-full min-w-[820px] text-xs">
+          <table className="w-full min-w-[1100px] text-xs">
             <thead className="sticky top-0 z-10 bg-panel text-[10px] text-muted">
               <tr>
-                <th colSpan={6} className="border-b border-line py-1 text-center font-semibold text-up">CALLS</th>
+                <th colSpan={9} className="border-b border-line py-1 text-center font-semibold text-up">CALLS</th>
                 <th rowSpan={2} className="border-b border-line bg-panel-2 px-2 text-center font-semibold text-white">Strike</th>
-                <th colSpan={6} className="border-b border-line py-1 text-center font-semibold text-down">PUTS</th>
+                <th colSpan={9} className="border-b border-line py-1 text-center font-semibold text-down">PUTS</th>
               </tr>
               <tr className="text-right">
-                {[["OI", "OI"], ["OI Chg", "OI Chg"], ["Vol", "Volume"], ["IV %", "IV"], ["Δ", "Delta"], ["LTP", "LTP"]].map(([h, t]) => <th key={"c" + h} className="whitespace-nowrap border-b border-line px-2 py-1 font-medium">{h}<Info term={t} place="bottom" /></th>)}
-                {[["LTP", "LTP"], ["Δ", "Delta"], ["IV %", "IV"], ["Vol", "Volume"], ["OI Chg", "OI Chg"], ["OI", "OI"]].map(([h, t]) => <th key={"p" + h} className="whitespace-nowrap border-b border-line px-2 py-1 font-medium">{h}<Info term={t} place="bottom" /></th>)}
+                {[["AI View", "AI View"], ["OI", "OI"], ["OI Chg", "OI Chg"], ["Vol", "Volume"], ["IV %", "IV"], ["Δ", "Delta"], ["Bid", "Bid"], ["Ask", "Ask"], ["LTP", "LTP"]].map(([h, t]) => <th key={"c" + h} className="whitespace-nowrap border-b border-line px-2 py-1 font-medium">{h}<Info term={t} place="bottom" /></th>)}
+                {[["LTP", "LTP"], ["Ask", "Ask"], ["Bid", "Bid"], ["Δ", "Delta"], ["IV %", "IV"], ["Vol", "Volume"], ["OI Chg", "OI Chg"], ["OI", "OI"], ["AI View", "AI View"]].map(([h, t]) => <th key={"p" + h} className="whitespace-nowrap border-b border-line px-2 py-1 font-medium">{h}<Info term={t} place="bottom" /></th>)}
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
@@ -461,9 +491,11 @@ export function OptionsTerminal() {
           {!loading && chain && rows.length === 0 && <p className="p-6 text-center text-sm text-muted">No strikes for this expiry.</p>}
         </div>
         <p className="border-t border-line px-3 py-1.5 text-[10px] text-muted">
-          Click any call or put to open its details. Shaded cells are in the money. Greeks come from your broker when supplied, otherwise Black-Scholes (r = 6.5%).
+          Click any call or put to open its details; AI View opens the contract analysis (deterministic scores, not probabilities{viewMap?.source === "eod" ? "; computed from the last end-of-day session" : ""}). Shaded cells are in the money. Greeks come from your broker when supplied, otherwise Black-Scholes (r = 6.5%).
         </p>
       </section>
+
+      {panel && chain && <ContractPanel u={chain.underlying} expiry={chain.expiry} strike={panel.strike} right={panel.side} onClose={closePanel} />}
 
       {/* Put-call ratio */}
       <section aria-labelledby="pcr" className="grid gap-3 md:grid-cols-4">

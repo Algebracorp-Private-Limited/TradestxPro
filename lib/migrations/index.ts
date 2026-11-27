@@ -8,10 +8,11 @@
  */
 import { DEVELOPER_ACCOUNTS } from "./001-developer-accounts.ts";
 import { INTELLIGENCE_CORE } from "./002-intelligence-core.ts";
+import { MARKET_SCAN } from "./003-market-scan.ts";
 
 export type Migration = { id: string; description: string; sql: string };
 
-export const MIGRATIONS: Migration[] = [DEVELOPER_ACCOUNTS, INTELLIGENCE_CORE];
+export const MIGRATIONS: Migration[] = [DEVELOPER_ACCOUNTS, INTELLIGENCE_CORE, MARKET_SCAN];
 
 /** Bookkeeping table for applied migrations. */
 export const MIGRATIONS_TABLE_SQL = `

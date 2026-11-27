@@ -189,6 +189,7 @@ export function OptionScreener() {
                       <Link href={`/options?u=${encodeURIComponent(r.underlying)}&expiry=${r.expiry}`} className="font-medium hover:text-accent">
                         {r.underlying} {r.strike} <span className={r.opt === "CE" ? "text-up" : "text-down"}>{r.opt}</span>
                       </Link>
+                      <Link href={`/ai-intelligence/option-chain?u=${encodeURIComponent(r.underlying)}`} className="ml-2 text-[10px] text-accent hover:underline" aria-label={`Chain Intelligence for ${r.underlying}`}>AI</Link>
                       <span className="block text-[11px] text-muted">{r.expiry} · {r.moneyness ?? "—"}{r.spot ? ` · spot ${f2(r.spot)}` : ""} · lot {r.lot}</span>
                     </td>
                     <td className="px-3 py-2 text-right font-mono tabular-nums">{f2(r.close)}</td>
