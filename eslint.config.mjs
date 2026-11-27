@@ -5,5 +5,5 @@ import nextTs from "eslint-config-next/typescript";
 export default defineConfig([
   ...nextVitals,
   ...nextTs,
-  globalIgnores([".next/**", "out/**", "build/**", "next-env.d.ts"]),
+  globalIgnores([".next/**", "out/**", "build/**", "next-env.d.ts", "packages/xchart/.build/**", "packages/xchart/dist/**", "packages/xchart/.samples/**", "packages/xchart/examples/next-app/.next/**"]),
 ]);
