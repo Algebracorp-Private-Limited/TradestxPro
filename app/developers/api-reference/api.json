@@ -1,0 +1,3021 @@
+{
+ "version": "0.4.0",
+ "generatedFrom": "lib/xchart-sdk/index.ts",
+ "count": 179,
+ "items": [
+  {
+   "name": "CalendarDef",
+   "kind": "type",
+   "module": "calendar/index.ts",
+   "doc": "",
+   "signature": "export type CalendarDef = { id: string; name: string; timeZone: string; /** Sessions per weekday, 0 = Sunday … 6 = Saturday. Missing days are closed. */ week: Partial<Record<0 | 1 | 2 | 3 | 4 | 5 | 6, SessionDef[]>>; /** Optional per-date adjustment (e.g. MCX's evening session follows US daylight saving). */ adjust?: (date: string, sessions: SessionDef[]) => SessionDef[]; note?: string; };"
+  },
+  {
+   "name": "CalendarId",
+   "kind": "type",
+   "module": "calendar/index.ts",
+   "doc": "",
+   "signature": "export type CalendarId = keyof typeof CALENDARS;"
+  },
+  {
+   "name": "CALENDARS",
+   "kind": "const",
+   "module": "calendar/index.ts",
+   "doc": "",
+   "signature": "const CALENDARS: { NSE: { id: string; name: string; timeZone: string; week: { 1: SessionDef[]; 2: SessionDef[]; 3: SessionDef[]; 4: SessionDef[]; 5: SessionDef[]; }; note: string; }; BSE: { id: string; name: string; timeZone: string; week: { 1: SessionDef[]; 2: SessionDef[]; 3: SessionDef[]; 4: SessionDef[]; 5: SessionDef[]; }; note: string; }; MCX: { id: string; name: string; timeZone: string; week: { 1: SessionDef[]; 2: SessionDef[]; 3: SessionDef[]; 4: SessionDef[]; 5: SessionDef[]; }; adjust: (date: string, s: SessionDef[]) => SessionDef[]; note: string; }; NYSE: { id: string; name: string; timeZone: string; week: { 1: SessionDef[]; 2: SessionDef[]; 3: SessionDef[]; 4: SessionDef[]; 5: SessionDef[]; }; note: string; }; NASDAQ: { id: string; name: string; timeZone: string; week: { 1: SessionDef[]; 2: SessionDef[]; 3: SessionDef[]; 4: SessionDef[]; 5: SessionDef[]; }; note: string; }; FOREX: { id: string; name: string; timeZone: string; week: { 0: { kind: \"regular\"; start: string; end: string; }[]; 1: { kind: \"regular\"; start: string; end: string; }[]; 2: { kind: \"regular\"; start: string; end: string; }[]; 3: { kind: \"regular\"; start: string; end: string; }[]; 4: { kind: \"regular\"; start: string; end: string; }[]; 5: { kind: \"regular\"; start: string; end: string; }[]; }; note: string; }; CRYPTO: { id: string; name: string; timeZone: string; week: { 0: { kind: \"regular\"; start: string; end: string; }[]; 1: { kind: \"regular\"; start: string; end: string; }[]; 2: { kind: \"regular\"; start: string; end: string; }[]; 3: { kind: \"regular\"; start: string; end: string; }[]; 4: { kind: \"regular\"; start: string; end: string; }[]; 5: { kind: \"regular\"; start: string; end: string; }[]; 6: { kind: \"regular\"; start: string; end: string; }[]; }; }; }"
+  },
+  {
+   "name": "holidayList",
+   "kind": "function",
+   "module": "calendar/index.ts",
+   "doc": "Holiday provider from plain lists: { NSE: [\"2026-01-26\", ...] }.",
+   "signature": "holidayList(holidays: Record<string, string[]>, earlyCloses?: Record<string, Record<string, string>>): HolidayProvider"
+  },
+  {
+   "name": "HolidayProvider",
+   "kind": "interface",
+   "module": "calendar/index.ts",
+   "doc": "",
+   "signature": "interface HolidayProvider",
+   "members": [
+    {
+     "name": "isHoliday",
+     "signature": "isHoliday(calendarId: string, date: string): boolean",
+     "doc": "True when the exchange is closed all day on `date` (YYYY-MM-DD, exchange-local)."
+    },
+    {
+     "name": "earlyClose",
+     "signature": "earlyClose(calendarId: string, date: string): string | null",
+     "doc": "Early close time \"HH:MM\" for `date`, or null."
+    }
+   ]
+  },
+  {
+   "name": "offsetSeconds",
+   "kind": "function",
+   "module": "calendar/index.ts",
+   "doc": "Offset of `tz` from UTC at instant t, in seconds (east positive).",
+   "signature": "offsetSeconds(tz: string, t: number): number"
+  },
+  {
+   "name": "SessionDef",
+   "kind": "type",
+   "module": "calendar/index.ts",
+   "doc": "Local wall-clock times \"HH:MM\" (\"24:00\" allowed as an end).",
+   "signature": "export type SessionDef = { kind: SessionKind; start: string; end: string };"
+  },
+  {
+   "name": "SessionKind",
+   "kind": "type",
+   "module": "calendar/index.ts",
+   "doc": "",
+   "signature": "export type SessionKind = \"pre\" | \"regular\" | \"post\";"
+  },
+  {
+   "name": "SessionState",
+   "kind": "type",
+   "module": "calendar/index.ts",
+   "doc": "",
+   "signature": "export type SessionState = SessionKind | \"closed\";"
+  },
+  {
+   "name": "TradingCalendar",
+   "kind": "class",
+   "module": "calendar/index.ts",
+   "doc": "",
+   "signature": "class TradingCalendar",
+   "members": [
+    {
+     "name": "def",
+     "signature": "readonly def: CalendarDef",
+     "doc": ""
+    },
+    {
+     "name": "dayStatus",
+     "signature": "dayStatus(date: string): DayStatus",
+     "doc": "Confirmed status of a local date. Weekly-schedule facts (a weekday with sessions, a weekend without) are only CONFIRMED when a provider covers the date; otherwise weekdays are \"unknown\" (holidays unverified). Weekend days with no sessions are non-trading unless a provider lists a special session."
+    },
+    {
+     "name": "id",
+     "signature": "get id() { return this.def.id; }",
+     "doc": ""
+    },
+    {
+     "name": "timeZone",
+     "signature": "get timeZone() { return this.def.timeZone; }",
+     "doc": ""
+    },
+    {
+     "name": "localDate",
+     "signature": "localDate(t: number): string",
+     "doc": "Exchange-local date (YYYY-MM-DD) of an instant."
+    },
+    {
+     "name": "isHoliday",
+     "signature": "isHoliday(date: string): boolean",
+     "doc": ""
+    },
+    {
+     "name": "sessions",
+     "signature": "sessions(date: string): SessionDef[]",
+     "doc": "Sessions of a local date after weekends, holidays, special sessions, adjustments and early closes."
+    },
+    {
+     "name": "isTradingDay",
+     "signature": "isTradingDay(date: string): boolean",
+     "doc": ""
+    },
+    {
+     "name": "sessionAt",
+     "signature": "sessionAt(t: number): SessionState",
+     "doc": "Session state at an instant (overnight sessions continue past midnight)."
+    },
+    {
+     "name": "isOpen",
+     "signature": "isOpen(t: number, includeExtended?: boolean): boolean",
+     "doc": ""
+    },
+    {
+     "name": "regularBounds",
+     "signature": "regularBounds(date: string): { open: number; close: number; } | null",
+     "doc": "UTC bounds of the regular session on a local date, or null when closed."
+    },
+    {
+     "name": "nextOpen",
+     "signature": "nextOpen(t: number): number | null",
+     "doc": "Next regular-session open at or after t (searches up to 30 days ahead)."
+    },
+    {
+     "name": "tradingDaysBetween",
+     "signature": "tradingDaysBetween(from: string, to: string): number",
+     "doc": "Regular trading days in [from, to] (local dates, inclusive)."
+    }
+   ]
+  },
+  {
+   "name": "zonedTime",
+   "kind": "function",
+   "module": "calendar/index.ts",
+   "doc": "UTC instant of a local wall-clock time in `tz` (resolves DST gaps forward).",
+   "signature": "zonedTime(tz: string, date: string, hhmm: string): number"
+  },
+  {
+   "name": "CALENDAR_DATASET_FORMAT",
+   "kind": "const",
+   "module": "calendar/providers.ts",
+   "doc": "",
+   "signature": "const CALENDAR_DATASET_FORMAT: \"xchart-calendar\""
+  },
+  {
+   "name": "CalendarDataset",
+   "kind": "type",
+   "module": "calendar/providers.ts",
+   "doc": "",
+   "signature": "export type CalendarDataset = { format: typeof CALENDAR_DATASET_FORMAT; version: 1; /** Dataset revision chosen by the publisher (e.g. \"2026.2\"). */ revision: string; provider: { id: string; name: string; source: { name: string; url?: string }; retrievedAt: string; validUntil?: string; license?: string; notes?: string }; calendars: Record<string, { /** Inclusive local-date range the dataset is authoritative for. */ coverage: { from: string; to: string }; holidays: { date: string; name: string }[]; earlyCloses?: { date: string; close: string; name?: string }[]; /** Sessions on dates that normally have none (e.g. a weekend special session) or replace the normal ones. */ specialSessions?: { date: string; name?: string; sessions: SessionDef[] }[]; }>; };"
+  },
+  {
+   "name": "CalendarProvider",
+   "kind": "interface",
+   "module": "calendar/providers.ts",
+   "doc": "A provider that can say what it covers (datasets do; plain holiday lists cover everything you give them).",
+   "signature": "interface CalendarProvider",
+   "members": [
+    {
+     "name": "id",
+     "signature": "readonly id: string",
+     "doc": ""
+    },
+    {
+     "name": "revision",
+     "signature": "readonly revision: string",
+     "doc": ""
+    },
+    {
+     "name": "covers",
+     "signature": "covers(calendarId: string, date: string): boolean",
+     "doc": ""
+    },
+    {
+     "name": "specialSessions",
+     "signature": "specialSessions(calendarId: string, date: string): SessionDef[] | null",
+     "doc": ""
+    },
+    {
+     "name": "holidayName",
+     "signature": "holidayName(calendarId: string, date: string): string | null",
+     "doc": ""
+    },
+    {
+     "name": "metadata",
+     "signature": "metadata(): { id: string; name: string; source: { name: string; url?: string | undefined; }; retrievedAt: string; validUntil?: string | undefined; license?: string | undefined; notes?: string | undefined; } & { ...; }",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "CalendarRegistry",
+   "kind": "class",
+   "module": "calendar/providers.ts",
+   "doc": "Registry of calendar providers (first registered = highest priority for a date it covers). Every change increments `revision`, which calendars use to invalidate cached day statuses. Loading failures keep the last good dataset and are reported by status().",
+   "signature": "class CalendarRegistry",
+   "members": [
+    {
+     "name": "revision",
+     "signature": "revision = 0",
+     "doc": ""
+    },
+    {
+     "name": "register",
+     "signature": "register(p: string | CalendarProvider | CalendarDataset): CalendarProvider",
+     "doc": ""
+    },
+    {
+     "name": "unregister",
+     "signature": "unregister(id: string): boolean",
+     "doc": ""
+    },
+    {
+     "name": "providers",
+     "signature": "providers(): CalendarProvider[]",
+     "doc": ""
+    },
+    {
+     "name": "providerFor",
+     "signature": "providerFor(calendarId: string, date: string): CalendarProvider | null",
+     "doc": "Provider authoritative for a calendar date, or null (→ unknown)."
+    },
+    {
+     "name": "load",
+     "signature": "load(id: string, loader: () => Promise<unknown>): Promise<ProviderStatus>",
+     "doc": "Loads a dataset from any source (fetch, file, …). On failure the previous dataset stays in use."
+    },
+    {
+     "name": "status",
+     "signature": "status(id: string, today?: string): ProviderStatus",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "DayStatus",
+   "kind": "type",
+   "module": "calendar/providers.ts",
+   "doc": "",
+   "signature": "export type DayStatus = { status: \"trading\" | \"non-trading\" | \"unknown\"; reason: string; /** Provider id and revision that confirmed it (absent for weekly-schedule facts and unknowns). */ source?: string; special?: boolean; };"
+  },
+  {
+   "name": "importCalendarDataset",
+   "kind": "function",
+   "module": "calendar/providers.ts",
+   "doc": "Validates and imports a calendar dataset (JSON text or object). Throws INVALID_CALENDAR on any problem.",
+   "signature": "importCalendarDataset(input: unknown): CalendarProvider"
+  },
+  {
+   "name": "ProviderStatus",
+   "kind": "type",
+   "module": "calendar/providers.ts",
+   "doc": "",
+   "signature": "export type ProviderStatus = { id: string; state: \"ok\" | \"stale\" | \"failed\"; revision?: string; retrievedAt?: string; validUntil?: string; source?: string; error?: string; failedAt?: string };"
+  },
+  {
+   "name": "RenderAdapter",
+   "kind": "interface",
+   "module": "canvas-adapter.ts",
+   "doc": "Rendering backend used by the SDK core (the Canvas adapter in production, a fake in unit tests).",
+   "signature": "interface RenderAdapter",
+   "members": [
+    {
+     "name": "render",
+     "signature": "render(model: RenderModel, change: Change): void",
+     "doc": ""
+    },
+    {
+     "name": "setOptions",
+     "signature": "setOptions(options: ChartOptions): void",
+     "doc": ""
+    },
+    {
+     "name": "onCrosshair",
+     "signature": "onCrosshair(cb: (index: number | null, time: number | null, price: number | null) => void): void",
+     "doc": ""
+    },
+    {
+     "name": "getViewRange",
+     "signature": "getViewRange(): { from: number; to: number; } | null",
+     "doc": "Fractional bar indices of the viewport, or null without data."
+    },
+    {
+     "name": "setViewRange",
+     "signature": "setViewRange(from: number, to: number): void",
+     "doc": ""
+    },
+    {
+     "name": "fit",
+     "signature": "fit(): void",
+     "doc": ""
+    },
+    {
+     "name": "scrollToEnd",
+     "signature": "scrollToEnd(): void",
+     "doc": ""
+    },
+    {
+     "name": "scrollBy",
+     "signature": "scrollBy(bars: number): void",
+     "doc": ""
+    },
+    {
+     "name": "zoom",
+     "signature": "zoom(factor: number): void",
+     "doc": ""
+    },
+    {
+     "name": "resize",
+     "signature": "resize(width: number, height: number): void",
+     "doc": ""
+    },
+    {
+     "name": "destroy",
+     "signature": "destroy(): void",
+     "doc": ""
+    },
+    {
+     "name": "lastDrawMs",
+     "signature": "lastDrawMs(): number",
+     "doc": "Optional: duration of the last redraw in ms."
+    },
+    {
+     "name": "setLayers",
+     "signature": "setLayers(layers: EngineLayer[]): void",
+     "doc": ""
+    },
+    {
+     "name": "setInteraction",
+     "signature": "setInteraction(d: InteractionDelegate | null): void",
+     "doc": ""
+    },
+    {
+     "name": "setEvents",
+     "signature": "setEvents(e: AdapterEvents): void",
+     "doc": ""
+    },
+    {
+     "name": "setCrosshair",
+     "signature": "setCrosshair(c: { index: number; price: number | null; } | null): void",
+     "doc": ""
+    },
+    {
+     "name": "requestRedraw",
+     "signature": "requestRedraw(): void",
+     "doc": ""
+    },
+    {
+     "name": "xOfIndex",
+     "signature": "xOfIndex(i: number): number",
+     "doc": ""
+    },
+    {
+     "name": "indexOfX",
+     "signature": "indexOfX(x: number): number",
+     "doc": ""
+    },
+    {
+     "name": "priceToY",
+     "signature": "priceToY(p: number, paneId?: string | undefined, scaleId?: string | undefined): number | null",
+     "doc": ""
+    },
+    {
+     "name": "yToPrice",
+     "signature": "yToPrice(y: number, paneId?: string | undefined, scaleId?: string | undefined): number | null",
+     "doc": ""
+    },
+    {
+     "name": "setPriceRange",
+     "signature": "setPriceRange(min: number, max: number): void",
+     "doc": "Manual range of the main right scale."
+    },
+    {
+     "name": "getPanes",
+     "signature": "getPanes(): PaneBox[]",
+     "doc": ""
+    },
+    {
+     "name": "getSpacing",
+     "signature": "getSpacing(): number",
+     "doc": ""
+    },
+    {
+     "name": "setSpacing",
+     "signature": "setSpacing(px: number): void",
+     "doc": ""
+    },
+    {
+     "name": "getPlotWidth",
+     "signature": "getPlotWidth(): number",
+     "doc": ""
+    },
+    {
+     "name": "toDataURL",
+     "signature": "toDataURL(scale?: number | undefined): string",
+     "doc": ""
+    },
+    {
+     "name": "renderStats",
+     "signature": "renderStats(): { fullFrames: number; overlayFrames: number; lastDrawMs: number; lastOverlayMs: number; }",
+     "doc": "Diagnostics: frame counters and last frame durations."
+    }
+   ]
+  },
+  {
+   "name": "RenderModel",
+   "kind": "type",
+   "module": "canvas-adapter.ts",
+   "doc": "Everything the renderer needs; arrays are shared with the store and mutated in place on ticks.",
+   "signature": "export type RenderModel = { times: number[]; bars: AxisBar[]; intraday: boolean; candle: CandlestickSeriesOptions | null; /** Follow appended bars when the newest bar is in view (ChartOptions.followLatest). */ followLatest?: boolean; series: { id: number; type: Exclude<ChartSeriesType, \"candlestick\">; values: number[]; values2?: number[]; options: SeriesOptionsMap[Exclude<ChartSeriesType, \"candlestick\">] }[]; /** Plots computed by sub-systems (indicators): overlays on the main pane and extra panes. */ extraOverlays?: PlotSeries[]; extraPanes?: PaneSpec[]; /** Slots past the last bar that projected values extend into. */ future?: number; /** v0.3: price-scale settings, pane slot heights (px), collapsed panes and pane order. */ scales?: ScaleSpec[]; paneSizes?: Record<string, number>; collapsed?: string[]; paneOrder?: string[]; /** v0.3: main draw type, its style, and the real last/previous close when `bars` is a display transform. */ chartType?: EngineChartType; mainStyle?: MainStyle; lastPrice?: { price: number; prev: number | null }; /** v0.3.1: price-based chart type; `bars` then holds derived points on the logical axis. */ derived?: DerivedRender; };"
+  },
+  {
+   "name": "BreakLine",
+   "kind": "type",
+   "module": "chart-types.ts",
+   "doc": "",
+   "signature": "export type BreakLine = { open: number; close: number; up: boolean; time: number };"
+  },
+  {
+   "name": "Brick",
+   "kind": "type",
+   "module": "chart-types.ts",
+   "doc": "",
+   "signature": "export type Brick = { open: number; close: number; up: boolean; /** Time of the bar that completed it. */ time: number };"
+  },
+  {
+   "name": "ChartType",
+   "kind": "type",
+   "module": "chart-types.ts",
+   "doc": "Every chart type: time-based display transforms and price-based (derived, logical-axis) types.",
+   "signature": "export type ChartType = TimeChartType | PriceChartType;"
+  },
+  {
+   "name": "ChartTypeStyle",
+   "kind": "type",
+   "module": "chart-types.ts",
+   "doc": "Style of time-based types, or the settings of a price-based type (RenkoSettings, KagiSettings, …).",
+   "signature": "export type ChartTypeStyle = DerivedSettings | TimeChartTypeStyle;"
+  },
+  {
+   "name": "heikinAshi",
+   "kind": "function",
+   "module": "chart-types.ts",
+   "doc": "Writes Heikin Ashi bars for source[from..] into out (out may be the previous result).",
+   "signature": "heikinAshi(src: AxisBar[], out?: AxisBar[], from?: number): AxisBar[]"
+  },
+  {
+   "name": "kagi",
+   "kind": "function",
+   "module": "chart-types.ts",
+   "doc": "Kagi with a fixed reversal amount.",
+   "signature": "kagi(data: Closes, reversal: number): KagiLine[]"
+  },
+  {
+   "name": "KagiLine",
+   "kind": "type",
+   "module": "chart-types.ts",
+   "doc": "",
+   "signature": "export type KagiLine = { from: number; to: number; up: boolean; /** yang (thick) when above the previous shoulder, yin (thin) when below the previous waist. */ thick: boolean; time: number };"
+  },
+  {
+   "name": "lineBreak",
+   "kind": "function",
+   "module": "chart-types.ts",
+   "doc": "N-line break (default 3): a reversal must exceed the extreme of the last N lines.",
+   "signature": "lineBreak(data: Closes, lines?: number): BreakLine[]"
+  },
+  {
+   "name": "PnfColumn",
+   "kind": "type",
+   "module": "chart-types.ts",
+   "doc": "",
+   "signature": "export type PnfColumn = { kind: \"X\" | \"O\"; low: number; high: number; /** Boxes in the column. */ boxes: number; time: number };"
+  },
+  {
+   "name": "pointAndFigure",
+   "kind": "function",
+   "module": "chart-types.ts",
+   "doc": "Close-based Point & Figure with `boxSize` and an N-box reversal (default 3).",
+   "signature": "pointAndFigure(data: Closes, boxSize: number, reversal?: number): PnfColumn[]"
+  },
+  {
+   "name": "PRICE_CHART_TYPES",
+   "kind": "const",
+   "module": "chart-types.ts",
+   "doc": "",
+   "signature": "const PRICE_CHART_TYPES: readonly [\"renko\", \"kagi\", \"point-and-figure\", \"line-break\", \"range-bars\"]"
+  },
+  {
+   "name": "PriceChartType",
+   "kind": "type",
+   "module": "chart-types.ts",
+   "doc": "",
+   "signature": "export type PriceChartType = (typeof PRICE_CHART_TYPES)[number];"
+  },
+  {
+   "name": "RangeBar",
+   "kind": "type",
+   "module": "chart-types.ts",
+   "doc": "",
+   "signature": "export type RangeBar = { open: number; high: number; low: number; close: number; time: number };"
+  },
+  {
+   "name": "rangeBars",
+   "kind": "function",
+   "module": "chart-types.ts",
+   "doc": "Range bars of a fixed high–low range from CLOSES. True range bars need tick data (the intrabar path is unknown from OHLC); this close-based version is an approximation.",
+   "signature": "rangeBars(data: Closes, range: number): RangeBar[]"
+  },
+  {
+   "name": "renko",
+   "kind": "function",
+   "module": "chart-types.ts",
+   "doc": "Classic close-based Renko: a brick completes each `boxSize`; a reversal needs two boxes.",
+   "signature": "renko(data: Closes, boxSize: number): Brick[]"
+  },
+  {
+   "name": "TIME_CHART_TYPES",
+   "kind": "const",
+   "module": "chart-types.ts",
+   "doc": "",
+   "signature": "const TIME_CHART_TYPES: readonly [\"candles\", \"hollow-candles\", \"bars\", \"heikin-ashi\", \"line\", \"step-line\", \"line-markers\", \"area\", \"baseline\", \"high-low\", \"columns\"]"
+  },
+  {
+   "name": "LayerApi",
+   "kind": "type",
+   "module": "components/chart/engine.ts",
+   "doc": "Geometry and drawing helpers handed to custom layers (SDK drawings, markers, price lines, plugins).",
+   "signature": "export type LayerApi = { ctx: CanvasRenderingContext2D; theme: EngineTheme; pane: { id: string; top: number; height: number; width: number }; /** Visible bar index range (inclusive) and bar spacing in px. */ from: number; to: number; spacing: number; barCount: number; xOfIndex(i: number): number; indexOfX(x: number): number; /** Price ↔ y in this pane (main-pane price scale for \"main\"). */ yOfPrice(p: number): number; priceOfY(y: number): number; bar(i: number): Bar | undefined; /** Queues a label on the price axis (drawn above series labels). */ axisLabel(y: number, text: string, bg: string): void; /** Price ↔ y on another scale of this pane (e.g. an overlay or the left scale); null when the scale is not present. */ scaleY?(scaleId: string, p: number): number | null; scalePrice?(scaleId: string, y: number): number | null; };"
+  },
+  {
+   "name": "createChart",
+   "kind": "function",
+   "module": "create-chart.ts",
+   "doc": "Creates a chart inside `container` (browser only). Call `chart.remove()` to release it. Rendering is done by TradestXPro's ChartEngine through the Canvas adapter.",
+   "signature": "createChart(container: HTMLElement, options?: ChartOptions): ChartApi"
+  },
+  {
+   "name": "createChartWithAdapter",
+   "kind": "function",
+   "module": "create-chart.ts",
+   "doc": "Creates a chart with a custom renderer (used by tests and future backends).",
+   "signature": "createChartWithAdapter(adapter: RenderAdapter, options?: ChartOptions): ChartImpl"
+  },
+  {
+   "name": "SessionHighlightOptions",
+   "kind": "type",
+   "module": "create-chart.ts",
+   "doc": "",
+   "signature": "export type SessionHighlightOptions = { calendar: TradingCalendar | CalendarId; /** Shading of pre-market / post-market / closed bars (intraday charts only). */ preColor?: string; postColor?: string; closedColor?: string; /** Vertical line where the exchange-local date changes (default true). */ dayBreaks?: boolean; /** Shading of bars on dates whose schedule no calendar provider confirms (default none). */ unknownColor?: string; dayBreakColor?: string; };"
+  },
+  {
+   "name": "MarkerPosition",
+   "kind": "type",
+   "module": "decorations.ts",
+   "doc": "",
+   "signature": "export type MarkerPosition = \"aboveBar\" | \"belowBar\" | \"inBar\";"
+  },
+  {
+   "name": "MarkerShape",
+   "kind": "type",
+   "module": "decorations.ts",
+   "doc": "",
+   "signature": "export type MarkerShape = \"arrowUp\" | \"arrowDown\" | \"circle\" | \"square\";"
+  },
+  {
+   "name": "PriceLineApi",
+   "kind": "interface",
+   "module": "decorations.ts",
+   "doc": "",
+   "signature": "interface PriceLineApi",
+   "members": [
+    {
+     "name": "id",
+     "signature": "readonly id: string",
+     "doc": ""
+    },
+    {
+     "name": "applyOptions",
+     "signature": "applyOptions(o: Partial<PriceLineOptions>): void",
+     "doc": ""
+    },
+    {
+     "name": "options",
+     "signature": "options(): Readonly<PriceLineOptions>",
+     "doc": ""
+    },
+    {
+     "name": "price",
+     "signature": "price(): number | null",
+     "doc": "Resolved price (null when the source has no data)."
+    },
+    {
+     "name": "remove",
+     "signature": "remove(): void",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "PriceLineOptions",
+   "kind": "type",
+   "module": "decorations.ts",
+   "doc": "",
+   "signature": "export type PriceLineOptions = { id?: string; /** Required for source \"fixed\". */ price?: number; /** \"last\" follows the newest value; \"previousClose\" the close before the newest bar. */ source?: PriceLineSource; color?: string; lineWidth?: number; lineStyle?: \"solid\" | \"dashed\" | \"dotted\"; axisLabelVisible?: boolean; title?: string; visible?: boolean; };"
+  },
+  {
+   "name": "PriceLineSource",
+   "kind": "type",
+   "module": "decorations.ts",
+   "doc": "",
+   "signature": "export type PriceLineSource = \"fixed\" | \"last\" | \"previousClose\";"
+  },
+  {
+   "name": "SeriesMarker",
+   "kind": "type",
+   "module": "decorations.ts",
+   "doc": "",
+   "signature": "export type SeriesMarker = { id?: string; time: number; position: MarkerPosition; shape: MarkerShape; color?: string; text?: string; /** Size multiplier 0.5–4 (default 1). */ size?: number; };"
+  },
+  {
+   "name": "PATH_ASSUMPTION",
+   "kind": "const",
+   "module": "derived/builders.ts",
+   "doc": "",
+   "signature": "const PATH_ASSUMPTION: \"Intrabar path assumed open → low → high → close for rising candles and open → high → low → close for falling candles; OHLC data does not record the true order.\""
+  },
+  {
+   "name": "resolveDerivedSettings",
+   "kind": "function",
+   "module": "derived/builders.ts",
+   "doc": "Validates settings (atomic: throws before anything changes) and applies defaults.",
+   "signature": "resolveSettings<K extends DerivedKind>(kind: K, s: unknown): Required<DerivedSettingsMap[K]>"
+  },
+  {
+   "name": "computeDerived",
+   "kind": "function",
+   "module": "derived/index.ts",
+   "doc": "One-shot calculation (no live state): every candle is treated as final.",
+   "signature": "computeDerived(kind: DerivedKind, candles: readonly SourceCandle[], settings?: DerivedSettings | undefined): DerivedPoint[]"
+  },
+  {
+   "name": "DERIVED_KINDS",
+   "kind": "const",
+   "module": "derived/index.ts",
+   "doc": "",
+   "signature": "const DERIVED_KINDS: DerivedKind[]"
+  },
+  {
+   "name": "DerivedSeriesEngine",
+   "kind": "class",
+   "module": "derived/index.ts",
+   "doc": "",
+   "signature": "class DerivedSeriesEngine",
+   "members": [
+    {
+     "name": "kind",
+     "signature": "readonly kind: DerivedKind",
+     "doc": ""
+    },
+    {
+     "name": "settings",
+     "signature": "readonly settings: Record<string, unknown>",
+     "doc": ""
+    },
+    {
+     "name": "points",
+     "signature": "readonly points: DerivedPoint[] = []",
+     "doc": ""
+    },
+    {
+     "name": "bars",
+     "signature": "readonly bars: AxisBar[] = []",
+     "doc": ""
+    },
+    {
+     "name": "revision",
+     "signature": "revision = 0",
+     "doc": ""
+    },
+    {
+     "name": "sourceRevision",
+     "signature": "sourceRevision = 0",
+     "doc": ""
+    },
+    {
+     "name": "sync",
+     "signature": "sync(candles: readonly SourceCandle[], storeVersion: number): number",
+     "doc": "Brings the series up to date. Returns how many points were appended (for the renderer), or -1 after a rebuild."
+    },
+    {
+     "name": "provisionalCount",
+     "signature": "provisionalCount(): number",
+     "doc": ""
+    },
+    {
+     "name": "snapshot",
+     "signature": "snapshot(): DerivedSeries",
+     "doc": ""
+    },
+    {
+     "name": "boxLevel",
+     "signature": "boxLevel(): ((k: number) => number) | undefined",
+     "doc": "Point & Figure box level function of the committed state (stable box grid)."
+    }
+   ]
+  },
+  {
+   "name": "DerivedKind",
+   "kind": "type",
+   "module": "derived/types.ts",
+   "doc": "Derived (price-based) chart data model. Layers, kept strictly apart: 1. Observed market data — the candlestick series in SeriesStore (never modified). 2. Derived representation — DerivedPoint[] on a LOGICAL index (one point per brick, line, column or range bar; several points may come from one source candle). 3. Display coordinates — the renderer maps logical index → x and derived price → y. 4. Executable prices — always the source candles' prices (`sourceClose`); a derived value (e.g. a Renko brick boundary) is a chart construct, never a traded price. No timestamps are invented: each point carries the time of the source candle that produced it, and several points may share one source time.",
+   "signature": "export type DerivedKind = \"renko\" | \"kagi\" | \"point-and-figure\" | \"line-break\" | \"range-bars\";"
+  },
+  {
+   "name": "DerivedPoint",
+   "kind": "type",
+   "module": "derived/types.ts",
+   "doc": "",
+   "signature": "export type DerivedPoint = { /** Stable id: `${kind}:${sourceIndex}:${seq}` (unchanged while the same source candle produces it). */ id: string; logical: number; sourceTime: number; /** Index of the producing candle in the candlestick series' data. */ sourceIndex: number; /** n-th point produced by that source candle. */ seq: number; open: number; high: number; low: number; close: number; direction: 1 | -1; status: DerivedStatus; /** Close of the source candle (the observed market price at that time). */ sourceClose: number; /** True when the point was built from a reconstructed intrabar path (OHLC path assumption). */ reconstructed: boolean; /** Brick / box / range size in price units used for this point (renko, P&F, range bars). */ size?: number; /** Kagi: line thickness at the start/end (\"yang\" thick, \"yin\" thin) and the price where it switched. */ thickStart?: boolean; thickEnd?: boolean; switchPrice?: number; /** Point & Figure: box indexes covered by the column (inclusive) and the box count. */ lowBox?: number; highBox?: number; boxes?: number; /** Line Break: whether the line reversed the previous direction. */ reversal?: boolean; /** Range bars: false for the still-forming "
+  },
+  {
+   "name": "DerivedSeries",
+   "kind": "type",
+   "module": "derived/types.ts",
+   "doc": "",
+   "signature": "export type DerivedSeries = { kind: DerivedKind; /** Settings with defaults applied. */ settings: Required<Omit<DerivedSettingsMap[DerivedKind], never>> & Record<string, unknown>; points: DerivedPoint[]; /** Increments on every change of the derived series. */ revision: number; /** SeriesStore version the series was built from. */ sourceRevision: number; /** Plain-language description of the calculation and its assumptions. */ methodology: string; /** Point & Figure: price of box index k. */ boxLevel?: (k: number) => number; };"
+  },
+  {
+   "name": "DerivedSettings",
+   "kind": "type",
+   "module": "derived/types.ts",
+   "doc": "",
+   "signature": "export type DerivedSettings = DerivedSettingsMap[DerivedKind];"
+  },
+  {
+   "name": "DerivedStatus",
+   "kind": "type",
+   "module": "derived/types.ts",
+   "doc": "\"confirmed\": cannot change any more. \"provisional\": depends on the latest source candle (which a live update may still replace) or is the open, still-extendable last line/column.",
+   "signature": "export type DerivedStatus = \"confirmed\" | \"provisional\";"
+  },
+  {
+   "name": "KagiSettings",
+   "kind": "type",
+   "module": "derived/types.ts",
+   "doc": "",
+   "signature": "export type KagiSettings = { method?: SizeMethod; reversal?: number; atrPeriod?: number; source?: Exclude<PriceSource, \"high-low\">; yangWidth?: number; yinWidth?: number; upColor?: string; downColor?: string; showProvisional?: boolean };"
+  },
+  {
+   "name": "LineBreakSettings",
+   "kind": "type",
+   "module": "derived/types.ts",
+   "doc": "",
+   "signature": "export type LineBreakSettings = { lines?: number; source?: Exclude<PriceSource, \"high-low\">; upColor?: string; downColor?: string; showProvisional?: boolean };"
+  },
+  {
+   "name": "PnfSettings",
+   "kind": "type",
+   "module": "derived/types.ts",
+   "doc": "",
+   "signature": "export type PnfSettings = { method?: SizeMethod; boxSize?: number; atrPeriod?: number; reversal?: number; source?: \"close\" | \"high-low\"; columnSpacing?: number; xColor?: string; oColor?: string; showProvisional?: boolean };"
+  },
+  {
+   "name": "PriceSource",
+   "kind": "type",
+   "module": "derived/types.ts",
+   "doc": "",
+   "signature": "export type PriceSource = \"close\" | \"hl2\" | \"hlc3\" | \"ohlc4\" | \"high-low\";"
+  },
+  {
+   "name": "RangeBarSettings",
+   "kind": "type",
+   "module": "derived/types.ts",
+   "doc": "",
+   "signature": "export type RangeBarSettings = { method?: SizeMethod | \"ticks\"; range?: number; tickSize?: number; atrPeriod?: number; wicks?: boolean; upColor?: string; downColor?: string; showProvisional?: boolean };"
+  },
+  {
+   "name": "RenkoSettings",
+   "kind": "type",
+   "module": "derived/types.ts",
+   "doc": "",
+   "signature": "export type RenkoSettings = { method?: SizeMethod; size?: number; atrPeriod?: number; reversal?: number; source?: PriceSource; wicks?: boolean; showProvisional?: boolean; upColor?: string; downColor?: string };"
+  },
+  {
+   "name": "SizeMethod",
+   "kind": "type",
+   "module": "derived/types.ts",
+   "doc": "",
+   "signature": "export type SizeMethod = \"fixed\" | \"percentage\" | \"atr\";"
+  },
+  {
+   "name": "SourceCandle",
+   "kind": "type",
+   "module": "derived/types.ts",
+   "doc": "Source observation fed to the builders (a candle of the candlestick series).",
+   "signature": "export type SourceCandle = { time: number; open: number; high: number; low: number; close: number };"
+  },
+  {
+   "name": "drawingGeometry",
+   "kind": "namespace",
+   "module": "drawings/geometry.ts",
+   "doc": "",
+   "signature": "namespace drawingGeometry (15 exports)"
+  },
+  {
+   "name": "ToolEnv",
+   "kind": "type",
+   "module": "drawings/tools.ts",
+   "doc": "",
+   "signature": "export type ToolEnv = { ctx: CanvasRenderingContext2D; width: number; top: number; height: number; /** Default drawing colour for the theme. */ color: string; text: string; bg: string; px(p: DrawingPoint): P; fmt(price: number): string; timeLabel(t: number): string; /** Bars between two anchors (signed, fractional), in the drawing's coordinate domain. */ bars(a: DrawingPoint, b: DrawingPoint): number; /** x of the n-th bar after an anchor (Fibonacci time zones). */ xAfter(a: DrawingPoint, n: number): number; /** Closes between two anchors as screen-x and price (regression channel). */ closes(a: DrawingPoint, b: DrawingPoint): { x: number[]; price: number[] }; yOf(price: number): number; };"
+  },
+  {
+   "name": "ToolSpec",
+   "kind": "type",
+   "module": "drawings/tools.ts",
+   "doc": "",
+   "signature": "export type ToolSpec = { /** Anchors required; \"multi\" = 3 or more, finished with a double click. */ anchors: number | \"multi\"; render(env: ToolEnv, pts: P[], d: DrawingData): void; hit(env: ToolEnv, pts: P[], p: P, d: DrawingData): boolean; };"
+  },
+  {
+   "name": "DRAWING_TYPES",
+   "kind": "const",
+   "module": "drawings/types.ts",
+   "doc": "",
+   "signature": "const DRAWING_TYPES: readonly [\"trendline\", \"horizontal-line\", \"vertical-line\", \"horizontal-ray\", \"ray\", \"extended-line\", \"parallel-channel\", \"regression-channel\", \"pitchfork\", \"fib-retracement\", \"fib-extension\", \"fib-timezones\", \"fib-fan\", \"fib-channel\", \"rectangle\", \"ellipse\", \"triangle\", \"polygon\", \"arrow\", \"text\", \"price-label\", \"callout\", \"price-range\", \"date-range\", \"date-price-range\", \"long-position\", \"short-position\"]"
+  },
+  {
+   "name": "DrawingApi",
+   "kind": "interface",
+   "module": "drawings/types.ts",
+   "doc": "",
+   "signature": "interface DrawingApi",
+   "members": [
+    {
+     "name": "id",
+     "signature": "readonly id: string",
+     "doc": ""
+    },
+    {
+     "name": "type",
+     "signature": "readonly type: DrawingType | (string & {})",
+     "doc": ""
+    },
+    {
+     "name": "data",
+     "signature": "data(): DrawingData",
+     "doc": ""
+    },
+    {
+     "name": "update",
+     "signature": "update(patch: { points?: DrawingPoint[] | undefined; text?: string | undefined; }): void",
+     "doc": "Moves anchors and/or changes the text."
+    },
+    {
+     "name": "applyOptions",
+     "signature": "applyOptions(style: Partial<DrawingStyle>): void",
+     "doc": ""
+    },
+    {
+     "name": "setVisible",
+     "signature": "setVisible(v: boolean): void",
+     "doc": ""
+    },
+    {
+     "name": "setLocked",
+     "signature": "setLocked(v: boolean): void",
+     "doc": ""
+    },
+    {
+     "name": "remove",
+     "signature": "remove(): void",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "DrawingData",
+   "kind": "type",
+   "module": "drawings/types.ts",
+   "doc": "Serialised drawing (JSON-safe).",
+   "signature": "export type DrawingData = Required<Pick<DrawingSpec, \"id\" | \"type\" | \"points\" | \"locked\" | \"visible\">> & { style: DrawingStyle; text?: string; domain?: DrawingDomain; paneId?: string; scaleId?: string };"
+  },
+  {
+   "name": "DrawingDomain",
+   "kind": "type",
+   "module": "drawings/types.ts",
+   "doc": "Coordinate domain of a drawing's anchors: market time, or logical index of a derived chart.",
+   "signature": "export type DrawingDomain = \"time\" | \"logical\";"
+  },
+  {
+   "name": "DrawingEvent",
+   "kind": "type",
+   "module": "drawings/types.ts",
+   "doc": "",
+   "signature": "export type DrawingEvent = | { type: \"create\"; drawing: DrawingData } | { type: \"update\"; drawing: DrawingData } | { type: \"remove\"; id: string } | { type: \"select\"; id: string | null } | { type: \"tool\"; tool: DrawingType | null };"
+  },
+  {
+   "name": "DrawingPoint",
+   "kind": "type",
+   "module": "drawings/types.ts",
+   "doc": "Anchor of a drawing. `time` is a market timestamp (UTC seconds); `price` is a value on the drawing's pane/scale. On price-based (derived) charts drawings use the LOGICAL domain: `logical` is the derived point index and `time` records the source candle time for reference.",
+   "signature": "export type DrawingPoint = { time: number; price: number; logical?: number };"
+  },
+  {
+   "name": "DrawingSpec",
+   "kind": "type",
+   "module": "drawings/types.ts",
+   "doc": "",
+   "signature": "export type DrawingSpec = { id?: string; /** Default \"time\". \"logical\" drawings belong to price-based (derived) chart types. */ domain?: DrawingDomain; /** Pane the drawing lives on (default \"main\"). Prices are values of that pane's scale. */ paneId?: string; /** Price scale of the pane the anchors refer to (default the pane's right scale). */ scaleId?: string; /** A built-in tool or a tool registered on the chart (plugins). */ type: DrawingType | (string & {}); points: DrawingPoint[]; style?: DrawingStyle; text?: string; locked?: boolean; visible?: boolean; };"
+  },
+  {
+   "name": "DrawingStyle",
+   "kind": "type",
+   "module": "drawings/types.ts",
+   "doc": "",
+   "signature": "export type DrawingStyle = { color?: string; lineWidth?: number; lineStyle?: \"solid\" | \"dashed\" | \"dotted\"; fillColor?: string; /** 0–1 */ fillOpacity?: number; textColor?: string; fontSize?: number; /** Fibonacci levels override (fractions, e.g. 0.618). */ levels?: number[]; extendLeft?: boolean; extendRight?: boolean; showLabels?: boolean; };"
+  },
+  {
+   "name": "DrawingType",
+   "kind": "type",
+   "module": "drawings/types.ts",
+   "doc": "",
+   "signature": "export type DrawingType = (typeof DRAWING_TYPES)[number];"
+  },
+  {
+   "name": "Emitter",
+   "kind": "class",
+   "module": "events/emitter.ts",
+   "doc": "",
+   "signature": "class Emitter",
+   "members": [
+    {
+     "name": "on",
+     "signature": "on<K extends keyof Events>(type: K, handler: Handler<Events[K]>): () => void",
+     "doc": ""
+    },
+    {
+     "name": "once",
+     "signature": "once<K extends keyof Events>(type: K, handler: Handler<Events[K]>): () => void",
+     "doc": "Like on(), but the handler runs at most once."
+    },
+    {
+     "name": "off",
+     "signature": "off<K extends keyof Events>(type: K, handler: Handler<Events[K]>): boolean",
+     "doc": "Removes a handler added with on() (the unsubscribe function returned by on() does the same)."
+    },
+    {
+     "name": "has",
+     "signature": "has(type: keyof Events): boolean",
+     "doc": ""
+    },
+    {
+     "name": "count",
+     "signature": "count(type?: keyof Events | undefined): number",
+     "doc": ""
+    },
+    {
+     "name": "emit",
+     "signature": "emit<K extends keyof Events>(type: K, payload: Events[K]): void",
+     "doc": ""
+    },
+    {
+     "name": "clear",
+     "signature": "clear(): void",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "ChartEvents",
+   "kind": "type",
+   "module": "events/types.ts",
+   "doc": "",
+   "signature": "export type ChartEvents = { crosshairMove: CrosshairEvent; visibleRangeChange: { range: VisibleTimeRange; logical: { from: number; to: number } }; click: PointerPayload; dblClick: PointerPayload; seriesUpdate: { seriesId: number; kind: \"full\" | \"tick\" }; indicatorChange: { indicator: IndicatorApi; action?: string }; indicatorError: { indicator: IndicatorApi; error?: string }; drawingCreate: { drawing: DrawingData }; drawingUpdate: { drawing: DrawingData }; drawingRemove: { id: string }; drawingSelect: { id: string | null }; drawingTool: { tool: DrawingType | null }; paneResize: { paneId: string; height: number }; scaleChange: { scaleId: string; paneId: string }; scaleWarning: { scaleId: string; paneId: string; message: string }; layoutChange: { reason: string }; pluginError: { pluginId: string; error: string }; destroy: Record<string, never>; };"
+  },
+  {
+   "name": "ChartEventType",
+   "kind": "type",
+   "module": "events/types.ts",
+   "doc": "",
+   "signature": "export type ChartEventType = keyof ChartEvents;"
+  },
+  {
+   "name": "PointerPayload",
+   "kind": "type",
+   "module": "events/types.ts",
+   "doc": "",
+   "signature": "export type PointerPayload = { time: number | null; price: number | null; paneId: string | null; point: { x: number; y: number }; logical: number };"
+  },
+  {
+   "name": "XCHART_VERSION",
+   "kind": "const",
+   "module": "index.ts",
+   "doc": "",
+   "signature": "const XCHART_VERSION: \"0.4.0\""
+  },
+  {
+   "name": "BUILTIN_INDICATORS",
+   "kind": "const",
+   "module": "indicators/builtins.ts",
+   "doc": "",
+   "signature": "const BUILTIN_INDICATORS: BuiltinDefinition[]"
+  },
+  {
+   "name": "Checkpoints",
+   "kind": "class",
+   "module": "indicators/checkpoints.ts",
+   "doc": "Committed-state snapshots every `every` bars (bounded), used to replay after historical corrections.",
+   "signature": "class Checkpoints",
+   "members": [
+    {
+     "name": "every",
+     "signature": "readonly every: number",
+     "doc": ""
+    },
+    {
+     "name": "max",
+     "signature": "readonly max: number",
+     "doc": ""
+    },
+    {
+     "name": "due",
+     "signature": "due(committed: number): boolean",
+     "doc": ""
+    },
+    {
+     "name": "put",
+     "signature": "put(at: number, state: S): void",
+     "doc": ""
+    },
+    {
+     "name": "before",
+     "signature": "before(i: number): { at: number; state: S; } | null",
+     "doc": "Latest checkpoint taken at or before bar `i` (state after bars 0 … at−1)."
+    },
+    {
+     "name": "dropAfter",
+     "signature": "dropAfter(at: number): void",
+     "doc": ""
+    },
+    {
+     "name": "clear",
+     "signature": "clear(): void",
+     "doc": ""
+    },
+    {
+     "name": "size",
+     "signature": "size(): number",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "GraphStats",
+   "kind": "type",
+   "module": "indicators/dependencies.ts",
+   "doc": "",
+   "signature": "export type GraphStats = { nodes: number; shared: number; committed: number; rebuilds: number; replays: number; lastSyncMs: number; incrementalAdds?: number };"
+  },
+  {
+   "name": "StreamGraph",
+   "kind": "class",
+   "module": "indicators/dependencies.ts",
+   "doc": "",
+   "signature": "class StreamGraph",
+   "members": [
+    {
+     "name": "changedFrom",
+     "signature": "changedFrom = Infinity",
+     "doc": "First bar index whose outputs changed in the last sync (Infinity when nothing changed)."
+    },
+    {
+     "name": "stats",
+     "signature": "readonly stats: GraphStats = { nodes: 0, shared: 0, committed: 0, rebuilds: 0, replays: 0, lastSyncMs: 0 }",
+     "doc": ""
+    },
+    {
+     "name": "acquire",
+     "signature": "acquire(outputs: NodeDef[]): () => void",
+     "doc": "Registers nodes as outputs; returns a release function. Throws on cycles."
+    },
+    {
+     "name": "needsSync",
+     "signature": "needsSync(): boolean",
+     "doc": "True when nodes were added since the last sync (a rebuild is pending)."
+    },
+    {
+     "name": "values",
+     "signature": "values(key: string): number[]",
+     "doc": "Output history of a node (+ the provisional last value)."
+    },
+    {
+     "name": "sync",
+     "signature": "sync(inp: StreamInput, from?: number | undefined): void",
+     "doc": "Brings every node up to date with `inp`. `from` = first bar that may have changed since the previous call (the chart knows this for live ticks); omit it to detect changes by comparison."
+    },
+    {
+     "name": "destroy",
+     "signature": "destroy(): void",
+     "doc": "Releases everything (chart destruction)."
+    },
+    {
+     "name": "size",
+     "signature": "size(): number",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "StreamInput",
+   "kind": "type",
+   "module": "indicators/dependencies.ts",
+   "doc": "Columnar input (existing bars only).",
+   "signature": "export type StreamInput = { time: ArrayLike<number>; open: ArrayLike<number>; high: ArrayLike<number>; low: ArrayLike<number>; close: ArrayLike<number>; volume: ArrayLike<number>; benchmark?: ArrayLike<number> };"
+  },
+  {
+   "name": "kernels",
+   "kind": "namespace",
+   "module": "indicators/incremental.ts",
+   "doc": "",
+   "signature": "namespace kernels (33 exports)"
+  },
+  {
+   "name": "ALL_BUILTIN_INDICATORS",
+   "kind": "const",
+   "module": "indicators/index.ts",
+   "doc": "Every built-in definition: the 22 catalogue wrappers and the native v0.3.1 indicators.",
+   "signature": "const ALL_BUILTIN_INDICATORS: IndicatorDefinition[]"
+  },
+  {
+   "name": "builtinRegistry",
+   "kind": "const",
+   "module": "indicators/index.ts",
+   "doc": "Built-in definitions (read-only).",
+   "signature": "const builtinRegistry: IndicatorRegistry"
+  },
+  {
+   "name": "defaultRegistry",
+   "kind": "const",
+   "module": "indicators/index.ts",
+   "doc": "Shared registry for application-wide custom indicators (charts also have their own).",
+   "signature": "const defaultRegistry: IndicatorRegistry"
+  },
+  {
+   "name": "getIndicatorDefinition",
+   "kind": "function",
+   "module": "indicators/index.ts",
+   "doc": "",
+   "signature": "getIndicatorDefinition(id: string): IndicatorDefinition | undefined"
+  },
+  {
+   "name": "listIndicators",
+   "kind": "function",
+   "module": "indicators/index.ts",
+   "doc": "",
+   "signature": "listIndicators(): IndicatorDefinition[]"
+  },
+  {
+   "name": "registerIndicator",
+   "kind": "function",
+   "module": "indicators/index.ts",
+   "doc": "",
+   "signature": "registerIndicator(def: IndicatorDefinition): void"
+  },
+  {
+   "name": "unregisterIndicator",
+   "kind": "function",
+   "module": "indicators/index.ts",
+   "doc": "",
+   "signature": "unregisterIndicator(id: string): boolean"
+  },
+  {
+   "name": "CatalogMeta",
+   "kind": "type",
+   "module": "indicators/native/define.ts",
+   "doc": "",
+   "signature": "export type CatalogMeta = { formula: string; /** \"exact\": incremental updates equal the full calculation (all native indicators). */ incremental: \"exact\"; missing: string; conventions?: string; limitations?: string; /** Whether values can change after the fact (repainting) and how that is shown. */ repaint?: string; };"
+  },
+  {
+   "name": "IndicatorCategory",
+   "kind": "type",
+   "module": "indicators/native/define.ts",
+   "doc": "",
+   "signature": "export type Category = \"Trend\" | \"Momentum\" | \"Volatility\" | \"Volume\" | \"Statistics\" | \"Structure\";"
+  },
+  {
+   "name": "NativeDefinition",
+   "kind": "type",
+   "module": "indicators/native/define.ts",
+   "doc": "",
+   "signature": "export type NativeDefinition = IndicatorDefinition & { category: Category; meta: CatalogMeta; native: true };"
+  },
+  {
+   "name": "NATIVE_INDICATORS",
+   "kind": "const",
+   "module": "indicators/native/index.ts",
+   "doc": "",
+   "signature": "const NATIVE_INDICATORS: NativeDefinition[]"
+  },
+  {
+   "name": "IndicatorRegistry",
+   "kind": "class",
+   "module": "indicators/registry.ts",
+   "doc": "A set of indicator definitions. Charts look up ids in their own registry first, then the shared default registry, then the built-ins. Built-ins cannot be replaced or removed.",
+   "signature": "class IndicatorRegistry",
+   "members": [
+    {
+     "name": "register",
+     "signature": "register(def: IndicatorDefinition): void",
+     "doc": ""
+    },
+    {
+     "name": "isBuiltin",
+     "signature": "isBuiltin(id: string): boolean",
+     "doc": "True when the id is a built-in here or in a parent registry."
+    },
+    {
+     "name": "unregister",
+     "signature": "unregister(id: string): boolean",
+     "doc": ""
+    },
+    {
+     "name": "get",
+     "signature": "get(id: string): IndicatorDefinition | undefined",
+     "doc": ""
+    },
+    {
+     "name": "has",
+     "signature": "has(id: string): boolean",
+     "doc": ""
+    },
+    {
+     "name": "search",
+     "signature": "search(q?: { text?: string | undefined; category?: string | undefined; requires?: string | undefined; incremental?: boolean | undefined; param?: string | undefined; }): IndicatorDefinition[]",
+     "doc": "Discovery: filters by text (id, name, description), category, required data, incremental support and parameter names. All criteria are optional and combined with AND."
+    },
+    {
+     "name": "categories",
+     "signature": "categories(): Record<string, number>",
+     "doc": "Categories present, with counts."
+    },
+    {
+     "name": "compatibility",
+     "signature": "compatibility(id: string, ctx?: { hasVolume?: boolean | undefined; hasBenchmark?: boolean | undefined; derived?: boolean | undefined; }): { ok: boolean; reasons: string[]; }",
+     "doc": "Whether an indicator can run on given data. Reports every missing requirement (volume, benchmark, session time on price-based charts) instead of silently producing wrong values."
+    },
+    {
+     "name": "list",
+     "signature": "list(): IndicatorDefinition[]",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "FrameScheduler",
+   "kind": "class",
+   "module": "indicators/scheduler.ts",
+   "doc": "Frame scheduler for indicator work: coalesces any number of data changes into one flush per animation frame (or microtask outside browsers). The chart already flushes indicators at the start of each frame; this helper exposes the same policy to applications that drive calculations themselves (e.g. a worker-backed dashboard).",
+   "signature": "class FrameScheduler",
+   "members": [
+    {
+     "name": "request",
+     "signature": "request(): void",
+     "doc": ""
+    },
+    {
+     "name": "cancel",
+     "signature": "cancel(): void",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "IndicatorApi",
+   "kind": "interface",
+   "module": "indicators/types.ts",
+   "doc": "",
+   "signature": "interface IndicatorApi",
+   "members": [
+    {
+     "name": "id",
+     "signature": "readonly id: string",
+     "doc": ""
+    },
+    {
+     "name": "type",
+     "signature": "readonly type: string",
+     "doc": ""
+    },
+    {
+     "name": "definition",
+     "signature": "definition(): Readonly<IndicatorDefinition>",
+     "doc": ""
+    },
+    {
+     "name": "parameters",
+     "signature": "parameters(): Readonly<IndicatorParams>",
+     "doc": ""
+    },
+    {
+     "name": "options",
+     "signature": "options(): Readonly<IndicatorOptions>",
+     "doc": ""
+    },
+    {
+     "name": "applyOptions",
+     "signature": "applyOptions(o: Partial<IndicatorOptions>): void",
+     "doc": ""
+    },
+    {
+     "name": "setParameters",
+     "signature": "setParameters(p: Partial<IndicatorParams>): void",
+     "doc": ""
+    },
+    {
+     "name": "setVisible",
+     "signature": "setVisible(v: boolean): void",
+     "doc": ""
+    },
+    {
+     "name": "isVisible",
+     "signature": "isVisible(): boolean",
+     "doc": ""
+    },
+    {
+     "name": "getValues",
+     "signature": "getValues(): IndicatorPoint[]",
+     "doc": "Calculated values with times (gaps and warm-up are omitted; projected points are flagged)."
+    },
+    {
+     "name": "recalculate",
+     "signature": "recalculate(): void",
+     "doc": "Forces a full recalculation."
+    },
+    {
+     "name": "error",
+     "signature": "error(): string | null",
+     "doc": "Last calculation error, or null."
+    },
+    {
+     "name": "remove",
+     "signature": "remove(): void",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "IndicatorDefinition",
+   "kind": "interface",
+   "module": "indicators/types.ts",
+   "doc": "",
+   "signature": "interface IndicatorDefinition",
+   "members": [
+    {
+     "name": "id",
+     "signature": "id: string",
+     "doc": ""
+    },
+    {
+     "name": "name",
+     "signature": "name: string",
+     "doc": ""
+    },
+    {
+     "name": "description",
+     "signature": "description: string",
+     "doc": ""
+    },
+    {
+     "name": "category",
+     "signature": "category?: string",
+     "doc": ""
+    },
+    {
+     "name": "params",
+     "signature": "params: ParamSchema[]",
+     "doc": ""
+    },
+    {
+     "name": "inputs",
+     "signature": "inputs: Array<keyof Omit<IndicatorInput, \"time\" | \"intraday\">>",
+     "doc": "Price fields the calculation needs (checked before running)."
+    },
+    {
+     "name": "outputs",
+     "signature": "outputs: OutputDef[]",
+     "doc": ""
+    },
+    {
+     "name": "pane",
+     "signature": "pane: \"overlay\" | \"separate\"",
+     "doc": ""
+    },
+    {
+     "name": "levels",
+     "signature": "levels?: number[] | ((p: IndicatorParams) => number[])",
+     "doc": ""
+    },
+    {
+     "name": "range",
+     "signature": "range?: [number, number]",
+     "doc": ""
+    },
+    {
+     "name": "warmup",
+     "signature": "warmup(p: IndicatorParams): number",
+     "doc": "Bars before the first valid value (NaN is returned for them)."
+    },
+    {
+     "name": "lookback",
+     "signature": "lookback(p: IndicatorParams): number",
+     "doc": "Finite memory: the value at bar i depends only on bars [i - lookback, i]. When set, live updates recompute only the tail. Omit for recursive indicators (EMA, RSI, ...): those are recalculated in full, once per frame at most."
+    },
+    {
+     "name": "calculate",
+     "signature": "calculate(input: IndicatorInput, p: IndicatorParams): IndicatorResult",
+     "doc": ""
+    },
+    {
+     "name": "update",
+     "signature": "update(input: IndicatorInput, p: IndicatorParams, prev: IndicatorResult, from: number): IndicatorResult",
+     "doc": "Optional exact incremental update from bar `from` onward (mutates and returns `prev`)."
+    },
+    {
+     "name": "display",
+     "signature": "display?: { shortName?: string; precision?: number }",
+     "doc": ""
+    },
+    {
+     "name": "stream",
+     "signature": "stream(p: IndicatorParams, ctx: { intraday: boolean; }): StreamSpec",
+     "doc": "Streaming (incremental) form: graph nodes per output. When present the chart evaluates the indicator incrementally (exact, O(1)–O(window) per live update) and shares common nodes with other indicators. `calculate` remains the reference full calculation."
+    },
+    {
+     "name": "meta",
+     "signature": "meta?: { formula: string; incremental: \"exact\" | \"full\"; missing: string; conventions?: string; limitations?: string; repaint?: string }",
+     "doc": "Catalogue metadata: formula, incremental support, missing-data policy, conventions, limitations."
+    },
+    {
+     "name": "requires",
+     "signature": "requires?: string[]",
+     "doc": "Data beyond OHLC that the indicator needs (\"volume\", \"time\" for session resets, …). Used to decide where it is meaningful (e.g. not on price-based charts, which have no volume)."
+    }
+   ]
+  },
+  {
+   "name": "IndicatorInput",
+   "kind": "type",
+   "module": "indicators/types.ts",
+   "doc": "Columnar price input given to calculations (only bars that exist: gaps are removed).",
+   "signature": "export type IndicatorInput = { /** Increments when the arrays are updated in place (live ticks). */ revision?: number; time: number[]; open: number[]; high: number[]; low: number[]; close: number[]; volume: number[]; /** True when the series has real intraday timestamps. */ intraday: boolean; /** Benchmark series values aligned to the bars (chart.setBenchmarkSeries); absent when none is set. */ benchmark?: number[]; };"
+  },
+  {
+   "name": "IndicatorOptions",
+   "kind": "type",
+   "module": "indicators/types.ts",
+   "doc": "Per-instance display options (separate from calculation parameters).",
+   "signature": "export type IndicatorOptions = { /** Primary output colour. */ color?: string; /** Colours by output key. */ colors?: Record<string, string>; lineWidth?: number; lineStyle?: \"solid\" | \"dashed\" | \"dotted\"; /** \"overlay\", \"separate\" (own pane) or the id of an existing pane. */ pane?: string; /** Price scale on its pane (default: the pane's right scale). */ priceScaleId?: string; visible?: boolean; title?: string; /** Hide individual outputs by key. */ hiddenOutputs?: string[]; /** Fill opacity / visibility overrides by fill id. */ fills?: Record<string, { visible?: boolean; opacity?: number; up?: string; down?: string }>; };"
+  },
+  {
+   "name": "IndicatorParams",
+   "kind": "type",
+   "module": "indicators/types.ts",
+   "doc": "",
+   "signature": "export type IndicatorParams = Record<string, number | boolean | string>;"
+  },
+  {
+   "name": "IndicatorPoint",
+   "kind": "type",
+   "module": "indicators/types.ts",
+   "doc": "",
+   "signature": "export type IndicatorPoint = { time: number; projected: boolean; values: Record<string, number> };"
+  },
+  {
+   "name": "IndicatorResult",
+   "kind": "type",
+   "module": "indicators/types.ts",
+   "doc": "Output arrays keyed by OutputDef.key. Index i ↔ input bar i; extra entries past the end are a projection.",
+   "signature": "export type IndicatorResult = Record<string, number[]>;"
+  },
+  {
+   "name": "IndicatorSource",
+   "kind": "type",
+   "module": "indicators/types.ts",
+   "doc": "Price input a calculation reads. Derived sources follow the usual definitions.",
+   "signature": "export type IndicatorSource = \"open\" | \"high\" | \"low\" | \"close\" | \"volume\" | \"hl2\" | \"hlc3\" | \"ohlc4\";"
+  },
+  {
+   "name": "OutputDef",
+   "kind": "type",
+   "module": "indicators/types.ts",
+   "doc": "",
+   "signature": "export type OutputDef = { key: string; label: string; type: OutputType; color: string; width?: number; /** Histogram colours: \"trend\" four-tone (MACD) or \"candle\" (by bar direction). */ hist?: { mode: \"trend\" | \"candle\" | \"sign\"; colors: string[] }; fills?: OutputFillDef[]; };"
+  },
+  {
+   "name": "ParamSchema",
+   "kind": "type",
+   "module": "indicators/types.ts",
+   "doc": "",
+   "signature": "export type ParamSchema = { key: string; label: string; type: ParamType; default: number | boolean | string; min?: number; max?: number; step?: number; options?: string[]; /** Other accepted names (e.g. \"period\" for \"length\"). */ aliases?: string[]; };"
+  },
+  {
+   "name": "StreamOutput",
+   "kind": "type",
+   "module": "indicators/types.ts",
+   "doc": "Output wiring of a streaming indicator. `shift` moves values right (+, with projection slots past the last bar when `projection`) or left (−).",
+   "signature": "export type StreamOutput = { key: string; node: import(\"./incremental.ts\").NodeDef; shift?: number; projection?: boolean };"
+  },
+  {
+   "name": "StreamSpec",
+   "kind": "type",
+   "module": "indicators/types.ts",
+   "doc": "",
+   "signature": "export type StreamSpec = { outputs: StreamOutput[]; /** Optional node whose current value 0 hides all outputs (e.g. Volume on index data). */ activeWhen?: import(\"./incremental.ts\").NodeDef };"
+  },
+  {
+   "name": "ChartLayout",
+   "kind": "type",
+   "module": "layout.ts",
+   "doc": "",
+   "signature": "export type ChartLayout = { format: typeof LAYOUT_FORMAT; version: typeof LAYOUT_VERSION; sdkVersion?: string; chart: Record<string, unknown>; chartType: { type: string; style: Record<string, unknown> }; series: LayoutSeries[]; indicators: LayoutIndicator[]; drawings: unknown[]; /** Keyed by scale id (main pane) or \"<pane ref>:<scale id>\". */ priceScales: Record<string, { margins?: { top: number; bottom: number }; visible?: boolean; mode?: string; autoScale?: boolean; range?: [number, number]; invert?: boolean; precision?: number; minMove?: number }>; /** Pane refs: \"main\", \"series:<n>\" (n-th series), \"indicator:<n>\" or a named pane id. */ panes: { sizes?: Record<string, number>; collapsed: string[]; order: string[] }; session?: { calendar: string } | null; /** Informational: plugin ids installed when saved (never installed by a load). */ plugins: string[]; };"
+  },
+  {
+   "name": "LAYOUT_FORMAT",
+   "kind": "const",
+   "module": "layout.ts",
+   "doc": "",
+   "signature": "const LAYOUT_FORMAT: \"xchart-layout\""
+  },
+  {
+   "name": "LAYOUT_VERSION",
+   "kind": "const",
+   "module": "layout.ts",
+   "doc": "",
+   "signature": "const LAYOUT_VERSION: 1"
+  },
+  {
+   "name": "LayoutLoadOptions",
+   "kind": "type",
+   "module": "layout.ts",
+   "doc": "",
+   "signature": "export type LayoutLoadOptions = { /** Drop indicators whose type is not registered instead of failing (default false). */ skipUnknownIndicators?: boolean; /** Apply series data contained in the layout (default true when present). */ applyData?: boolean; };"
+  },
+  {
+   "name": "LayoutLoadReport",
+   "kind": "type",
+   "module": "layout.ts",
+   "doc": "",
+   "signature": "export type LayoutLoadReport = { seriesMatched: number; seriesCreated: number; seriesSkipped: number; indicatorsAdded: number; indicatorsSkipped: string[]; drawings: number; pluginsNotInstalled: string[]; };"
+  },
+  {
+   "name": "parseLayout",
+   "kind": "function",
+   "module": "layout.ts",
+   "doc": "Parses (if needed) and checks the envelope of a layout. Returns a deep copy.",
+   "signature": "parseLayout(input: unknown): ChartLayout"
+  },
+  {
+   "name": "fromTradestxproBars",
+   "kind": "function",
+   "module": "market-data.ts",
+   "doc": "Converts TradestXPro bars to SDK candles. Strict by default: throws MarketDataError (with a report) if any record is invalid. v0.2 silently repaired or dropped bad records; it no longer does.",
+   "signature": "fromTradestxproBars(bars: readonly TradestxproBar[], options?: MarketDataOptions): CandlestickData[]"
+  },
+  {
+   "name": "loadTradestxproCandles",
+   "kind": "function",
+   "module": "market-data.ts",
+   "doc": "Loads candles for a TradestXPro symbol (e.g. \"NSE:RELIANCE\", tf \"1D\"). Requires a signed-in session.",
+   "signature": "loadTradestxproCandles(symbol: string, tf?: string, opts?: string | (MarketDataOptions & { baseUrl?: string | undefined; })): Promise<{ candles: CandlestickData[]; report: ValidationReport; source: string; name: string; }>"
+  },
+  {
+   "name": "MarketDataError",
+   "kind": "class",
+   "module": "market-data.ts",
+   "doc": "Error thrown in strict mode; carries the full report.",
+   "signature": "class MarketDataError extends XChartError",
+   "members": [
+    {
+     "name": "report",
+     "signature": "readonly report: ValidationReport",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "MarketDataOptions",
+   "kind": "type",
+   "module": "market-data.ts",
+   "doc": "",
+   "signature": "export type MarketDataOptions = { /** Default \"strict\". */ mode?: ValidationMode; /** Free-text origin recorded in the report (symbol, endpoint, file name...). */ source?: string; };"
+  },
+  {
+   "name": "Rejection",
+   "kind": "type",
+   "module": "market-data.ts",
+   "doc": "",
+   "signature": "export type Rejection = { /** Position of the record in the input array. */ index: number; /** The record's timestamp when it is a number, else null. */ time: number | null; reason: RejectionReason; message: string; /** The original record, unmodified. */ record: unknown; };"
+  },
+  {
+   "name": "RejectionReason",
+   "kind": "type",
+   "module": "market-data.ts",
+   "doc": "",
+   "signature": "export type RejectionReason = | \"MALFORMED_RECORD\" | \"INVALID_TIMESTAMP\" | \"MILLISECOND_TIMESTAMP\" | \"FRACTIONAL_TIMESTAMP\" | \"INVALID_PRICE\" | \"INVALID_OHLC\" | \"INVALID_VOLUME\" | \"DUPLICATE_TIMESTAMP\" | \"OUT_OF_ORDER\";"
+  },
+  {
+   "name": "TradestxproBar",
+   "kind": "type",
+   "module": "market-data.ts",
+   "doc": "",
+   "signature": "export type TradestxproBar = { t: number; o: number; h: number; l: number; c: number; v?: number | null };"
+  },
+  {
+   "name": "validateTradestxproBars",
+   "kind": "function",
+   "module": "market-data.ts",
+   "doc": "Validates source bars and converts them to SDK candles without altering any value. Strict mode throws MarketDataError on the first dataset with any invalid record.",
+   "signature": "validateTradestxproBars(bars: readonly unknown[], options?: MarketDataOptions): { candles: CandlestickData[]; report: ValidationReport; }"
+  },
+  {
+   "name": "ValidationMode",
+   "kind": "type",
+   "module": "market-data.ts",
+   "doc": "",
+   "signature": "export type ValidationMode = \"strict\" | \"tolerant\";"
+  },
+  {
+   "name": "ValidationReport",
+   "kind": "type",
+   "module": "market-data.ts",
+   "doc": "",
+   "signature": "export type ValidationReport = { source: string; mode: ValidationMode; /** ISO-8601 time the validation ran. */ validatedAt: string; totalRecords: number; validRecords: number; rejectedRecords: number; duplicateTimestamps: number; outOfOrderRecords: number; invalidOhlcRecords: number; invalidVolumeRecords: number; invalidTimestampRecords: number; malformedRecords: number; rejections: Rejection[]; };"
+  },
+  {
+   "name": "PluginContext",
+   "kind": "interface",
+   "module": "plugins.ts",
+   "doc": "",
+   "signature": "interface PluginContext",
+   "members": [
+    {
+     "name": "chart",
+     "signature": "readonly chart: ChartApi",
+     "doc": ""
+    },
+    {
+     "name": "addLayer",
+     "signature": "addLayer(layer: PluginLayer): Unsubscribe",
+     "doc": ""
+    },
+    {
+     "name": "registerIndicator",
+     "signature": "registerIndicator(definition: IndicatorDefinition): void",
+     "doc": ""
+    },
+    {
+     "name": "registerDrawingTool",
+     "signature": "registerDrawingTool(type: string, tool: ToolSpec): void",
+     "doc": ""
+    },
+    {
+     "name": "on",
+     "signature": "on<K extends keyof ChartEvents>(type: K, handler: (payload: ChartEvents[K]) => void): Unsubscribe",
+     "doc": ""
+    },
+    {
+     "name": "requestRedraw",
+     "signature": "requestRedraw(): void",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "PluginInfo",
+   "kind": "type",
+   "module": "plugins.ts",
+   "doc": "",
+   "signature": "export type PluginInfo = { id: string; version?: string; layers: number; indicators: string[]; tools: string[] };"
+  },
+  {
+   "name": "PluginLayer",
+   "kind": "type",
+   "module": "plugins.ts",
+   "doc": "",
+   "signature": "export type PluginLayer = { pane?: string; z?: \"below\" | \"above\"; draw(api: LayerApi): void };"
+  },
+  {
+   "name": "XChartPlugin",
+   "kind": "interface",
+   "module": "plugins.ts",
+   "doc": "",
+   "signature": "interface XChartPlugin",
+   "members": [
+    {
+     "name": "id",
+     "signature": "id: string",
+     "doc": "Unique per chart: 1–64 letters, digits, . _ - or /."
+    },
+    {
+     "name": "version",
+     "signature": "version?: string",
+     "doc": ""
+    },
+    {
+     "name": "install",
+     "signature": "install(ctx: PluginContext): void | { destroy?(): void; }",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "syncCharts",
+   "kind": "function",
+   "module": "sync.ts",
+   "doc": "",
+   "signature": "syncCharts(charts?: ChartApi[], options?: SyncOptions): SyncGroup"
+  },
+  {
+   "name": "SyncGroup",
+   "kind": "interface",
+   "module": "sync.ts",
+   "doc": "",
+   "signature": "interface SyncGroup",
+   "members": [
+    {
+     "name": "add",
+     "signature": "add(chart: ChartApi): void",
+     "doc": ""
+    },
+    {
+     "name": "remove",
+     "signature": "remove(chart: ChartApi): void",
+     "doc": ""
+    },
+    {
+     "name": "charts",
+     "signature": "charts(): ChartApi[]",
+     "doc": ""
+    },
+    {
+     "name": "destroy",
+     "signature": "destroy(): void",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "SyncOptions",
+   "kind": "type",
+   "module": "sync.ts",
+   "doc": "",
+   "signature": "export type SyncOptions = { /** Sync the visible time range (default true). */ timeRange?: boolean; /** Sync the crosshair (default true). */ crosshair?: boolean; /** Also show the source's price on the other charts' crosshairs (default false: prices differ between symbols). */ crosshairPrice?: boolean; };"
+  },
+  {
+   "name": "AreaSeriesOptions",
+   "kind": "interface",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "interface AreaSeriesOptions",
+   "members": [
+    {
+     "name": "topColor",
+     "signature": "topColor?: string",
+     "doc": ""
+    },
+    {
+     "name": "bottomColor",
+     "signature": "bottomColor?: string",
+     "doc": ""
+    },
+    {
+     "name": "baseline",
+     "signature": "baseline?: number",
+     "doc": "Value the area fills down to; omit to fill to the bottom of the pane."
+    }
+   ]
+  },
+  {
+   "name": "CandlestickData",
+   "kind": "interface",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "interface CandlestickData",
+   "members": [
+    {
+     "name": "open",
+     "signature": "open: number",
+     "doc": ""
+    },
+    {
+     "name": "high",
+     "signature": "high: number",
+     "doc": ""
+    },
+    {
+     "name": "low",
+     "signature": "low: number",
+     "doc": ""
+    },
+    {
+     "name": "close",
+     "signature": "close: number",
+     "doc": ""
+    },
+    {
+     "name": "volume",
+     "signature": "volume?: number",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "CandlestickSeriesOptions",
+   "kind": "interface",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "interface CandlestickSeriesOptions",
+   "members": [
+    {
+     "name": "upColor",
+     "signature": "upColor?: string",
+     "doc": ""
+    },
+    {
+     "name": "downColor",
+     "signature": "downColor?: string",
+     "doc": ""
+    },
+    {
+     "name": "wickUpColor",
+     "signature": "wickUpColor?: string",
+     "doc": ""
+    },
+    {
+     "name": "wickDownColor",
+     "signature": "wickDownColor?: string",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "ChartApi",
+   "kind": "interface",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "interface ChartApi",
+   "members": [
+    {
+     "name": "addCandlestickSeries",
+     "signature": "addCandlestickSeries(options?: CandlestickSeriesOptions | undefined): SeriesApi<\"candlestick\">",
+     "doc": ""
+    },
+    {
+     "name": "addLineSeries",
+     "signature": "addLineSeries(options?: LineSeriesOptions | undefined): SeriesApi<\"line\">",
+     "doc": ""
+    },
+    {
+     "name": "addAreaSeries",
+     "signature": "addAreaSeries(options?: AreaSeriesOptions | undefined): SeriesApi<\"area\">",
+     "doc": ""
+    },
+    {
+     "name": "addHistogramSeries",
+     "signature": "addHistogramSeries(options?: HistogramSeriesOptions | undefined): SeriesApi<\"histogram\">",
+     "doc": ""
+    },
+    {
+     "name": "subscribeCrosshairMove",
+     "signature": "subscribeCrosshairMove(handler: (event: CrosshairEvent) => void): Unsubscribe",
+     "doc": ""
+    },
+    {
+     "name": "setVisibleRange",
+     "signature": "setVisibleRange(range: VisibleTimeRange): void",
+     "doc": "Moves the viewport so [from, to] spans the plot width."
+    },
+    {
+     "name": "getVisibleRange",
+     "signature": "getVisibleRange(): VisibleTimeRange | null",
+     "doc": "Time range currently spanned by the viewport, or null when the chart has no data."
+    },
+    {
+     "name": "fitContent",
+     "signature": "fitContent(): void",
+     "doc": "Fits all data into view and re-enables price auto-scale."
+    },
+    {
+     "name": "scrollToRealTime",
+     "signature": "scrollToRealTime(): void",
+     "doc": "Keeps the zoom level and scrolls so the newest bar is at the right edge."
+    },
+    {
+     "name": "scrollBy",
+     "signature": "scrollBy(bars: number): void",
+     "doc": "Scrolls by a number of bars (positive = towards newer data)."
+    },
+    {
+     "name": "zoom",
+     "signature": "zoom(factor: number): void",
+     "doc": "Zooms around the right edge (factor > 1 zooms in)."
+    },
+    {
+     "name": "applyOptions",
+     "signature": "applyOptions(options: Partial<ChartOptions>): void",
+     "doc": ""
+    },
+    {
+     "name": "options",
+     "signature": "options(): Readonly<ChartOptions>",
+     "doc": ""
+    },
+    {
+     "name": "resize",
+     "signature": "resize(width: number, height: number): void",
+     "doc": "Re-measures the container (only needed with autoSize: false after manual resizes)."
+    },
+    {
+     "name": "remove",
+     "signature": "remove(): void",
+     "doc": ""
+    },
+    {
+     "name": "addCloudSeries",
+     "signature": "addCloudSeries(options?: CloudSeriesOptions | undefined): SeriesApi<\"cloud\">",
+     "doc": ""
+    },
+    {
+     "name": "on",
+     "signature": "on<K extends keyof ChartEvents>(type: K, handler: (payload: ChartEvents[K]) => void): Unsubscribe",
+     "doc": "Typed events; returns an unsubscribe function."
+    },
+    {
+     "name": "once",
+     "signature": "once<K extends keyof ChartEvents>(type: K, handler: (payload: ChartEvents[K]) => void): Unsubscribe",
+     "doc": ""
+    },
+    {
+     "name": "off",
+     "signature": "off<K extends keyof ChartEvents>(type: K, handler: (payload: ChartEvents[K]) => void): boolean",
+     "doc": ""
+    },
+    {
+     "name": "subscribeClick",
+     "signature": "subscribeClick(handler: (p: PointerPayload) => void): Unsubscribe",
+     "doc": ""
+    },
+    {
+     "name": "exportLayout",
+     "signature": "exportLayout(options?: { includeData?: boolean | undefined; } | undefined): ChartLayout",
+     "doc": ""
+    },
+    {
+     "name": "importLayout",
+     "signature": "importLayout(layout: unknown, options?: LayoutLoadOptions | undefined): LayoutLoadReport",
+     "doc": ""
+    },
+    {
+     "name": "timeScale",
+     "signature": "timeScale(): { setVisibleRange: (r: VisibleTimeRange) => void; getVisibleRange: () => VisibleTimeRange | null; setVisibleLogicalRange: (r: { from: number; to: number; }) => void; ... 6 more ...; subscribeVisibleTimeRangeChange: (h: (r: VisibleTimeRange) => void) => Unsubscribe; }",
+     "doc": ""
+    },
+    {
+     "name": "addIndicator",
+     "signature": "addIndicator(type: string, config?: Record<string, unknown> | undefined): IndicatorApi",
+     "doc": ""
+    },
+    {
+     "name": "setBenchmarkSeries",
+     "signature": "setBenchmarkSeries(series: SeriesApi<ChartSeriesType> | null): void",
+     "doc": ""
+    },
+    {
+     "name": "searchIndicators",
+     "signature": "searchIndicators(q?: { text?: string | undefined; category?: string | undefined; requires?: string | undefined; incremental?: boolean | undefined; param?: string | undefined; } | undefined): IndicatorDefinition[]",
+     "doc": ""
+    },
+    {
+     "name": "indicatorCompatibility",
+     "signature": "indicatorCompatibility(id: string): { ok: boolean; reasons: string[]; }",
+     "doc": ""
+    },
+    {
+     "name": "indicatorEngineStats",
+     "signature": "indicatorEngineStats(): { nodes: number; shared: number; committed: number; rebuilds: number; replays: number; lastSyncMs: number; incrementalAdds?: number | undefined; }",
+     "doc": "Incremental indicator engine diagnostics (shared nodes, committed bars, rebuilds, replays, last sync time)."
+    },
+    {
+     "name": "renderStats",
+     "signature": "renderStats(): { fullFrames: number; overlayFrames: number; lastDrawMs: number; lastOverlayMs: number; } | null",
+     "doc": "Renderer diagnostics: full vs crosshair-only frames and their last durations (null if the renderer does not report them)."
+    },
+    {
+     "name": "renderTimeMs",
+     "signature": "renderTimeMs(): number | null",
+     "doc": "Duration of the renderer's last full redraw in ms (diagnostics), or null if not reported."
+    },
+    {
+     "name": "getIndicators",
+     "signature": "getIndicators(): IndicatorApi[]",
+     "doc": ""
+    },
+    {
+     "name": "removeIndicator",
+     "signature": "removeIndicator(indicator: string | IndicatorApi): boolean",
+     "doc": ""
+    },
+    {
+     "name": "registerIndicator",
+     "signature": "registerIndicator(definition: IndicatorDefinition): void",
+     "doc": ""
+    },
+    {
+     "name": "unregisterIndicator",
+     "signature": "unregisterIndicator(id: string): boolean",
+     "doc": ""
+    },
+    {
+     "name": "listIndicators",
+     "signature": "listIndicators(): IndicatorDefinition[]",
+     "doc": ""
+    },
+    {
+     "name": "getIndicatorDefinition",
+     "signature": "getIndicatorDefinition(id: string): IndicatorDefinition | undefined",
+     "doc": ""
+    },
+    {
+     "name": "timeToCoordinate",
+     "signature": "timeToCoordinate(time: number): number | null",
+     "doc": "Canvas x (CSS px) of a time; null without data or renderer geometry."
+    },
+    {
+     "name": "coordinateToTime",
+     "signature": "coordinateToTime(x: number): number | null",
+     "doc": ""
+    },
+    {
+     "name": "priceToCoordinate",
+     "signature": "priceToCoordinate(price: number, paneId?: string | undefined, scaleId?: string | undefined): number | null",
+     "doc": "Canvas y (CSS px) of a price in a pane (\"main\" by default)."
+    },
+    {
+     "name": "coordinateToPrice",
+     "signature": "coordinateToPrice(y: number, paneId?: string | undefined, scaleId?: string | undefined): number | null",
+     "doc": ""
+    },
+    {
+     "name": "priceScale",
+     "signature": "priceScale(id?: string | undefined, paneId?: string | undefined): PriceScaleApi",
+     "doc": ""
+    },
+    {
+     "name": "panes",
+     "signature": "panes(): PaneApi[]",
+     "doc": ""
+    },
+    {
+     "name": "pane",
+     "signature": "pane(id: string): PaneApi | undefined",
+     "doc": ""
+    },
+    {
+     "name": "saveLayout",
+     "signature": "saveLayout(options?: { includeData?: boolean | undefined; } | undefined): ChartLayout",
+     "doc": ""
+    },
+    {
+     "name": "loadLayout",
+     "signature": "loadLayout(layout: unknown, options?: LayoutLoadOptions | undefined): LayoutLoadReport",
+     "doc": ""
+    },
+    {
+     "name": "use",
+     "signature": "use(plugin: XChartPlugin): void",
+     "doc": ""
+    },
+    {
+     "name": "removePlugin",
+     "signature": "removePlugin(id: string): boolean",
+     "doc": ""
+    },
+    {
+     "name": "plugins",
+     "signature": "plugins(): PluginInfo[]",
+     "doc": ""
+    },
+    {
+     "name": "drawingTools",
+     "signature": "drawingTools(): string[]",
+     "doc": ""
+    },
+    {
+     "name": "setChartType",
+     "signature": "setChartType(type: ChartType, style?: ChartTypeStyle | undefined): void",
+     "doc": ""
+    },
+    {
+     "name": "getChartType",
+     "signature": "getChartType(): { type: ChartType; style: ChartTypeStyle; }",
+     "doc": ""
+    },
+    {
+     "name": "getDerivedInfo",
+     "signature": "getDerivedInfo(): { type: DerivedKind; settings: Record<string, unknown>; points: DerivedPoint[]; provisional: number; methodology: string; error: string | null; hidden: { ...; }; } | null",
+     "doc": ""
+    },
+    {
+     "name": "getVisibleLogicalRange",
+     "signature": "getVisibleLogicalRange(): { from: number; to: number; } | null",
+     "doc": ""
+    },
+    {
+     "name": "setVisibleLogicalRange",
+     "signature": "setVisibleLogicalRange(range: { from: number; to: number; }): void",
+     "doc": ""
+    },
+    {
+     "name": "takeScreenshot",
+     "signature": "takeScreenshot(scale?: number | undefined): string",
+     "doc": ""
+    },
+    {
+     "name": "setSessionHighlight",
+     "signature": "setSessionHighlight(options: SessionHighlightOptions | null): void",
+     "doc": ""
+    },
+    {
+     "name": "setCrosshairPosition",
+     "signature": "setCrosshairPosition(time: number, price?: number | null | undefined): void",
+     "doc": ""
+    },
+    {
+     "name": "clearCrosshairPosition",
+     "signature": "clearCrosshairPosition(): void",
+     "doc": ""
+    },
+    {
+     "name": "addDrawing",
+     "signature": "addDrawing(spec: DrawingSpec): DrawingApi",
+     "doc": ""
+    },
+    {
+     "name": "getDrawing",
+     "signature": "getDrawing(id: string): DrawingApi | undefined",
+     "doc": ""
+    },
+    {
+     "name": "getDrawings",
+     "signature": "getDrawings(): DrawingApi[]",
+     "doc": ""
+    },
+    {
+     "name": "removeDrawing",
+     "signature": "removeDrawing(drawing: string | DrawingApi): boolean",
+     "doc": ""
+    },
+    {
+     "name": "clearDrawings",
+     "signature": "clearDrawings(): void",
+     "doc": ""
+    },
+    {
+     "name": "duplicateDrawing",
+     "signature": "duplicateDrawing(id: string): DrawingApi | undefined",
+     "doc": ""
+    },
+    {
+     "name": "selectDrawing",
+     "signature": "selectDrawing(id: string | null): void",
+     "doc": ""
+    },
+    {
+     "name": "selectedDrawing",
+     "signature": "selectedDrawing(): string | null",
+     "doc": ""
+    },
+    {
+     "name": "setDrawingTool",
+     "signature": "setDrawingTool(tool: \"trendline\" | \"horizontal-line\" | \"vertical-line\" | \"horizontal-ray\" | \"ray\" | \"extended-line\" | \"parallel-channel\" | \"regression-channel\" | \"pitchfork\" | \"fib-retracement\" | ... 18 more ... | null): void",
+     "doc": ""
+    },
+    {
+     "name": "getDrawingTool",
+     "signature": "getDrawingTool(): \"trendline\" | \"horizontal-line\" | \"vertical-line\" | \"horizontal-ray\" | \"ray\" | \"extended-line\" | \"parallel-channel\" | \"regression-channel\" | \"pitchfork\" | \"fib-retracement\" | ... 17 more ... | null",
+     "doc": ""
+    },
+    {
+     "name": "setDrawingSnap",
+     "signature": "setDrawingSnap(on: boolean): void",
+     "doc": ""
+    },
+    {
+     "name": "undoDrawing",
+     "signature": "undoDrawing(): boolean",
+     "doc": ""
+    },
+    {
+     "name": "redoDrawing",
+     "signature": "redoDrawing(): boolean",
+     "doc": ""
+    },
+    {
+     "name": "serializeDrawings",
+     "signature": "serializeDrawings(): DrawingData[]",
+     "doc": ""
+    },
+    {
+     "name": "loadDrawings",
+     "signature": "loadDrawings(data: unknown): void",
+     "doc": ""
+    },
+    {
+     "name": "subscribeDrawingEvents",
+     "signature": "subscribeDrawingEvents(handler: (e: DrawingEvent) => void): Unsubscribe",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "ChartOptions",
+   "kind": "interface",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "interface ChartOptions",
+   "members": [
+    {
+     "name": "theme",
+     "signature": "theme?: ChartTheme",
+     "doc": ""
+    },
+    {
+     "name": "autoSize",
+     "signature": "autoSize?: boolean",
+     "doc": "Follow the container's size (default true). When false, `width`/`height` are used."
+    },
+    {
+     "name": "width",
+     "signature": "width?: number",
+     "doc": ""
+    },
+    {
+     "name": "height",
+     "signature": "height?: number",
+     "doc": ""
+    },
+    {
+     "name": "crosshair",
+     "signature": "crosshair?: boolean",
+     "doc": "Draw the crosshair (default true). Crosshair events fire either way."
+    },
+    {
+     "name": "priceScale",
+     "signature": "priceScale?: PriceScaleOptions",
+     "doc": ""
+    },
+    {
+     "name": "utcOffsetMinutes",
+     "signature": "utcOffsetMinutes?: number",
+     "doc": "Offset used for intraday time labels, in minutes east of UTC (default 330 = IST). Ignored when `timeZone` is set."
+    },
+    {
+     "name": "timeZone",
+     "signature": "timeZone?: string",
+     "doc": "v0.3: IANA time zone for time labels (daylight saving handled), e.g. \"America/New_York\"."
+    },
+    {
+     "name": "locale",
+     "signature": "locale?: string",
+     "doc": "v0.3: BCP 47 locale for time labels (default \"en-GB\")."
+    },
+    {
+     "name": "followLatest",
+     "signature": "followLatest?: boolean",
+     "doc": "Keep the newest bar in view when live updates append bars (default false: the viewport stays where the user left it). Only follows when the newest bar was already visible."
+    }
+   ]
+  },
+  {
+   "name": "ChartSeriesType",
+   "kind": "type",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "export type ChartSeriesType = \"candlestick\" | \"line\" | \"area\" | \"histogram\" | \"cloud\";"
+  },
+  {
+   "name": "ChartTheme",
+   "kind": "type",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "export type ChartTheme = \"dark\" | \"light\";"
+  },
+  {
+   "name": "ChartTime",
+   "kind": "type",
+   "module": "types.ts",
+   "doc": "Public, framework-independent XChart SDK contracts (v0.2). Canonical time: every `time` is a UTC Unix timestamp in whole SECONDS. Daily (or longer) bars use 00:00:00 UTC of the trading date, which is how TradestXPro's end-of-day data is stored; intraday bars use the actual bar-open instant.",
+   "signature": "export type ChartTime = number;"
+  },
+  {
+   "name": "CloudData",
+   "kind": "interface",
+   "module": "types.ts",
+   "doc": "Two boundaries at one time (cloud / band series). `upper` may fall below `lower` (a crossing).",
+   "signature": "interface CloudData",
+   "members": [
+    {
+     "name": "upper",
+     "signature": "upper: number",
+     "doc": ""
+    },
+    {
+     "name": "lower",
+     "signature": "lower: number",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "CloudSeriesOptions",
+   "kind": "interface",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "interface CloudSeriesOptions",
+   "members": [
+    {
+     "name": "upColor",
+     "signature": "upColor?: string",
+     "doc": "Fill where upper ≥ lower (default translucent green)."
+    },
+    {
+     "name": "downColor",
+     "signature": "downColor?: string",
+     "doc": "Fill where upper < lower (default translucent red)."
+    },
+    {
+     "name": "opacity",
+     "signature": "opacity?: number",
+     "doc": "Multiplies the fill colours' alpha (0–1, default 1)."
+    },
+    {
+     "name": "upperColor",
+     "signature": "upperColor?: string",
+     "doc": ""
+    },
+    {
+     "name": "lowerColor",
+     "signature": "lowerColor?: string",
+     "doc": ""
+    },
+    {
+     "name": "lineVisible",
+     "signature": "lineVisible?: boolean",
+     "doc": "Draw the boundary lines (default true)."
+    },
+    {
+     "name": "lineWidth",
+     "signature": "lineWidth?: number",
+     "doc": ""
+    },
+    {
+     "name": "lineStyle",
+     "signature": "lineStyle?: \"solid\" | \"dashed\" | \"dotted\"",
+     "doc": ""
+    },
+    {
+     "name": "displacement",
+     "signature": "displacement?: number",
+     "doc": "Shift the drawing by whole bars: positive = forward (projection space), negative = back."
+    },
+    {
+     "name": "pane",
+     "signature": "pane?: SeriesPane",
+     "doc": ""
+    },
+    {
+     "name": "priceScaleId",
+     "signature": "priceScaleId?: string",
+     "doc": ""
+    },
+    {
+     "name": "precision",
+     "signature": "precision?: number",
+     "doc": ""
+    },
+    {
+     "name": "lastValueVisible",
+     "signature": "lastValueVisible?: boolean",
+     "doc": ""
+    },
+    {
+     "name": "title",
+     "signature": "title?: string",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "CrosshairEvent",
+   "kind": "interface",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "interface CrosshairEvent",
+   "members": [
+    {
+     "name": "time",
+     "signature": "time: ChartTime | null",
+     "doc": "Time under the pointer (may be past the last bar), or null when the pointer left the chart."
+    },
+    {
+     "name": "price",
+     "signature": "price: number | null",
+     "doc": "Main-pane price under the pointer; null outside the main pane or when the pointer left."
+    },
+    {
+     "name": "seriesData",
+     "signature": "seriesData: ReadonlyMap<SeriesApi<ChartSeriesType>, SeriesData<ChartSeriesType>>",
+     "doc": "Data of each series at `time` (series without a point there are absent)."
+    },
+    {
+     "name": "indicators",
+     "signature": "indicators?: ReadonlyMap<IndicatorApi, Readonly<Record<string, number>>>",
+     "doc": "v0.3: indicator output values at `time` (absent during warm-up or gaps)."
+    },
+    {
+     "name": "projected",
+     "signature": "projected?: boolean",
+     "doc": "v0.3: true when `time` lies after the last real candle (projected indicator space, not market data)."
+    },
+    {
+     "name": "display",
+     "signature": "display?: { open: number; high: number; low: number; close: number }",
+     "doc": "v0.3: the drawn (transformed) candle when the chart type is a display transform such as Heikin Ashi; `seriesData` keeps the real OHLC."
+    },
+    {
+     "name": "derived",
+     "signature": "derived?: import(\"./derived/types.ts\").DerivedPoint",
+     "doc": "v0.3.1: on price-based chart types, the derived point under the pointer. `seriesData` then holds the ORIGINAL source candle (the observed market price); derived values are chart constructs, never executable prices."
+    }
+   ]
+  },
+  {
+   "name": "HistogramSeriesOptions",
+   "kind": "interface",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "interface HistogramSeriesOptions",
+   "members": [
+    {
+     "name": "color",
+     "signature": "color?: string",
+     "doc": "Colour when `colorMode` is \"single\"."
+    },
+    {
+     "name": "upColor",
+     "signature": "upColor?: string",
+     "doc": "Colours for values ≥ 0 / < 0 (\"sign\") or rising / falling candles (\"candle\")."
+    },
+    {
+     "name": "downColor",
+     "signature": "downColor?: string",
+     "doc": ""
+    },
+    {
+     "name": "colorMode",
+     "signature": "colorMode?: \"sign\" | \"candle\" | \"single\"",
+     "doc": "\"sign\" (default): by value sign. \"candle\": by the candlestick series' direction (volume). \"single\": one colour."
+    },
+    {
+     "name": "opacity",
+     "signature": "opacity?: number",
+     "doc": "0–1, default 0.8."
+    },
+    {
+     "name": "pane",
+     "signature": "pane?: SeriesPane",
+     "doc": "Default \"separate\" (own pane with a zero baseline)."
+    },
+    {
+     "name": "priceScaleId",
+     "signature": "priceScaleId?: string",
+     "doc": ""
+    },
+    {
+     "name": "precision",
+     "signature": "precision?: number",
+     "doc": ""
+    },
+    {
+     "name": "title",
+     "signature": "title?: string",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "LineSeriesOptions",
+   "kind": "interface",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "interface LineSeriesOptions",
+   "members": [
+    {
+     "name": "color",
+     "signature": "color?: string",
+     "doc": ""
+    },
+    {
+     "name": "lineWidth",
+     "signature": "lineWidth?: number",
+     "doc": ""
+    },
+    {
+     "name": "lineStyle",
+     "signature": "lineStyle?: \"solid\" | \"dashed\" | \"dotted\"",
+     "doc": ""
+    },
+    {
+     "name": "pane",
+     "signature": "pane?: SeriesPane",
+     "doc": ""
+    },
+    {
+     "name": "priceScaleId",
+     "signature": "priceScaleId?: string",
+     "doc": "v0.3 (main pane): \"right\" (default, the main scale), \"left\", or an overlay scale id with its own range."
+    },
+    {
+     "name": "precision",
+     "signature": "precision?: number",
+     "doc": "Decimal places for this series' price label; omit for automatic."
+    },
+    {
+     "name": "lastValueVisible",
+     "signature": "lastValueVisible?: boolean",
+     "doc": "Show the latest value on the price axis (default true)."
+    },
+    {
+     "name": "title",
+     "signature": "title?: string",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "PaneApi",
+   "kind": "interface",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "interface PaneApi",
+   "members": [
+    {
+     "name": "id",
+     "signature": "readonly id: string",
+     "doc": ""
+    },
+    {
+     "name": "height",
+     "signature": "height(): number | null",
+     "doc": "Current height in px (null before the first layout without explicit sizes)."
+    },
+    {
+     "name": "setHeight",
+     "signature": "setHeight(px: number): void",
+     "doc": ""
+    },
+    {
+     "name": "collapse",
+     "signature": "collapse(): void",
+     "doc": ""
+    },
+    {
+     "name": "expand",
+     "signature": "expand(): void",
+     "doc": ""
+    },
+    {
+     "name": "isCollapsed",
+     "signature": "isCollapsed(): boolean",
+     "doc": ""
+    },
+    {
+     "name": "moveTo",
+     "signature": "moveTo(index: number): void",
+     "doc": "Position among the panes below the main pane (1 = directly below)."
+    }
+   ]
+  },
+  {
+   "name": "PriceScaleApi",
+   "kind": "interface",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "interface PriceScaleApi",
+   "members": [
+    {
+     "name": "id",
+     "signature": "readonly id: string",
+     "doc": ""
+    },
+    {
+     "name": "paneId",
+     "signature": "readonly paneId: string",
+     "doc": ""
+    },
+    {
+     "name": "priceToCoordinate",
+     "signature": "priceToCoordinate(price: number): number | null",
+     "doc": ""
+    },
+    {
+     "name": "coordinateToPrice",
+     "signature": "coordinateToPrice(y: number): number | null",
+     "doc": ""
+    },
+    {
+     "name": "applyOptions",
+     "signature": "applyOptions(o: Partial<PriceScaleSettings>): void",
+     "doc": ""
+    },
+    {
+     "name": "options",
+     "signature": "options(): PriceScaleSettings",
+     "doc": ""
+    },
+    {
+     "name": "seriesCount",
+     "signature": "seriesCount(): number",
+     "doc": "Series currently on this scale (main pane)."
+    }
+   ]
+  },
+  {
+   "name": "PriceScaleMode",
+   "kind": "type",
+   "module": "types.ts",
+   "doc": "\"percentage\" / \"indexed\" are relative to the first visible bar (indexed: first visible = 100). Display transforms only: data is never changed.",
+   "signature": "export type PriceScaleMode = \"normal\" | \"logarithmic\" | \"percentage\" | \"indexed\";"
+  },
+  {
+   "name": "PriceScaleOptions",
+   "kind": "interface",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "interface PriceScaleOptions",
+   "members": [
+    {
+     "name": "mode",
+     "signature": "mode?: PriceScaleMode",
+     "doc": "\"logarithmic\" applies to the main price pane."
+    },
+    {
+     "name": "autoScale",
+     "signature": "autoScale?: boolean",
+     "doc": "Fit the price axis to the visible data (default true)."
+    },
+    {
+     "name": "precision",
+     "signature": "precision?: number",
+     "doc": "Fixed decimal places for price-axis labels; omit for automatic."
+    }
+   ]
+  },
+  {
+   "name": "PriceScaleSettings",
+   "kind": "type",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "export type PriceScaleSettings = { /** Independent per scale (right, left, overlay and pane scales). Percentage / indexed are relative to the first visible value of the scale's first series. */ mode?: \"normal\" | \"logarithmic\" | \"percentage\" | \"indexed\"; /** false needs a manual `range` (except the main right scale, which keeps its dragged range). */ autoScale?: boolean; /** Manual range [min, max] in price units. */ range?: [number, number]; /** Fractions of the pane kept free above and below the data on this scale. */ margins?: { top: number; bottom: number }; /** \"left\" scale: show its axis labels (default true). */ visible?: boolean; /** Higher values drawn lower. */ invert?: boolean; /** Axis label decimals. */ precision?: number; /** Labels rounded to multiples of this tick size. */ minMove?: number; /** Custom axis label (receives the displayed value: % / indexed value in those modes). Not saved in layouts. */ formatter?: (value: number) => string; };"
+  },
+  {
+   "name": "SeriesApi",
+   "kind": "interface",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "interface SeriesApi",
+   "members": [
+    {
+     "name": "type",
+     "signature": "readonly type: T",
+     "doc": ""
+    },
+    {
+     "name": "setData",
+     "signature": "setData(data: readonly SeriesData<T>[]): void",
+     "doc": "Replaces all data. Must be sorted by strictly increasing time."
+    },
+    {
+     "name": "update",
+     "signature": "update(bar: SeriesData<T>): void",
+     "doc": "Real-time update: same time as the last point replaces it, a later time appends. Earlier times throw."
+    },
+    {
+     "name": "data",
+     "signature": "data(): readonly SeriesData<T>[]",
+     "doc": "A copy of the series data."
+    },
+    {
+     "name": "applyOptions",
+     "signature": "applyOptions(options: Partial<SeriesOptionsMap[T]>): void",
+     "doc": ""
+    },
+    {
+     "name": "options",
+     "signature": "options(): Readonly<SeriesOptionsMap[T]>",
+     "doc": ""
+    },
+    {
+     "name": "remove",
+     "signature": "remove(): void",
+     "doc": ""
+    },
+    {
+     "name": "setMarkers",
+     "signature": "setMarkers(markers: readonly SeriesMarker[]): void",
+     "doc": ""
+    },
+    {
+     "name": "addMarker",
+     "signature": "addMarker(marker: SeriesMarker): string",
+     "doc": ""
+    },
+    {
+     "name": "removeMarker",
+     "signature": "removeMarker(id: string): boolean",
+     "doc": ""
+    },
+    {
+     "name": "getMarkers",
+     "signature": "getMarkers(): SeriesMarker[]",
+     "doc": ""
+    },
+    {
+     "name": "clearMarkers",
+     "signature": "clearMarkers(): void",
+     "doc": ""
+    },
+    {
+     "name": "createPriceLine",
+     "signature": "createPriceLine(options: PriceLineOptions): PriceLineApi",
+     "doc": ""
+    },
+    {
+     "name": "priceLines",
+     "signature": "priceLines(): PriceLineApi[]",
+     "doc": ""
+    },
+    {
+     "name": "removePriceLine",
+     "signature": "removePriceLine(line: PriceLineApi): void",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "SeriesData",
+   "kind": "type",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "export type SeriesData<T extends ChartSeriesType> = T extends \"candlestick\" ? CandlestickData : T extends \"cloud\" ? CloudData : SingleValueData;"
+  },
+  {
+   "name": "SeriesOptions",
+   "kind": "type",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "export type SeriesOptions = CandlestickSeriesOptions & LineSeriesOptions;"
+  },
+  {
+   "name": "SeriesOptionsMap",
+   "kind": "type",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "export type SeriesOptionsMap = { candlestick: CandlestickSeriesOptions; line: LineSeriesOptions; area: AreaSeriesOptions; histogram: HistogramSeriesOptions; cloud: CloudSeriesOptions; };"
+  },
+  {
+   "name": "SeriesPane",
+   "kind": "type",
+   "module": "types.ts",
+   "doc": "Where a series is drawn: the main pane, its own pane (\"separate\"), or a named pane shared with other series.",
+   "signature": "export type SeriesPane = \"main\" | \"separate\" | (string & {});"
+  },
+  {
+   "name": "SingleValueData",
+   "kind": "interface",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "interface SingleValueData",
+   "members": [
+    {
+     "name": "value",
+     "signature": "value: number",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "Unsubscribe",
+   "kind": "type",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "export type Unsubscribe = () => void;"
+  },
+  {
+   "name": "VisibleTimeRange",
+   "kind": "interface",
+   "module": "types.ts",
+   "doc": "",
+   "signature": "interface VisibleTimeRange",
+   "members": [
+    {
+     "name": "from",
+     "signature": "from: ChartTime",
+     "doc": ""
+    },
+    {
+     "name": "to",
+     "signature": "to: ChartTime",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "isCssColor",
+   "kind": "function",
+   "module": "validation.ts",
+   "doc": "True for a valid CSS colour. Uses the browser's CSS parser when available.",
+   "signature": "isCssColor(v: unknown): v is string"
+  },
+  {
+   "name": "isTimeZone",
+   "kind": "function",
+   "module": "validation.ts",
+   "doc": "True when `tz` is an IANA time zone this runtime knows.",
+   "signature": "isTimeZone(tz: unknown): tz is string"
+  },
+  {
+   "name": "validateBar",
+   "kind": "function",
+   "module": "validation.ts",
+   "doc": "Validates one data point for a series type.",
+   "signature": "validateBar<T extends ChartSeriesType>(type: T, bar: SeriesData<T>, index?: number | undefined): void"
+  },
+  {
+   "name": "validateBars",
+   "kind": "function",
+   "module": "validation.ts",
+   "doc": "Validates a full data set: every point plus strictly increasing time.",
+   "signature": "validateBars<T extends ChartSeriesType>(type: T, bars: readonly SeriesData<T>[]): void"
+  },
+  {
+   "name": "validateChartOptions",
+   "kind": "function",
+   "module": "validation.ts",
+   "doc": "Validates a complete (merged) chart options object.",
+   "signature": "validateChartOptions(o: ChartOptions): void"
+  },
+  {
+   "name": "validateRange",
+   "kind": "function",
+   "module": "validation.ts",
+   "doc": "",
+   "signature": "validateRange(range: VisibleTimeRange): void"
+  },
+  {
+   "name": "validateSeriesOptions",
+   "kind": "function",
+   "module": "validation.ts",
+   "doc": "Checks option values and combinations that the renderer cannot honour.",
+   "signature": "validateSeriesOptions<T extends ChartSeriesType>(type: T, o: Partial<SeriesOptionsMap[T]>, ctx: { hasCandles: boolean; }): void"
+  },
+  {
+   "name": "validateUpdate",
+   "kind": "function",
+   "module": "validation.ts",
+   "doc": "A real-time update must be at or after the series' last point.",
+   "signature": "validateUpdate<T extends ChartSeriesType>(type: T, last: SeriesData<T> | undefined, bar: SeriesData<T>): void"
+  },
+  {
+   "name": "validateZoom",
+   "kind": "function",
+   "module": "validation.ts",
+   "doc": "",
+   "signature": "validateZoom(factor: unknown): void"
+  },
+  {
+   "name": "XChartError",
+   "kind": "class",
+   "module": "validation.ts",
+   "doc": "Thrown for invalid data, options or calls. Extends RangeError for compatibility with v0.1.",
+   "signature": "class XChartError extends RangeError",
+   "members": [
+    {
+     "name": "code",
+     "signature": "readonly code: string",
+     "doc": ""
+    }
+   ]
+  },
+  {
+   "name": "PROTOCOL_VERSION",
+   "kind": "const",
+   "module": "workers/protocol.ts",
+   "doc": "",
+   "signature": "const PROTOCOL_VERSION: 1"
+  },
+  {
+   "name": "validateWorkerRequest",
+   "kind": "function",
+   "module": "workers/protocol.ts",
+   "doc": "Validates a request received by the worker (throws on anything unexpected).",
+   "signature": "validateRequest(m: unknown): Request"
+  },
+  {
+   "name": "validateWorkerResponse",
+   "kind": "function",
+   "module": "workers/protocol.ts",
+   "doc": "Validates a response received by the main thread.",
+   "signature": "validateResponse(m: unknown): Response"
+  },
+  {
+   "name": "CancelledError",
+   "kind": "class",
+   "module": "workers/worker-client.ts",
+   "doc": "",
+   "signature": "class CancelledError extends Error",
+   "members": []
+  },
+  {
+   "name": "IndicatorResultSet",
+   "kind": "type",
+   "module": "workers/worker-client.ts",
+   "doc": "",
+   "signature": "export type IndicatorResultSet = { results: ({ outputs: Record<string, Float64Array> } | { error: string })[]; ms: number; transferMs: number; worker: boolean };"
+  },
+  {
+   "name": "IndicatorWorkerClient",
+   "kind": "class",
+   "module": "workers/worker-client.ts",
+   "doc": "",
+   "signature": "class IndicatorWorkerClient",
+   "members": [
+    {
+     "name": "fallbackReason",
+     "signature": "fallbackReason: string | null = null",
+     "doc": "Why the client runs synchronously (null when a worker is used)."
+    },
+    {
+     "name": "usesWorker",
+     "signature": "get usesWorker() { return this.fallbackReason === null; }",
+     "doc": ""
+    },
+    {
+     "name": "cancel",
+     "signature": "cancel(jobId: number): void",
+     "doc": "Cancels a job (its promise rejects with CancelledError)."
+    },
+    {
+     "name": "computeIndicators",
+     "signature": "computeIndicators(data: Source & { intraday?: boolean | undefined; }, indicators: IndicatorJob[], opts?: { datasetVersion?: number | undefined; channel?: string | undefined; signal?: AbortSignal | undefined; coalesce?: boolean | undefined; }): Promise<...>",
+     "doc": "Calculates built-in indicators over the full history."
+    },
+    {
+     "name": "computeDerived",
+     "signature": "computeDerived(data: Source, kind: DerivedKind, settings?: Record<string, unknown>, opts?: { datasetVersion?: number | undefined; channel?: string | undefined; signal?: AbortSignal | undefined; }): Promise<...>",
+     "doc": "Builds a price-based chart (Renko, Kagi, …) from candles."
+    },
+    {
+     "name": "inFlight",
+     "signature": "inFlight(): number",
+     "doc": "Number of jobs in flight."
+    },
+    {
+     "name": "terminate",
+     "signature": "terminate(): void",
+     "doc": "Stops the worker; pending jobs reject. The client cannot be used afterwards."
+    }
+   ]
+  },
+  {
+   "name": "StaleResultError",
+   "kind": "class",
+   "module": "workers/worker-client.ts",
+   "doc": "",
+   "signature": "class StaleResultError extends Error",
+   "members": []
+  },
+  {
+   "name": "WorkerClientOptions",
+   "kind": "type",
+   "module": "workers/worker-client.ts",
+   "doc": "",
+   "signature": "export type WorkerClientOptions = { /** Creates the worker (custom bundlers). Default: module worker from ./indicator-worker.ts. */ createWorker?: () => Worker; /** Force the main-thread fallback (tests, environments without workers). */ sync?: boolean; };"
+  }
+ ]
+}

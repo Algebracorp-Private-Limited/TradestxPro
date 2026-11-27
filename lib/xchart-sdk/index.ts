@@ -55,4 +55,4 @@ export {
   MarketDataError, fromTradestxproBars, loadTradestxproCandles, validateTradestxproBars,
   type MarketDataOptions, type Rejection, type RejectionReason, type TradestxproBar, type ValidationMode, type ValidationReport,
 } from "./market-data.ts";
-export const XCHART_VERSION = "0.3.1";
+export const XCHART_VERSION = "0.4.0";

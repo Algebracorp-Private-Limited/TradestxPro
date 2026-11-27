@@ -1,0 +1,22 @@
+/**
+ * Phase 4 database migrations.
+ *
+ * Unlike `lib/schema.ts` (applied automatically by `db()`), these are NEVER applied by the
+ * application. They are applied explicitly with `scripts/migrate.ts --apply` against a chosen
+ * database, after review. Features that need these tables check for them and report
+ * "not configured" when they are missing. Migrations are append-only: never edit an applied one.
+ */
+import { DEVELOPER_ACCOUNTS } from "./001-developer-accounts.ts";
+
+export type Migration = { id: string; description: string; sql: string };
+
+export const MIGRATIONS: Migration[] = [DEVELOPER_ACCOUNTS];
+
+/** Bookkeeping table for applied migrations. */
+export const MIGRATIONS_TABLE_SQL = `
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  id          TEXT PRIMARY KEY,
+  description TEXT NOT NULL,
+  checksum    TEXT NOT NULL,
+  applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);`;

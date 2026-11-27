@@ -3,14 +3,16 @@
 #   - "XChart CI / quality"   (typecheck, lint, unit tests, production build)
 #   - "XChart CI / browser (chromium)", "browser (firefox)", "browser (webkit)"
 #     (mandatory Playwright canvas tests in each engine)
+#   - "XChart CI / package"   (npm pack + install into sample projects: Node ESM/CJS, TypeScript,
+#     plain ES modules with a module worker, Vue 3, Next.js SSR build with the React bindings)
 # Optional (manual): "XChart CI / benchmarks" — run from the Actions tab (workflow_dispatch).
 name: XChart CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, "phase4/**", feature/phase4-ai-market-intelligence]
   push:
-    branches: [feature/xchart-sdk-foundation, feature/xchart-advanced-api]
+    branches: [feature/xchart-sdk-foundation, feature/xchart-advanced-api, "phase4/**", feature/phase4-ai-market-intelligence]
   workflow_dispatch:
     inputs:
       benchmarks:
@@ -35,6 +37,16 @@ jobs:
     name: quality
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    services:
+      # Scratch database for integration tests (migrations, user-data isolation). Not production.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: txp_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -48,9 +60,16 @@ jobs:
         run: npm run typecheck
       - name: ESLint
         run: npm run lint
-      - name: Unit tests
+      - name: Unit and database tests
         # Browser tests are covered by the "browser" job; here they may skip if Chromium is absent.
-        run: npm test
+        # Database tests must not skip in CI.
+        env:
+          TEST_DATABASE_URL: postgres://postgres:ci@127.0.0.1:5432/txp_test
+        run: |
+          node --test --experimental-strip-types --no-warnings --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=tap --test-reporter-destination=unit-tests.tap tests/*.test.ts
+          if grep -E "# SKIP set TEST_DATABASE_URL" unit-tests.tap; then echo "::error::Database tests were skipped"; exit 1; fi
+          if grep -E "^not ok" unit-tests.tap; then exit 1; fi
       - name: Production build
         run: npm run build
 
@@ -89,6 +108,28 @@ jobs:
         with:
           name: browser-tests-${{ matrix.browser }}
           path: browser-tests.tap
+          if-no-files-found: ignore
+
+  package:
+    name: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.1"
+          cache: npm
+      - run: npm ci
+      - run: npx --no-install playwright install --with-deps chromium
+      - name: Build, pack and install @tradestxpro/xchart into sample projects
+        run: node packages/xchart/tests/integration.mjs --browser chromium
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-integration
+          path: packages/xchart/.samples/results.json
           if-no-files-found: ignore
 
   benchmarks:

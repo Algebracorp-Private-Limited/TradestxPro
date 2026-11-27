@@ -22,6 +22,7 @@ export function SiteHeader({ signedIn = false }: { signedIn?: boolean }) {
         <nav className="hidden items-center gap-7 text-sm text-soft md:flex" aria-label="Main">
           <Link href="/#modules" className="hover:text-white">Modules</Link>
           <Link href="/algo-trading" className="hover:text-white">Algo Trading</Link>
+          <Link href="/developers" className="hover:text-white">Developers</Link>
           <Link href="/#pricing" className="hover:text-white">Pricing</Link>
           <Link href="/#roadmap" className="hover:text-white">Roadmap</Link>
         </nav>
@@ -64,6 +65,7 @@ export function SiteFooter() {
           </p>
           <p className="flex flex-wrap gap-x-5 gap-y-1">
             <Link href="/algo-trading" className="hover:text-white">Algo trading</Link>
+            <Link href="/developers" className="hover:text-white">Developers</Link>
             <Link href="/disclaimer" className="hover:text-white">Full disclaimer</Link>
             <Link href="/signup" className="hover:text-white">Create account</Link>
             <Link href="/login" className="hover:text-white">Log in</Link>

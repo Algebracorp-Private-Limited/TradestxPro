@@ -1,7 +1,7 @@
 // TradestXPro chart engine: a dependency-free canvas renderer for OHLC charts with
 // overlays, indicator panes, crosshair, zoom/pan (both axes), log/auto price scale and
 // editable drawings. Colours follow the site theme (CSS variables).
-import type { Bar } from "@/lib/ta/catalog";
+import type { Bar } from "../../lib/ta/catalog.ts";
 import { contrastText, fillPolys, futureTime, histTone, withAlpha } from "../../lib/chart/geometry.ts";
 
 export type PlotStyle = "line" | "histogram" | "dots" | "area";
