@@ -13,10 +13,13 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import * as nodeModule from "node:module";
 import { join, normalize } from "node:path";
+import { createServer, type Server } from "node:http";
 
 const require = createRequire(import.meta.url);
 const ROOT = join(import.meta.dirname, "..");
-const ORIGIN = "http://xchart.test";
+/** Browser engine: chromium (default), firefox or webkit (XCHART_BROWSER). */
+const ENGINE = (process.env.XCHART_BROWSER ?? "chromium") as "chromium" | "firefox" | "webkit";
+let ORIGIN = "";
 const REQUIRED = process.env.XCHART_REQUIRE_BROWSER === "1";
 const strip = (nodeModule as unknown as { stripTypeScriptTypes?: (code: string) => string }).stripTypeScriptTypes;
 
@@ -40,14 +43,56 @@ async function launch(t: { skip: (m: string) => void }): Promise<Any | null> {
   if (!strip) return unavailable("node:module stripTypeScriptTypes is unavailable (Node ≥ 22.13 needed)");
   if (!pw) return unavailable(`playwright is not installed (${loadError})`);
   try {
-    return await pw.chromium.launch();
+    await ensureServer();
+    return await pw[ENGINE].launch();
   } catch (e) {
-    return unavailable(`Chromium could not start: ${(e as Error).message.split("\n")[0]}`);
+    return unavailable(`${ENGINE} could not start: ${(e as Error).message.split("\n")[0]}`);
   }
 }
 
+/**
+ * Local HTTP server for the test page and the unbundled SDK (TypeScript stripped by Node). A real
+ * server (instead of request interception) lets module Web Workers load identically in every engine.
+ */
+let server: Server | null = null;
+async function ensureServer() {
+  if (server) return;
+  server = createServer((req, res) => {
+    const path = decodeURIComponent(new URL(req.url ?? "/", "http://x").pathname);
+    if (path === "/") {
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end(PAGE);
+    }
+    const file = normalize(join(ROOT, path));
+    if (!file.startsWith(ROOT) || !file.endsWith(".ts")) {
+      res.writeHead(404);
+      return res.end("");
+    }
+    try {
+      const body = strip!(readFileSync(file, "utf8"));
+      res.writeHead(200, { "content-type": "text/javascript" });
+      res.end(body);
+    } catch {
+      res.writeHead(404);
+      res.end("");
+    }
+  });
+  await new Promise<void>((r) => server!.listen(0, "127.0.0.1", () => r()));
+  const addr = server.address();
+  ORIGIN = `http://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 0}`;
+  server.unref();
+}
+
+/** Engine-specific capability gaps are skipped with an explicit, logged reason (never silently). */
+function engineSkip(t: { skip: (m: string) => void }, engines: string[], why: string): boolean {
+  if (!engines.includes(ENGINE)) return false;
+  console.log(`    [${ENGINE}] skipped by design: ${why}`);
+  t.skip(`[${ENGINE}] ${why}`);
+  return true;
+}
+
 // Test page: two chart containers plus pixel helpers. W×H chosen so plot width = 600 (axis = 70).
-const PAGE = `<!doctype html><html><body style="margin:0;background:#000">
+const PAGE = `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0;background:#000">
 <div id="a" style="width:670px;height:400px"></div><div id="b" style="width:400px;height:240px"></div>
 <script type="module">
   // Instrument global listeners/observers to prove cleanup.
@@ -65,7 +110,7 @@ const PAGE = `<!doctype html><html><body style="margin:0;background:#000">
   // Count pixels matching pred within [x0,x1)×[y0,y1).
   window.count = (img, pred, x0 = 0, x1 = img.width, y0 = 0, y1 = img.height) => {
     let n = 0; const d = img.data;
-    for (let y = Math.max(0, y0); y < Math.min(img.height, y1); y++) for (let x = Math.max(0, Math.floor(x0)); x < Math.min(img.width, Math.ceil(x1)); x++) {
+    for (let y = Math.max(0, Math.floor(y0)); y < Math.min(img.height, Math.ceil(y1)); y++) for (let x = Math.max(0, Math.floor(x0)); x < Math.min(img.width, Math.ceil(x1)); x++) {
       const i = (y * img.width + x) * 4; if (pred(d[i], d[i + 1], d[i + 2], d[i + 3])) n++;
     }
     return n;
@@ -93,13 +138,6 @@ async function openPage(browser: Any) {
   const page = await browser.newPage({ viewport: { width: 900, height: 800 }, deviceScaleFactor: 1 });
   const errors: string[] = [];
   page.on("pageerror", (e: Error) => errors.push(e.message));
-  await page.route(`${ORIGIN}/**`, async (route: Any) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === "/") return route.fulfill({ contentType: "text/html", body: PAGE });
-    const file = normalize(join(ROOT, path));
-    if (!file.startsWith(ROOT) || !file.endsWith(".ts")) return route.fulfill({ status: 404, body: "" });
-    return route.fulfill({ contentType: "text/javascript", body: strip!(readFileSync(file, "utf8")) });
-  });
   await page.goto(ORIGIN + "/");
   await page.waitForFunction(() => (window as unknown as { ready?: boolean }).ready === true, null, { timeout: 15000 });
   return { page, errors };
@@ -297,6 +335,627 @@ test("browser: a failing renderer constructor leaves no DOM, listeners or contai
 // ---------------------------------------------------------------------------------------
 // Benchmarks (opt-in: XCHART_BENCH=1). Reported, not asserted: hardware varies.
 // ---------------------------------------------------------------------------------------
+test("browser: v0.3 indicators, cloud, drawings, markers and price lines draw real pixels", async (t) => {
+  await withPage(t, async (page) => {
+    const r = await page.evaluate(`(async () => {
+      const el = document.getElementById("a");
+      const chart = X.createChart(el, { theme: "dark" });
+      const c = chart.addCandlestickSeries({ upColor: "#808080", downColor: "#808080", wickUpColor: "#808080", wickDownColor: "#808080" });
+      const data = mk(40);
+      c.setData(data);
+      chart.setVisibleRange({ from: data[0].time, to: data[39].time });
+      await frame();
+      const snap = () => pixels(el).img;
+      const base = snap();
+      const plot = (img, pred) => count(img, pred, 0, 600, 0, 400);
+      const out = { base: { blue: plot(base, is.blue), green: plot(base, is.green), magenta: plot(base, is.magenta), yellow: plot(base, is.yellow), red: plot(base, is.red) } };
+      const sma = chart.addIndicator("sma", { period: 5, color: "#0000ff", lineWidth: 3 });
+      await frame(); out.sma = plot(snap(), is.blue);
+      sma.setVisible(false); await frame(); out.smaHidden = plot(snap(), is.blue);
+      const cloud = chart.addCloudSeries({ upColor: "rgba(0,255,0,1)", downColor: "rgba(0,255,0,1)", lineVisible: false });
+      cloud.setData(data.map((d) => ({ time: d.time, upper: d.close + 12, lower: d.close + 6 })));
+      await frame(); out.cloud = plot(snap(), is.green);
+      cloud.remove();
+      chart.addDrawing({ type: "rectangle", points: [{ time: data[5].time, price: 104 }, { time: data[20].time, price: 125 }], style: { color: "#ff00ff", lineWidth: 3, fillOpacity: 0 } });
+      await frame(); out.rect = plot(snap(), is.magenta);
+      c.setMarkers([{ time: data[30].time, position: "aboveBar", shape: "arrowDown", color: "#ffff00", size: 2 }, { time: data[32].time, position: "belowBar", shape: "circle", color: "#ffff00", size: 2 }]);
+      await frame(); out.markers = plot(snap(), is.yellow);
+      const pl = c.createPriceLine({ price: 112, color: "#ff0000", lineStyle: "solid", lineWidth: 2 });
+      await frame();
+      const y = Math.round(chart.priceToCoordinate(112));
+      out.priceLineRow = count(snap(), is.red, 0, 600, y - 1, y + 2);
+      out.axisTag = count(snap(), is.red, 600, 670, y - 6, y + 6);
+      pl.remove(); await frame(); out.priceLineGone = count(snap(), is.red, 0, 600, y - 1, y + 2);
+      out.data = JSON.stringify(c.data()) === JSON.stringify(data);
+      chart.remove();
+      return out;
+    })()`);
+    assert.ok(r.sma > r.base.blue + 300, `SMA line pixels (${r.sma})`);
+    assert.ok(r.smaHidden <= r.base.blue + 5, `hidden SMA leaves no pixels (${r.smaHidden})`);
+    assert.ok(r.cloud > r.base.green + 1500, `cloud fill pixels (${r.cloud})`);
+    assert.ok(r.rect > r.base.magenta + 400, `rectangle outline pixels (${r.rect})`);
+    assert.ok(r.markers > r.base.yellow + 80, `marker pixels (${r.markers})`);
+    assert.ok(r.priceLineRow > 500, `price line spans the plot (${r.priceLineRow})`);
+    assert.ok(r.axisTag > 100, `price line axis label (${r.axisTag})`);
+    assert.ok(r.priceLineGone < 20, `removed price line disappears (${r.priceLineGone})`);
+    assert.equal(r.data, true, "decorations never modify series data");
+  });
+});
+
+test("browser: pointer creates and drags drawings without panning; projected crosshair past the last candle", async (t) => {
+  await withPage(t, async (page) => {
+    await page.evaluate(`(async () => {
+      const el = document.getElementById("a");
+      const chart = X.createChart(el, { theme: "dark" });
+      const c = chart.addCandlestickSeries();
+      window.data = mk(40);
+      c.setData(data);
+      chart.setVisibleRange({ from: data[0].time, to: data[39].time });
+      await frame();
+      window.chart = chart;
+      window.cross = [];
+      chart.on("crosshairMove", (e) => cross.push({ time: e.time, projected: e.projected }));
+      chart.setDrawingTool("trendline");
+      window.range0 = JSON.stringify(chart.getVisibleRange());
+    })()`);
+    const xy = (i: number, price: number) => page.evaluate(`[chart.timeToCoordinate(data[${i}].time), chart.priceToCoordinate(${price})]`);
+    const [x1, y1] = await xy(8, 110);
+    const [x2, y2] = await xy(24, 120);
+    await page.mouse.move(x1, y1);
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.mouse.move(x2, y2, { steps: 4 });
+    await page.mouse.down();
+    await page.mouse.up();
+    const created = await page.evaluate(`(() => { const d = chart.getDrawings()[0]; return { n: chart.getDrawings().length, pts: d && d.data().points, t8: data[8].time, t24: data[24].time, tool: chart.getDrawingTool(), range: JSON.stringify(chart.getVisibleRange()) === range0 }; })()`);
+    assert.equal(created.n, 1);
+    assert.equal(created.tool, null);
+    assert.deepEqual(created.pts.map((p: { time: number }) => p.time), [created.t8, created.t24]);
+    assert.equal(created.range, true, "creating a drawing does not pan");
+    // Drag the line's midpoint by +4 bars.
+    const [mx, my] = await page.evaluate(`[(chart.timeToCoordinate(data[8].time) + chart.timeToCoordinate(data[24].time)) / 2, (chart.priceToCoordinate(${created.pts[0].price}) + chart.priceToCoordinate(${created.pts[1].price})) / 2]`);
+    const [bx] = await xy(4, 0);
+    const [ax] = await xy(0, 0);
+    await page.mouse.move(mx, my);
+    await page.mouse.down();
+    await page.mouse.move(mx + (bx - ax), my, { steps: 5 });
+    await page.mouse.up();
+    const moved = await page.evaluate(`({ pts: chart.getDrawings()[0].data().points, t12: data[12].time, t28: data[28].time, range: JSON.stringify(chart.getVisibleRange()) === range0 })`);
+    assert.deepEqual(moved.pts.map((p: { time: number }) => p.time), [moved.t12, moved.t28], "body drag moves both anchors by whole bars");
+    assert.equal(moved.range, true, "dragging a drawing does not pan the chart");
+    // Keyboard delete + undo on the focused canvas.
+    await page.keyboard.press("Delete");
+    assert.equal(await page.evaluate(`chart.getDrawings().length`), 0);
+    await page.keyboard.press("Control+z");
+    assert.equal(await page.evaluate(`chart.getDrawings().length`), 1);
+    // Ichimoku: hovering the projection space reports projected = true (no fabricated candles).
+    await page.evaluate(`(async () => { chart.addIndicator("ichimoku"); chart.fitContent(); await frame(); })()`);
+    const lastX = await page.evaluate(`chart.timeToCoordinate(data[39].time)`);
+    await page.mouse.move(Math.min(595, lastX + 40), 150);
+    await page.evaluate(`frame()`);
+    const last = await page.evaluate(`({ c: cross[cross.length - 1], last: data[39].time, bars: chart.getDrawings().length, n: chart.getIndicators()[0].getValues().length })`);
+    assert.equal(last.c.projected, true);
+    assert.ok(last.c.time > last.last);
+    await page.evaluate(`chart.remove()`);
+  });
+});
+
+test("browser: overlay scale margins, percentage mode, left axis, panes (collapse, separator drag)", async (t) => {
+  await withPage(t, async (page) => {
+    const r = await page.evaluate(`(async () => {
+      const el = document.getElementById("a");
+      const chart = X.createChart(el, { theme: "dark" });
+      const c = chart.addCandlestickSeries({ upColor: "#808080", downColor: "#808080", wickUpColor: "#808080", wickDownColor: "#808080" });
+      const data = mk(40);
+      c.setData(data);
+      const vol = chart.addHistogramSeries({ pane: "main", priceScaleId: "vol", colorMode: "single", color: "#ff00ff", opacity: 1 });
+      vol.setData(data.map((d) => ({ time: d.time, value: d.volume })));
+      chart.priceScale("vol").applyOptions({ margins: { top: 0.8, bottom: 0 } });
+      chart.setVisibleRange({ from: data[0].time, to: data[39].time });
+      await frame();
+      const main = chart.pane("main").height();
+      let img = pixels(el).img;
+      const out = { main };
+      out.volTop = count(img, is.magenta, 0, 600, 0, main * 0.75);
+      out.volBottom = count(img, is.magenta, 0, 600, main * 0.78, main);
+      // Percentage mode: same data, the right axis now reads in %.
+      chart.priceScale().applyOptions({ mode: "percentage" });
+      await frame();
+      out.firstY = chart.priceToCoordinate(data[0].close);
+      out.badgeMode = chart.priceScale().options().mode;
+      // Left scale: a line on "left" gets axis labels on the left edge.
+      const left = chart.addLineSeries({ priceScaleId: "left", color: "#0000ff" });
+      left.setData(data.map((d, i) => ({ time: d.time, value: 5000 + i * 10 })));
+      await frame();
+      img = pixels(el).img;
+      out.leftLabels = count(img, (r, g, b) => r > 120 && g > 120 && b > 120 && Math.abs(r - g) < 40, 0, 40, 10, main - 10);
+      out.leftLine = count(img, is.blue, 0, 600, 0, main);
+      // Panes: an oscillator pane, collapse it, then drag its separator.
+      const osc = chart.addLineSeries({ pane: "osc", color: "#00ff00" });
+      osc.setData(data.map((d, i) => ({ time: d.time, value: Math.sin(i / 3) })));
+      await frame();
+      out.oscH = chart.pane("osc").height();
+      chart.pane("osc").collapse();
+      await frame();
+      out.collapsedH = chart.pane("osc").height();
+      out.collapsedGreen = count(pixels(el).img, is.green, 0, 600, chart.pane("main").height(), 374);
+      chart.pane("osc").expand();
+      await frame();
+      out.expandedH = chart.pane("osc").height();
+      window.resizes = [];
+      chart.on("paneResize", (e) => resizes.push(e));
+      window.chartA = chart;
+      return out;
+    })()`);
+    assert.ok(r.volBottom > 300, `volume on the overlay scale sits in the bottom margin band (${r.volBottom})`);
+    assert.equal(r.volTop, 0, "nothing of the volume overlay above its band");
+    assert.equal(r.badgeMode, "percentage");
+    assert.ok(Number.isFinite(r.firstY));
+    assert.ok(r.leftLabels > 40, `left axis labels drawn (${r.leftLabels})`);
+    assert.ok(r.leftLine > 200, `left-scale line drawn on its own range (${r.leftLine})`);
+    assert.ok(r.oscH > 40);
+    assert.ok(r.collapsedH <= 22, `collapsed pane is a title strip (${r.collapsedH})`);
+    assert.equal(r.collapsedGreen, 0, "a collapsed pane draws no series");
+    assert.ok(Math.abs(r.expandedH - r.oscH) < 2);
+    // Drag the separator above the oscillator pane up by 40 px.
+    const top = await page.evaluate(`chartA.pane("main").height()`);
+    await page.mouse.move(300, top + 1);
+    await page.mouse.down();
+    await page.mouse.move(300, top - 39, { steps: 4 });
+    await page.mouse.up();
+    // Pane geometry is re-laid out on the next frame (engines differ in whether input dispatch flushes one).
+    const after = await page.evaluate(`(async () => { await frame(); return { main: chartA.pane("main").height(), osc: chartA.pane("osc").height(), resizes }; })()`);
+    assert.ok(Math.abs(after.main - (top - 40)) <= 2, `main pane shrank by 40 px (${top} → ${after.main}; resizes ${JSON.stringify(after.resizes)})`);
+    assert.ok(after.osc > r.oscH + 35, `oscillator pane grew (${r.oscH} → ${after.osc})`);
+    assert.ok(after.resizes.some((e: { paneId: string }) => e.paneId === "osc"), "paneResize emitted");
+    await page.evaluate(`chartA.remove()`);
+  });
+});
+
+test("browser: synchronised charts follow the pointer and the viewport by time; session shading; time zone labels", async (t) => {
+  await withPage(t, async (page) => {
+    await page.evaluate(`(async () => {
+      const A = X.createChart(document.getElementById("a"), { theme: "dark" });
+      const B = X.createChart(document.getElementById("b"), { theme: "dark" });
+      const data = mk(60);
+      A.addCandlestickSeries().setData(data);
+      B.addCandlestickSeries().setData(data.slice(20));
+      window.g = X.syncCharts([A, B]);
+      window.A = A; window.B = B; window.data = data;
+      A.setVisibleRange({ from: data[25].time, to: data[45].time });
+      await frame(); await frame(); await frame();
+    })()`);
+    const ranges = await page.evaluate(`({ a: A.getVisibleRange(), b: B.getVisibleRange() })`);
+    const span = ranges.a.to - ranges.a.from;
+    assert.ok(Math.abs(ranges.a.from - ranges.b.from) < span * 0.01 && Math.abs(ranges.a.to - ranges.b.to) < span * 0.01, `B follows A's time range (${JSON.stringify(ranges)})`);
+    // Hover A: B draws a dashed crosshair at the same time.
+    const x = await page.evaluate(`A.timeToCoordinate(data[35].time)`);
+    await page.mouse.move(x, 150);
+    await page.evaluate(`frame()`);
+    const bx = await page.evaluate(`B.timeToCoordinate(data[35].time)`);
+    const crossPx = await page.evaluate(`(() => { const { img } = pixels(document.getElementById("b")); return count(img, (r, g, b) => r > 90 && g > 90 && b > 90, ${Math.round(bx) - 1}, ${Math.round(bx) + 2}, 0, 210); })()`);
+    assert.ok(crossPx > 30, `synchronised crosshair on B (${crossPx} px)`);
+    await page.evaluate(`(() => { g.destroy(); A.remove(); B.remove(); })()`);
+
+    // Intraday NSE bars: pre-open, regular and post-close slots get shaded differently; labels in New York time.
+    const r = await page.evaluate(`(async () => {
+      const el = document.getElementById("a");
+      const chart = X.createChart(el, { theme: "dark", timeZone: "America/New_York" });
+      // 2026-03-02 (Mon) 09:00 IST = 03:30 UTC, 5-minute bars to 16:00 IST.
+      const start = Date.UTC(2026, 2, 2, 3, 30) / 1000;
+      const bars = mk(84, start, 300);
+      chart.addCandlestickSeries({ upColor: "#808080", downColor: "#808080", wickUpColor: "#808080", wickDownColor: "#808080" }).setData(bars);
+      chart.setVisibleRange({ from: bars[0].time, to: bars[83].time });
+      await frame();
+      const before = pixels(el).img;
+      chart.setSessionHighlight({ calendar: "NSE", preColor: "rgba(0,0,255,0.5)", postColor: "rgba(255,0,0,0.5)" });
+      await frame();
+      const after = pixels(el).img;
+      const xPre = chart.timeToCoordinate(bars[1].time), xReg = chart.timeToCoordinate(bars[40].time);
+      const px = (img, x) => [...img.data.slice((20 * img.width + Math.round(x)) * 4, (20 * img.width + Math.round(x)) * 4 + 3)];
+      const s = { pre: px(after, xPre), preBefore: px(before, xPre), reg: px(after, xReg), regBefore: px(before, xReg) };
+      chart.remove();
+      return s;
+    })()`);
+    assert.ok(r.pre[2] > r.preBefore[2] + 40, `pre-open bars are shaded (${r.preBefore} → ${r.pre})`);
+    assert.deepEqual(r.reg, r.regBefore, "regular-session bars are not shaded");
+  });
+});
+
+test("browser: chart types draw distinct pixels; Heikin Ashi keeps real data; plugin layer renders; layout round-trip", async (t) => {
+  await withPage(t, async (page) => {
+    const r = await page.evaluate(`(async () => {
+      const el = document.getElementById("a");
+      const chart = X.createChart(el, { theme: "dark" });
+      const c = chart.addCandlestickSeries({ upColor: "#00ff00", downColor: "#ff0000", wickUpColor: "#00ff00", wickDownColor: "#ff0000" });
+      const data = mk(40);
+      c.setData(data);
+      chart.setVisibleRange({ from: data[0].time, to: data[39].time });
+      const out = {};
+      // Blue pixels on the horizontal segment a step line draws at close[10] between bars 10 and 11.
+      const seg = (img) => { const y = Math.round(chart.priceToCoordinate(data[10].close)); const x0 = chart.timeToCoordinate(data[10].time) + 2, x1 = chart.timeToCoordinate(data[11].time) - 2; return count(img, is.blue, x0, x1, y - 1, y + 2); };
+      const shot = async (type, style) => { chart.setChartType(type, style); await frame(); const { img } = pixels(el); return { green: count(img, is.green, 0, 600, 0, 374), red: count(img, is.red, 0, 600, 0, 374), blue: count(img, is.blue, 0, 600, 0, 374), seg: seg(img) }; };
+      out.candles = await shot("candles");
+      out.hollow = await shot("hollow-candles");
+      out.hilo = await shot("high-low");
+      out.line = await shot("line", { lineColor: "#0000ff", lineWidth: 2 });
+      out.step = await shot("step-line", { lineColor: "#0000ff", lineWidth: 2 });
+      out.columns = await shot("columns", { upColor: "#00ff00", downColor: "#ff0000" });
+      out.baseline = await shot("baseline", { upColor: "#00ff00", downColor: "#ff0000", baseline: data[20].close });
+      out.ha = await shot("heikin-ashi");
+      out.haData = JSON.stringify(c.data()) === JSON.stringify(data);
+      try { chart.setChartType("renko", { size: -1 }); } catch (e) { out.renko = e.code; }
+      chart.setChartType("candles");
+      chart.use({ id: "test/box", install(ctx) { ctx.addLayer({ z: "above", draw(api) { api.ctx.fillStyle = "#ff00ff"; api.ctx.fillRect(10, api.pane.top + 10, 50, 30); } }); } });
+      await frame();
+      out.plugin = count(pixels(el).img, is.magenta, 0, 100, 0, 60);
+      chart.removePlugin("test/box");
+      await frame();
+      out.pluginGone = count(pixels(el).img, is.magenta, 0, 100, 0, 60);
+      chart.addIndicator("ema", { period: 9, color: "#0000ff" });
+      chart.addDrawing({ type: "horizontal-line", points: [{ time: data[5].time, price: 120 }] });
+      const layout = JSON.stringify(chart.saveLayout());
+      chart.remove();
+      const other = X.createChart(el, { theme: "dark" });
+      other.addCandlestickSeries().setData(data);
+      other.loadLayout(layout);
+      other.setVisibleRange({ from: data[0].time, to: data[39].time });
+      await frame();
+      out.restoredBlue = count(pixels(el).img, is.blue, 0, 600, 0, 374);
+      out.restored = { ind: other.getIndicators().length, drawings: other.getDrawings().length };
+      other.remove();
+      return out;
+    })()`);
+    assert.ok(r.candles.green > 300 && r.candles.red > 300);
+    assert.ok(r.hollow.green < r.candles.green * 0.7, `hollow up candles are outlines (${r.candles.green} → ${r.hollow.green})`);
+    assert.ok(Math.abs(r.hollow.red - r.candles.red) < r.candles.red * 0.15, "falling candles stay filled");
+    assert.ok(r.hilo.green > 100 && r.hilo.red > 100);
+    assert.ok(r.line.blue > 300 && r.line.green < 20, `line chart (${JSON.stringify(r.line)})`);
+    assert.ok(r.step.seg > r.line.seg + 6, `step line draws a horizontal segment between bars (${r.line.seg} → ${r.step.seg})`);
+    assert.ok(r.columns.green + r.columns.red > r.candles.green + r.candles.red, "columns fill to the pane bottom");
+    assert.ok(r.baseline.green > 100 && r.baseline.red > 100, `baseline colours above/below (${JSON.stringify(r.baseline)})`);
+    assert.ok(r.ha.green > 200, "Heikin Ashi candles drawn");
+    assert.equal(r.haData, true, "Heikin Ashi never changes series data");
+    assert.equal(r.renko, "INVALID_OPTION", "invalid Renko settings are rejected");
+    assert.ok(r.plugin > 1000, `plugin layer pixels (${r.plugin})`);
+    assert.equal(r.pluginGone, 0);
+    assert.deepEqual(r.restored, { ind: 1, drawings: 1 });
+    assert.ok(r.restoredBlue > 200, `restored EMA is drawn (${r.restoredBlue})`);
+  });
+});
+
+test("browser: engine used directly (terminal chart path) keeps its v0.2 behaviour", async (t) => {
+  await withPage(t, async (page) => {
+    const r = await page.evaluate(`(async () => {
+      const { ChartEngine } = await import("/components/chart/engine.ts");
+      const el = document.getElementById("a");
+      el.style.position = "relative";
+      const changes = [];
+      const eng = new ChartEngine(el, { onDrawingsChange: (d) => changes.push(d.length) });
+      const raw = mk(60).map((b) => ({ t: b.time, o: b.open, h: b.high, l: b.low, c: b.close, v: b.volume }));
+      eng.setData({ bars: raw, type: "candles", overlays: [], panes: [{ id: "rsi", title: "RSI", series: [{ label: "x", values: raw.map((b, i) => 50 + Math.sin(i) * 20), color: "#00ff00" }] }] });
+      await frame();
+      window.eng = eng;
+      return { panes: eng.getPanes() };
+    })()`);
+    const sepY = r.panes[1].top;
+    // Without onPaneResize the separator is not draggable: the press pans instead.
+    await page.mouse.move(300, sepY);
+    await page.mouse.down();
+    await page.mouse.move(300, sepY - 40, { steps: 4 });
+    await page.mouse.up();
+    const after = await page.evaluate(`eng.getPanes()`);
+    assert.deepEqual(after.map((p: { height: number }) => Math.round(p.height)), r.panes.map((p: { height: number }) => Math.round(p.height)), "pane sizes unchanged");
+    // The engine's own drawing tools still work.
+    await page.evaluate(`eng.setTool("trend")`);
+    await page.mouse.click(100, 100);
+    await page.mouse.click(300, 150);
+    const drawn = await page.evaluate(`(() => { const n = eng.drawings?.length ?? null; eng.destroy(); return n; })()`);
+    assert.equal(drawn, 1);
+  });
+});
+
+test("browser: price-based chart types render real geometry (Renko, Kagi, P&F X/O symbols, Line Break, Range bars)", async (t) => {
+  await withPage(t, async (page) => {
+    const r = await page.evaluate(`(async () => {
+      const el = document.getElementById("a");
+      const chart = X.createChart(el, { theme: "dark" });
+      // Zig-zag walk: rises 20, falls 14, rises 18 … (deterministic, synthetic).
+      const data = []; let p = 100;
+      for (let i = 0; i < 120; i++) { const step = Math.floor(i / 10) % 2 ? -1.4 : 2; const o = p; p = o + step; data.push({ time: 1767225600 + i * 86400, open: o, high: Math.max(o, p) + 0.3, low: Math.min(o, p) - 0.3, close: p, volume: 1000 }); }
+      const c = chart.addCandlestickSeries();
+      c.setData(data);
+      const shot = async () => { await frame(); return pixels(el).img; };
+      const out = {};
+      chart.setChartType("renko", { size: 2, upColor: "#00ff00", downColor: "#ff0000" });
+      let img = await shot();
+      out.renko = { green: count(img, is.green, 0, 600, 0, 374), red: count(img, is.red, 0, 600, 0, 374), points: chart.getDerivedInfo().points.length };
+      chart.setChartType("kagi", { reversal: 3, upColor: "#00ff00", downColor: "#ff0000", yangWidth: 5, yinWidth: 1 });
+      img = await shot();
+      // Width of the vertical strokes: yang lines are thick, yin lines thin.
+      const runs = (pred) => { const widths = []; for (let y = 20; y < 360; y += 7) { let run = 0; for (let x = 0; x < 600; x++) { const i = (y * img.width + x) * 4; if (pred(img.data[i], img.data[i + 1], img.data[i + 2])) run++; else { if (run) widths.push(run); run = 0; } } } widths.sort((a, b) => a - b); return widths[widths.length >> 1] ?? 0; };
+      out.kagi = { yang: runs(is.green), yin: runs(is.red), lines: chart.getDerivedInfo().points.length };
+      chart.setChartType("point-and-figure", { boxSize: 2, reversal: 3, xColor: "#00ff00", oColor: "#ff0000" });
+      img = await shot();
+      const pf = chart.getDerivedInfo();
+      const ocol = pf.points.find((q) => q.direction === -1 && q.boxes >= 3);
+      const lg = chart.getVisibleLogicalRange();
+      out.pnf = { green: count(img, is.green, 0, 600, 0, 374), red: count(img, is.red, 0, 600, 0, 374), cols: pf.points.length };
+      if (ocol) {
+        // Centre of an O is empty (a ring, not a filled candle body).
+        const span = 600 / (lg.to - lg.from + 1);
+        const x = Math.round((ocol.logical - lg.from + 0.5) * span);
+        const mid = Math.round((ocol.lowBox + ocol.highBox) / 2) * 2;
+        const y = Math.round(chart.priceToCoordinate(mid));
+        const i = (y * img.width + x) * 4;
+        out.oCentre = [img.data[i], img.data[i + 1], img.data[i + 2]];
+        out.oRing = count(img, is.red, x - span / 2, x + span / 2, y - 12, y + 12);
+      }
+      chart.setChartType("line-break", { lines: 3, upColor: "#00ff00", downColor: "#ff0000" });
+      img = await shot();
+      out.lb = { green: count(img, is.green, 0, 600, 0, 374), red: count(img, is.red, 0, 600, 0, 374), lines: chart.getDerivedInfo().points.length };
+      chart.setChartType("range-bars", { range: 1.5, upColor: "#00ff00", downColor: "#ff0000" });
+      img = await shot();
+      const rb = chart.getDerivedInfo();
+      out.rb = { green: count(img, is.green, 0, 600, 0, 374), red: count(img, is.red, 0, 600, 0, 374), bars: rb.points.length, reconstructed: rb.points.every((q) => q.reconstructed), forming: rb.points.at(-1).complete === false };
+      // Logical-axis zoom & pan, screenshot, light theme.
+      const before = chart.getVisibleLogicalRange();
+      chart.zoom(2); await frame();
+      const zoomed = chart.getVisibleLogicalRange();
+      chart.scrollBy(-10); await frame();
+      const panned = chart.getVisibleLogicalRange();
+      out.nav = { before, zoomed, panned };
+      const png = chart.takeScreenshot(2);
+      const im = new Image(); im.src = png; await im.decode();
+      out.png = [im.width, im.height];
+      chart.applyOptions({ theme: "light" }); await frame();
+      out.lightBg = [...pixels(el).img.data.slice(0, 3)];
+      out.dataSame = JSON.stringify(c.data()) === JSON.stringify(data);
+      window.chart = chart; window.data = data;
+      return out;
+    })()`);
+    assert.ok(r.renko.points > 20 && r.renko.green > 2000 && r.renko.red > 1000, `renko bricks (${JSON.stringify(r.renko)})`);
+    assert.ok(r.kagi.lines > 4, "kagi lines");
+    assert.ok(r.kagi.yang >= 4 && r.kagi.yin <= 2, `yang thick / yin thin (${r.kagi.yang} / ${r.kagi.yin} px)`);
+    assert.ok(r.pnf.cols >= 4 && r.pnf.green > 300 && r.pnf.red > 300, `X and O symbols (${JSON.stringify(r.pnf)})`);
+    assert.ok(r.oCentre && !(r.oCentre[0] > 200 && r.oCentre[1] < 60), `O symbols are rings, not filled (${r.oCentre})`);
+    assert.ok(r.oRing > 20, `O ring pixels (${r.oRing})`);
+    assert.ok(r.lb.lines > 3 && r.lb.green > 1000 && r.lb.red > 500, `line break (${JSON.stringify(r.lb)})`);
+    assert.ok(r.rb.bars > 20 && r.rb.green > 500 && r.rb.red > 300 && r.rb.reconstructed && r.rb.forming, `range bars (${JSON.stringify(r.rb)})`);
+    assert.ok(r.nav.zoomed.to - r.nav.zoomed.from < (r.nav.before.to - r.nav.before.from) * 0.7, "zoom narrows the logical range");
+    assert.ok(r.nav.panned.to < r.nav.zoomed.to - 5, "pan moves the logical range");
+    assert.deepEqual(r.png, [1340, 800], "PNG export at 2×");
+    assert.ok(r.lightBg[0] > 200, "light theme repaints");
+    assert.equal(r.dataSame, true, "source candles unchanged");
+    // Real pointer: crosshair reports the derived point and the source candle.
+    await page.evaluate(`(() => { window.ev = null; chart.subscribeCrosshairMove((e) => (window.ev = e && e.derived ? { logical: e.derived.logical, sourceTime: e.derived.sourceTime, time: e.time, src: [...e.seriesData.values()][0] } : null)); })()`);
+    await page.mouse.move(300, 150);
+    await page.evaluate(`frame()`);
+    const ev = await page.evaluate(`window.ev`);
+    assert.ok(ev && ev.time === ev.sourceTime && ev.src && ev.src.time === ev.sourceTime, `crosshair: derived point with its source candle (${JSON.stringify(ev)})`);
+    await page.evaluate(`chart.remove()`);
+  });
+});
+
+test("browser: touch creates a logical-domain drawing on a Renko chart", async (t) => {
+  if (engineSkip(t, ["firefox"], "Playwright cannot emulate touch input (hasTouch) in Firefox")) return;
+  const browser = await launch(t);
+  if (!browser) return;
+  try {
+    const page = await (await browser.newContext({ hasTouch: true, viewport: { width: 900, height: 800 } })).newPage();
+    const errors: string[] = [];
+    page.on("pageerror", (e: Error) => errors.push(e.message));
+    await page.goto(ORIGIN + "/");
+    await page.waitForFunction(() => (window as unknown as { ready?: boolean }).ready === true, null, { timeout: 15000 });
+    await page.evaluate(`(async () => { const chart = X.createChart(document.getElementById("a")); chart.addCandlestickSeries().setData(mk(80)); chart.setChartType("renko", { size: 1 }); chart.setDrawingTool("rectangle"); window.chart = chart; await frame(); })()`);
+    await page.touchscreen.tap(150, 120);
+    await page.touchscreen.tap(320, 220);
+    const d = await page.evaluate(`chart.getDrawings().map((x) => x.data())`);
+    assert.equal(d.length, 1);
+    assert.equal(d[0].domain, "logical");
+    assert.ok(d[0].points.every((p: { logical: number }) => Number.isInteger(p.logical)));
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("browser: indicator Web Worker — identical results, cancellation, stale rejection, errors, termination", async (t) => {
+  await withPage(t, async (page) => {
+    const r = await page.evaluate(`(async () => {
+      const W = await import("/lib/xchart-sdk/workers/worker-client.ts");
+      const B = await import("/lib/xchart-sdk/indicators/builtins.ts");
+      const data = mk(20000, 1600000000, 60);
+      const cols = { time: data.map((d) => d.time), open: data.map((d) => d.open), high: data.map((d) => d.high), low: data.map((d) => d.low), close: data.map((d) => d.close), volume: data.map((d) => d.volume), intraday: true };
+      const client = new W.IndicatorWorkerClient();
+      const out = { usesWorker: client.usesWorker };
+      const res = await client.computeIndicators(cols, [{ id: "macd", params: {} }, { id: "supertrend", params: {} }, { id: "bogus", params: {} }]);
+      out.worker = res.worker;
+      const def = B.BUILTIN_INDICATORS.find((d) => d.id === "macd");
+      const ref = def.calculate(cols, Object.fromEntries(def.params.map((p) => [p.key, p.default])));
+      out.equal = ["macd", "signal", "hist"].every((k) => ref[k].every((v, i) => Object.is(v, res.results[0].outputs[k][i]) || (Number.isNaN(v) && Number.isNaN(res.results[0].outputs[k][i]))));
+      out.bogus = res.results[2].error ?? null;
+      out.callerIntact = cols.close.length === 20000 && Number.isFinite(cols.close[5]);
+      out.transferMs = res.transferMs; out.ms = res.ms;
+      // Coalescing: a newer request on the same channel cancels the older one.
+      const p1 = client.computeIndicators(cols, [{ id: "adx", params: {} }], { datasetVersion: 1, channel: "c" }).then(() => "ok", (e) => e.name);
+      const p2 = client.computeIndicators(cols, [{ id: "adx", params: {} }], { datasetVersion: 2, channel: "c" }).then(() => "ok", (e) => e.name);
+      out.coalesce = await Promise.all([p1, p2]);
+      // Stale rejection: without coalescing, an older dataset version that finishes is discarded.
+      const s1 = client.computeIndicators(cols, [{ id: "ema", params: {} }], { datasetVersion: 3, channel: "s", coalesce: false }).then(() => "ok", (e) => e.name);
+      const s2 = client.computeIndicators(cols, [{ id: "ema", params: {} }], { datasetVersion: 4, channel: "s", coalesce: false }).then(() => "ok", (e) => e.name);
+      out.stale = await Promise.all([s1, s2]);
+      // AbortSignal cancellation.
+      const ac = new AbortController();
+      const pc = client.computeIndicators(cols, [{ id: "ichimoku", params: {} }], { signal: ac.signal, channel: "a" }).then(() => "ok", (e) => e.name);
+      ac.abort();
+      out.abort = await pc;
+      // Derived transformation in the worker.
+      const d = await client.computeDerived(cols, "renko", { size: 2 });
+      out.derived = d.worker && d.points.length > 5;
+      // Termination rejects pending jobs.
+      const pt = client.computeIndicators(cols, [{ id: "adx", params: {} }], { channel: "t" }).then(() => "ok", (e) => e.name);
+      client.terminate();
+      out.terminated = await pt;
+      out.inFlight = client.inFlight();
+      return out;
+    })()`);
+    assert.equal(r.usesWorker, true, "a real Web Worker is used");
+    assert.equal(r.worker, true);
+    assert.equal(r.equal, true, "worker results are identical to the reference calculation");
+    assert.match(r.bogus, /Unknown/);
+    assert.equal(r.callerIntact, true, "inputs are copied before transfer");
+    assert.deepEqual(r.coalesce, ["CancelledError", "ok"]);
+    assert.deepEqual(r.stale, ["StaleResultError", "ok"]);
+    assert.equal(r.abort, "CancelledError");
+    assert.equal(r.derived, true);
+    assert.equal(r.terminated, "CancelledError");
+    assert.equal(r.inFlight, 0);
+    console.log(`    worker: 20k candles × 3 indicators compute ${r.ms.toFixed(1)} ms + transfer/overhead ${r.transferMs.toFixed(1)} ms`);
+  });
+});
+
+test("browser: crosshair-only frames reuse the cached frame", async (t) => {
+  await withPage(t, async (page) => {
+    await page.evaluate(`(async () => {
+      const el = document.getElementById("a");
+      window.chart = X.createChart(el, {});
+      chart.addCandlestickSeries().setData(mk(5000));
+      for (const id of ["ema", "bb", "ichimoku", "rsi", "macd"]) chart.addIndicator(id);
+      await frame();
+    })()`);
+    const before = await page.evaluate(`chart.renderStats()`);
+    for (let i = 0; i < 40; i++) {
+      await page.mouse.move(100 + i * 10, 150 + (i % 5) * 20);
+      await page.evaluate(`frame()`);
+    }
+    const after = await page.evaluate(`({ s: chart.renderStats(), canvases: document.querySelectorAll("#a canvas").length })`);
+    assert.equal(after.canvases, 1, "still a single canvas in the page");
+    assert.ok(after.s.overlayFrames - before.overlayFrames >= 30, `crosshair-only frames (${after.s.overlayFrames - before.overlayFrames})`);
+    assert.ok(after.s.fullFrames - before.fullFrames <= 2, `pointer movement does not re-render the chart (${after.s.fullFrames - before.fullFrames} full frames)`);
+    console.log(`    crosshair-only frame ${after.s.lastOverlayMs.toFixed(2)} ms vs full frame ${after.s.lastDrawMs.toFixed(2)} ms (5k candles, 5 indicators)`);
+    await page.evaluate(`chart.remove()`);
+  });
+});
+
+test("browser: independent scales (log / inverted / percentage per scale) and RSI-pane drawings keep their values", async (t) => {
+  await withPage(t, async (page) => {
+    const r = await page.evaluate(`(async () => {
+      const el = document.getElementById("a");
+      const chart = X.createChart(el, { theme: "dark" });
+      const data = mk(60);
+      chart.addCandlestickSeries().setData(data);
+      const vol = chart.addHistogramSeries({ pane: "main", priceScaleId: "vol", colorMode: "single", color: "#ff00ff", opacity: 1 });
+      vol.setData(data.map((d, i) => ({ time: d.time, value: 100 * Math.pow(1.08, i) })));
+      const lft = chart.addLineSeries({ priceScaleId: "left", color: "#0000ff" });
+      lft.setData(data.map((d, i) => ({ time: d.time, value: 50 + i })));
+      chart.priceScale("vol").applyOptions({ mode: "logarithmic", margins: { top: 0.5, bottom: 0 } });
+      chart.priceScale("left").applyOptions({ invert: true, mode: "percentage" });
+      const rsi = chart.addIndicator("rsi");
+      chart.setVisibleRange({ from: data[0].time, to: data[59].time });
+      await frame();
+      const out = {};
+      // Log scale: equal ratios map to equal pixel distances.
+      const y1 = chart.priceToCoordinate(100, "main", "vol"), y2 = chart.priceToCoordinate(1000, "main", "vol"), y3 = chart.priceToCoordinate(10000, "main", "vol");
+      out.logEven = Math.abs((y1 - y2) - (y2 - y3)) < 0.01;
+      out.logRoundTrip = Math.abs(chart.coordinateToPrice(y2, "main", "vol") - 1000) < 1e-6;
+      out.logNonPositive = chart.priceToCoordinate(-5, "main", "vol");
+      // Inverted percentage scale: higher values are lower on the screen.
+      out.inverted = chart.priceToCoordinate(90, "main", "left") > chart.priceToCoordinate(60, "main", "left");
+      const rp = chart.priceScale("right", "xind-" + rsi.id);
+      out.rsiPaneMap = Math.abs(rp.coordinateToPrice(rp.priceToCoordinate(70)) - 70) < 1e-9;
+      window.chart = chart; window.rsiPane = "xind-" + rsi.id; window.data = data;
+      return out;
+    })()`);
+    assert.equal(r.logEven, true, "log overlay scale spaces decades evenly");
+    assert.equal(r.logRoundTrip, true);
+    assert.equal(r.logNonPositive, null, "non-positive values have no position on a log scale");
+    assert.equal(r.inverted, true);
+    assert.equal(r.rsiPaneMap, true);
+    // Draw a horizontal line on the RSI pane with the mouse at RSI 70.
+    const [x, y] = await page.evaluate(`[chart.timeToCoordinate(data[30].time), chart.priceToCoordinate(70, rsiPane)]`);
+    await page.evaluate(`chart.setDrawingSnap(false); chart.setDrawingTool("horizontal-line")`);
+    await page.mouse.click(x, y);
+    await page.evaluate(`chart.getDrawings()[0].applyOptions({ color: "#ffff00", lineWidth: 2 })`);
+    const d1 = await page.evaluate(`chart.getDrawings().map((d) => d.data())`);
+    assert.equal(d1.length, 1);
+    assert.equal(d1[0].paneId, await page.evaluate(`rsiPane`));
+    assert.ok(Math.abs(d1[0].points[0].price - 70) < 0.6, `anchored in RSI units (${d1[0].points[0].price})`);
+    // Resize and move the pane: the line follows RSI 70, not a pixel position.
+    const pixel = await page.evaluate(`(async () => {
+      chart.pane(rsiPane).setHeight(180); chart.pane(rsiPane).moveTo(1); await frame();
+      const price = chart.getDrawings()[0].data().points[0].price;
+      const y = Math.round(chart.priceToCoordinate(price, rsiPane));
+      const { img } = pixels(document.getElementById("a"));
+      return { y, line: count(img, is.yellow, 0, 600, y - 1, y + 2), height: chart.pane(rsiPane).height() };
+    })()`);
+    assert.ok(Math.abs(pixel.height - 180) < 2);
+    assert.ok(pixel.line > 300, `line drawn at RSI ${d1[0].points[0].price} after resize (${pixel.line} px)`);
+    // A press on the main pane at the same x never selects the RSI-pane drawing.
+    await page.mouse.click(300, 60);
+    assert.equal(await page.evaluate(`chart.selectedDrawing()`), null);
+    await page.evaluate(`chart.remove()`);
+  });
+});
+
+test("browser: high-DPI canvas, container resize and a mobile viewport", async (t) => {
+  const browser = await launch(t);
+  if (!browser) return;
+  try {
+    // High-DPI: the backing store follows devicePixelRatio; drawing stays crisp and aligned.
+    const hd = await browser.newPage({ viewport: { width: 900, height: 800 }, deviceScaleFactor: 2 });
+    await hd.goto(ORIGIN + "/");
+    await hd.waitForFunction(() => (window as unknown as { ready?: boolean }).ready === true, null, { timeout: 15000 });
+    const r = await hd.evaluate(`(async () => {
+      const el = document.getElementById("a");
+      const chart = X.createChart(el, {});
+      chart.addCandlestickSeries({ upColor: "#00ff00", downColor: "#ff0000" }).setData(mk(40));
+      await frame();
+      const cv = el.querySelector("canvas");
+      const out = { css: [cv.clientWidth, cv.clientHeight], px: [cv.width, cv.height], green: count(cv.getContext("2d").getImageData(0, 0, cv.width, cv.height), is.green) };
+      el.style.width = "500px"; el.style.height = "300px";
+      await new Promise((r) => setTimeout(r, 120)); await frame(); await frame();
+      out.resized = [cv.clientWidth, cv.clientHeight, cv.width, cv.height];
+      out.plot = chart.timeToCoordinate !== undefined && chart.getVisibleLogicalRange() !== null;
+      chart.remove();
+      return out;
+    })()`);
+    assert.deepEqual(r.css, [670, 400]);
+    assert.deepEqual(r.px, [1340, 800], "backing store at 2× device pixels");
+    assert.ok(r.green > 1000, `candles drawn at 2× (${r.green} px)`);
+    assert.deepEqual(r.resized, [500, 300, 1000, 600], "canvas follows the container size");
+    await hd.close();
+    // Mobile viewport (375×667, DPR 3); isMobile is unavailable in Firefox, the viewport itself is tested everywhere.
+    const mobile = await browser.newPage({ viewport: { width: 375, height: 667 }, deviceScaleFactor: 3, ...(ENGINE === "firefox" ? {} : { isMobile: true, hasTouch: true }) });
+    await mobile.goto(ORIGIN + "/");
+    await mobile.waitForFunction(() => (window as unknown as { ready?: boolean }).ready === true, null, { timeout: 15000 });
+    const m = await mobile.evaluate(`(async () => {
+      // Only the chart under test is on the page (the fixture's fixed 670 px box would itself overflow a phone).
+      document.getElementById("a").style.display = "none";
+      const el = document.getElementById("b");
+      el.style.width = "100%"; el.style.height = "320px";
+      const chart = X.createChart(el, {});
+      chart.addCandlestickSeries({ upColor: "#00ff00", downColor: "#ff0000" }).setData(mk(80));
+      chart.addIndicator("rsi");
+      await frame();
+      const cv = el.querySelector("canvas");
+      const img = cv.getContext("2d").getImageData(0, 0, cv.width, cv.height);
+      const scroll = document.documentElement.scrollWidth <= window.innerWidth;
+      const out = { w: cv.clientWidth, dpr: cv.width / cv.clientWidth, drawn: count(img, is.green) + count(img, is.red), noHScroll: scroll, chartFits: el.scrollWidth <= el.clientWidth, widths: [document.documentElement.scrollWidth, window.innerWidth, el.scrollWidth, el.clientWidth] };
+      chart.remove();
+      return out;
+    })()`);
+    assert.equal(m.w, 375);
+    assert.equal(m.dpr, 3);
+    assert.ok(m.drawn > 500, `candles drawn on the phone-sized chart (${m.drawn} px)`);
+    assert.equal(m.chartFits, true, `the chart does not overflow its container (${m.widths})`);
+    assert.equal(m.noHScroll, true, `no horizontal page scroll at phone width (${m.widths})`);
+    await mobile.close();
+  } finally {
+    await browser.close();
+  }
+});
+
 test("browser: benchmarks (1k / 10k / 50k candles)", { skip: process.env.XCHART_BENCH !== "1" && "set XCHART_BENCH=1 to run" }, async (t) => {
   const browser = await launch(t);
   if (!browser) return;
@@ -355,6 +1014,62 @@ test("browser: benchmarks (1k / 10k / 50k candles)", { skip: process.env.XCHART_
       const f = (v: number) => `${v.toFixed(2)}`;
       const s = (o: { med: number; p95: number }) => `${f(o.med)}/${f(o.p95)}`;
       console.log(`    ${String(n).padStart(6)} candles | load 3 series ${f(r.load)} ms | first draw ${f(r.firstDraw)} | replace ${s(r.rep)} + draw ${s(r.repDraw)} | append ${s(r.app)} | +2 series update ${s(r.multi)} | zoom draw ${s(r.zoom)} | pan draw ${s(r.pan)} | destroy ${f(r.destroy)} | create+load+remove ${s(r.cycle)}  (ms, median/p95)`);
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
+test("browser: v0.3 benchmarks (1k / 10k / 50k / 100k candles × 5 / 10 / 20 indicators)", { skip: process.env.XCHART_BENCH !== "1" && "set XCHART_BENCH=1 to run" }, async (t) => {
+  const browser = await launch(t);
+  if (!browser) return;
+  try {
+    const { page } = await openPage(browser);
+    for (const n of [1000, 10_000, 50_000, 100_000]) {
+      for (const k of [5, 10, 20]) {
+        const r = await page.evaluate(`(async () => {
+          const el = document.getElementById("a");
+          const data = mk(${n}, 1600000000, 60);
+          const stats = (a) => { const b = [...a].sort((x, y) => x - y); return { med: b[b.length >> 1], p95: b[Math.min(b.length - 1, Math.floor(b.length * 0.95))] }; };
+          const chart = X.createChart(el, { followLatest: true });
+          const c = chart.addCandlestickSeries();
+          c.setData(data);
+          await frame();
+          const ids = chart.listIndicators().map((d) => d.id).filter((id) => id !== "volume");
+          const pick = ids.slice(0, ${k});
+          let t0 = performance.now();
+          for (const id of pick) chart.addIndicator(id);
+          await frame();
+          const addAll = performance.now() - t0;
+          const last = data[data.length - 1];
+          const tick = [], tickDraw = [];
+          for (let i = 0; i < 60; i++) {
+            const s = performance.now();
+            c.update({ ...last, close: last.close + (i % 5) * 0.1, high: last.high + 1, low: last.low - 1 });
+            await frame();
+            tick.push(performance.now() - s); tickDraw.push(chart.renderTimeMs());
+          }
+          const app = [];
+          for (let i = 1; i <= 30; i++) {
+            const s = performance.now();
+            c.update({ time: last.time + i * 60, open: 100, high: 101, low: 99, close: 100.5 });
+            await frame();
+            app.push(performance.now() - s);
+          }
+          const pan = [];
+          for (let i = 0; i < 30; i++) { chart.scrollBy(-7); await frame(); pan.push(chart.renderTimeMs()); }
+          for (let i = 0; i < 50; i++) chart.addDrawing({ type: i % 2 ? "trendline" : "fib-retracement", points: [{ time: data[data.length - 200 + i].time, price: 100 + i }, { time: data[data.length - 100 + i].time, price: 120 + i }] });
+          const draw50 = [];
+          for (let i = 0; i < 20; i++) { chart.scrollBy(i % 2 ? 3 : -3); await frame(); draw50.push(chart.renderTimeMs()); }
+          t0 = performance.now(); const layout = JSON.stringify(chart.saveLayout()); const save = performance.now() - t0;
+          t0 = performance.now(); chart.loadLayout(layout); await frame(); const load = performance.now() - t0;
+          t0 = performance.now(); chart.remove(); const destroy = performance.now() - t0;
+          return { addAll, tick: stats(tick), tickDraw: stats(tickDraw), app: stats(app), pan: stats(pan), draw50: stats(draw50), save, load, destroy };
+        })()`);
+        const f = (v: number) => v.toFixed(1);
+        const s = (o: { med: number; p95: number }) => `${f(o.med)}/${f(o.p95)}`;
+        console.log(`    ${String(n).padStart(6)} candles × ${String(k).padStart(2)} ind | add all ${f(r.addAll)} ms | tick→frame ${s(r.tick)} (draw ${s(r.tickDraw)}) | append→frame ${s(r.app)} | pan draw ${s(r.pan)} | +50 drawings draw ${s(r.draw50)} | layout save ${f(r.save)} load ${f(r.load)} | destroy ${f(r.destroy)}  (ms, median/p95)`);
+      }
     }
   } finally {
     await browser.close();

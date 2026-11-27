@@ -1,15 +1,22 @@
 # XChart SDK continuous integration.
 # Required checks (configure in branch protection, by job name):
 #   - "XChart CI / quality"   (typecheck, lint, unit tests, production build)
-#   - "XChart CI / browser"   (mandatory Playwright + Chromium canvas tests)
+#   - "XChart CI / browser (chromium)", "browser (firefox)", "browser (webkit)"
+#     (mandatory Playwright canvas tests in each engine)
+# Optional (manual): "XChart CI / benchmarks" — run from the Actions tab (workflow_dispatch).
 name: XChart CI
 
 on:
   pull_request:
     branches: [main]
   push:
-    branches: [feature/xchart-sdk-foundation]
+    branches: [feature/xchart-sdk-foundation, feature/xchart-advanced-api]
   workflow_dispatch:
+    inputs:
+      benchmarks:
+        description: "Also run the (non-asserting) browser benchmarks"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -48,9 +55,13 @@ jobs:
         run: npm run build
 
   browser:
-    name: browser
+    name: browser (${{ matrix.browser }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -59,22 +70,48 @@ jobs:
           cache: npm
       - name: Install dependencies (lockfile, pins playwright@1.63.0)
         run: npm ci
-      - name: Install Chromium and system dependencies
-        run: npx --no-install playwright install --with-deps chromium
+      - name: Install ${{ matrix.browser }} and system dependencies
+        run: npx --no-install playwright install --with-deps ${{ matrix.browser }}
       - name: Mandatory browser tests (fail instead of skipping)
         env:
           XCHART_REQUIRE_BROWSER: "1"
+          XCHART_BROWSER: ${{ matrix.browser }}
         run: |
           node --test --experimental-strip-types --no-warnings --test-reporter=spec --test-reporter-destination=stdout \
             --test-reporter=tap --test-reporter-destination=browser-tests.tap tests/xchart-sdk-browser.test.ts
-          # The benchmark test is the only one allowed to skip.
-          skipped=$(grep -c "# SKIP" browser-tests.tap || true)
-          if [ "$skipped" -gt 1 ]; then echo "::error::Unexpected skipped browser tests ($skipped)"; exit 1; fi
+          # Allowed skips: the benchmarks (separate job) and documented engine gaps ("# SKIP [engine] reason").
+          unexpected=$(grep "# SKIP" browser-tests.tap | grep -v "benchmarks" | grep -v "# SKIP \[${{ matrix.browser }}\]" | wc -l)
+          if [ "$unexpected" -gt 0 ]; then grep "# SKIP" browser-tests.tap; echo "::error::Unexpected skipped browser tests ($unexpected)"; exit 1; fi
           if grep -E "^not ok" browser-tests.tap; then exit 1; fi
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: browser-tests
+          name: browser-tests-${{ matrix.browser }}
           path: browser-tests.tap
+          if-no-files-found: ignore
+
+  benchmarks:
+    name: benchmarks
+    if: github.event_name == 'workflow_dispatch' && inputs.benchmarks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.1"
+          cache: npm
+      - run: npm ci
+      - run: npx --no-install playwright install --with-deps chromium
+      - name: Benchmarks (reported, never asserted)
+        env:
+          XCHART_REQUIRE_BROWSER: "1"
+          XCHART_BENCH: "1"
+        run: node --test --experimental-strip-types --no-warnings --test-name-pattern="benchmarks" tests/xchart-sdk-browser.test.ts | tee benchmarks.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmarks
+          path: benchmarks.txt
           if-no-files-found: ignore

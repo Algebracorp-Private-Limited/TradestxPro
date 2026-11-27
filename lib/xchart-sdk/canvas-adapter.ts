@@ -4,16 +4,16 @@
  *
  * Browser-only: construct it from client code (createChart guards against SSR).
  */
-import { ChartEngine, type ChartData, type EngineTheme, type PaneSpec, type PlotSeries } from "../../components/chart/engine.ts";
+import { ChartEngine, type ChartData, type DerivedRender, type ChartType as EngineChartType, type MainStyle, type ScaleSpec, type EngineLayer, type EngineTheme, type InteractionDelegate, type PaneBox, type PaneSpec, type PlotSeries, type PointerInfo } from "../../components/chart/engine.ts";
 import { withAlpha } from "../chart/geometry.ts";
 import type { AxisBar, Change } from "./store.ts";
 import type {
   AreaSeriesOptions,
   CandlestickSeriesOptions,
+  CloudSeriesOptions,
   ChartOptions,
   ChartSeriesType,
   HistogramSeriesOptions,
-  LineSeriesOptions,
   SeriesOptionsMap,
 } from "./types.ts";
 
@@ -25,7 +25,38 @@ export type RenderModel = {
   candle: CandlestickSeriesOptions | null;
   /** Follow appended bars when the newest bar is in view (ChartOptions.followLatest). */
   followLatest?: boolean;
-  series: { id: number; type: Exclude<ChartSeriesType, "candlestick">; values: number[]; options: SeriesOptionsMap[Exclude<ChartSeriesType, "candlestick">] }[];
+  series: { id: number; type: Exclude<ChartSeriesType, "candlestick">; values: number[]; values2?: number[]; options: SeriesOptionsMap[Exclude<ChartSeriesType, "candlestick">] }[];
+  /** Plots computed by sub-systems (indicators): overlays on the main pane and extra panes. */
+  extraOverlays?: PlotSeries[];
+  extraPanes?: PaneSpec[];
+  /** Slots past the last bar that projected values extend into. */
+  future?: number;
+  /** v0.3: price-scale settings, pane slot heights (px), collapsed panes and pane order. */
+  scales?: ScaleSpec[];
+  paneSizes?: Record<string, number>;
+  collapsed?: string[];
+  paneOrder?: string[];
+  /** v0.3: main draw type, its style, and the real last/previous close when `bars` is a display transform. */
+  chartType?: EngineChartType;
+  mainStyle?: MainStyle;
+  lastPrice?: { price: number; prev: number | null };
+  /** v0.3.1: price-based chart type; `bars` then holds derived points on the logical axis. */
+  derived?: DerivedRender;
+};
+
+/** Engine pane id of a series: "main", its own "xs-<id>" pane, or a shared named pane. */
+export function seriesPaneId(id: number, type: ChartSeriesType, o: { pane?: string }): string {
+  if (type === "candlestick") return "main";
+  const pane = o.pane ?? (type === "histogram" ? "separate" : "main");
+  return pane === "main" ? "main" : pane === "separate" ? `xs-${id}` : pane;
+}
+
+export type AdapterEvents = {
+  click?(p: PointerInfo): void;
+  dblClick?(p: PointerInfo): void;
+  view?(v: { from: number; to: number; spacing: number }): void;
+  beforeDraw?(): void;
+  paneResize?(sizes: Record<string, number>): void;
 };
 
 /** Rendering backend used by the SDK core (the Canvas adapter in production, a fake in unit tests). */
@@ -44,6 +75,25 @@ export interface RenderAdapter {
   destroy(): void;
   /** Optional: duration of the last redraw in ms. */
   lastDrawMs?(): number;
+  // ---- v0.3 extension points (optional so v0.2.1 custom adapters keep compiling) ----
+  setLayers?(layers: EngineLayer[]): void;
+  setInteraction?(d: InteractionDelegate | null): void;
+  setEvents?(e: AdapterEvents): void;
+  setCrosshair?(c: { index: number; price: number | null } | null): void;
+  requestRedraw?(): void;
+  xOfIndex?(i: number): number;
+  indexOfX?(x: number): number;
+  priceToY?(p: number, paneId?: string, scaleId?: string): number | null;
+  yToPrice?(y: number, paneId?: string, scaleId?: string): number | null;
+  /** Manual range of the main right scale. */
+  setPriceRange?(min: number, max: number): void;
+  getPanes?(): PaneBox[];
+  getSpacing?(): number;
+  setSpacing?(px: number): void;
+  getPlotWidth?(): number;
+  toDataURL?(scale?: number): string;
+  /** Diagnostics: frame counters and last frame durations. */
+  renderStats?(): { fullFrames: number; overlayFrames: number; lastDrawMs: number; lastOverlayMs: number };
 }
 
 export const THEMES: Record<"dark" | "light", Partial<EngineTheme>> = {
@@ -61,10 +111,19 @@ export const THEMES: Record<"dark" | "light", Partial<EngineTheme>> = {
 
 const DEFAULT_LINE = "#2962ff";
 
+/** Alpha channel of an rgba()/hex colour (1 when opaque or unknown). */
+function alphaOf(c: string): number {
+  const m = c.match(/rgba\([^,]+,[^,]+,[^,]+,\s*([0-9.]+)\)/);
+  if (m) return Number(m[1]);
+  const h = c.match(/^#[0-9a-f]{6}([0-9a-f]{2})$/i);
+  return h ? parseInt(h[1], 16) / 255 : 1;
+}
+
 export class CanvasAdapter implements RenderAdapter {
   private wrapper: HTMLDivElement;
   private engine: ChartEngine;
   private colorCtx: CanvasRenderingContext2D | null = null;
+  private events: AdapterEvents = {};
   private data: ChartData | null = null;
   private crosshairCb: ((index: number | null, time: number | null, price: number | null) => void) | null = null;
   private theme: "dark" | "light" = "dark";
@@ -80,6 +139,11 @@ export class CanvasAdapter implements RenderAdapter {
     try {
       this.engine = new ChartEngine(this.wrapper, {
         onCrosshair: (c) => this.crosshairCb?.(c ? c.index : null, c?.time ?? null, c?.price ?? null),
+        onClick: (p) => this.events.click?.(p),
+        onDblClick: (p) => this.events.dblClick?.(p),
+        onView: (v) => this.events.view?.(v),
+        onBeforeDraw: () => this.events.beforeDraw?.(),
+        onPaneResize: (sz) => this.events.paneResize?.(sz),
       });
       this.setOptions(options);
     } catch (e) {
@@ -129,6 +193,8 @@ export class CanvasAdapter implements RenderAdapter {
       crosshair: o.crosshair ?? true,
       pricePrecision: o.priceScale?.precision,
       utcOffsetSeconds: o.utcOffsetMinutes !== undefined ? o.utcOffsetMinutes * 60 : undefined,
+      scaleMode: o.priceScale?.mode === "percentage" || o.priceScale?.mode === "indexed" ? o.priceScale.mode : "normal",
+      timeFormatter: o.timeZone || o.locale ? timeFormatter(o.timeZone, o.locale, (o.utcOffsetMinutes ?? 330) * 60) : null,
     });
     if (o.priceScale?.mode) this.engine.setScale({ log: o.priceScale.mode === "logarithmic" });
     if (o.priceScale?.autoScale !== undefined) this.engine.setScale({ auto: o.priceScale.autoScale });
@@ -136,9 +202,11 @@ export class CanvasAdapter implements RenderAdapter {
 
   render(model: RenderModel, change: Change) {
     if (this.destroyed) return;
-    if (change.kind === "tick" && this.data && this.data.bars === model.bars) {
+    const shifted = model.series.some((x) => x.type === "cloud" && (x.options as CloudSeriesOptions).displacement);
+    if (change.kind === "tick" && this.data && this.data.bars === model.bars && !shifted) {
       // Arrays were mutated in place: refresh derived metadata, then redraw on the next frame.
       this.data.intraday = model.intraday;
+      this.data.lastPrice = model.lastPrice;
       this.engine.refresh(model.followLatest ? change.appended : 0);
       return;
     }
@@ -151,22 +219,76 @@ export class CanvasAdapter implements RenderAdapter {
     const overlays: PlotSeries[] = [];
     const panes: PaneSpec[] = [];
     const th = THEMES[this.theme];
+    let future = m.future ?? 0;
     for (const s of m.series) {
-      const ps = this.plot(s.type, s.values, s.options, th, m.candle !== null);
-      const pane = (s.options as LineSeriesOptions | HistogramSeriesOptions).pane ?? (s.type === "histogram" ? "separate" : "main");
-      if (pane === "main") overlays.push(ps);
-      else panes.push({ id: `xs-${s.id}`, title: ps.label, series: [ps], levels: s.type === "histogram" ? [0] : undefined });
+      const ps = s.type === "cloud" ? this.cloud(s.values, s.values2 ?? [], s.options as CloudSeriesOptions) : [this.plot(s.type, s.values, s.options, th, m.candle !== null)];
+      if (s.type === "cloud") for (const p of ps) future = Math.max(future, p.values.length - m.bars.length);
+      const paneId = seriesPaneId(s.id, s.type, s.options as { pane?: string });
+      if (paneId === "main") {
+        const scale = (s.options as { priceScaleId?: string }).priceScaleId;
+        overlays.push(...(scale && scale !== "right" ? ps.map((p) => ({ ...p, scale })) : ps));
+      } else {
+        const shared = panes.find((p) => p.id === paneId);
+        const pscale = (s.options as { priceScaleId?: string }).priceScaleId;
+        if (pscale && pscale !== "right") for (const q of ps) q.scale = pscale;
+        if (shared) {
+          shared.series.push(...ps);
+          shared.title = `${shared.title} · ${ps[0].label}`;
+          if (s.type === "histogram" && !shared.levels) shared.levels = [0];
+        } else panes.push({ id: paneId, title: ps[0].label, series: ps, levels: s.type === "histogram" ? [0] : undefined });
+      }
+    }
+    overlays.push(...(m.extraOverlays ?? []));
+    panes.push(...(m.extraPanes ?? []));
+    if (m.collapsed?.length) for (const p of panes) if (m.collapsed.includes(p.id)) p.collapsed = true;
+    if (m.paneOrder?.length) {
+      const rank = (id: string) => {
+        const k = m.paneOrder!.indexOf(id);
+        return k < 0 ? Number.MAX_SAFE_INTEGER : k;
+      };
+      panes.sort((a, b) => rank(a.id) - rank(b.id));
     }
     const c = m.candle;
     return {
       bars: m.bars,
-      type: "candles",
+      type: m.chartType ?? "candles",
+      mainStyle: m.mainStyle,
+      lastPrice: m.lastPrice,
+      derived: m.derived,
       overlays,
       panes,
       intraday: m.intraday,
-      future: 0,
+      future,
+      scales: m.scales,
+      paneSizes: m.paneSizes,
       candle: c ? { up: c.upColor, down: c.downColor, wickUp: c.wickUpColor ?? c.upColor, wickDown: c.wickDownColor ?? c.downColor } : undefined,
     };
+  }
+
+  /**
+   * Cloud: upper and lower boundary lines plus a fill that switches colour exactly where they
+   * cross (Phase 1 fill renderer). `displacement` shifts the drawing by whole bars; values shifted
+   * past the last bar occupy projection space and never create candles.
+   */
+  private cloud(upper: number[], lower: number[], o: CloudSeriesOptions): PlotSeries[] {
+    const d = o.displacement ?? 0;
+    const shift = (a: number[]) => {
+      if (!d) return a;
+      const out = new Array<number>(Math.max(0, a.length + d)).fill(NaN);
+      for (let i = 0; i < a.length; i++) if (i + d >= 0) out[i + d] = a[i];
+      return out;
+    };
+    const u = shift(upper);
+    const l = shift(lower);
+    const op = o.opacity ?? 1;
+    const up = this.alpha(o.upColor ?? "rgba(34,197,94,0.22)", op * alphaOf(this.css(o.upColor ?? "rgba(34,197,94,0.22)")));
+    const down = this.alpha(o.downColor ?? "rgba(239,68,68,0.22)", op * alphaOf(this.css(o.downColor ?? "rgba(239,68,68,0.22)")));
+    const lines = o.lineVisible !== false;
+    const base = { width: o.lineWidth ?? 1, dash: o.lineStyle, precision: o.precision, opacity: lines ? 1 : 0, scaleLabel: lines && o.lastValueVisible !== false };
+    return [
+      { ...base, label: `${o.title ?? "Cloud"} upper`, values: u, color: this.css(o.upperColor ?? "#22c55e"), fills: [{ other: l, up, down }] },
+      { ...base, label: `${o.title ?? "Cloud"} lower`, values: l, color: this.css(o.lowerColor ?? "#ef4444") },
+    ];
   }
 
   private plot(type: Exclude<ChartSeriesType, "candlestick">, values: number[], o: SeriesOptionsMap[typeof type], th: Partial<EngineTheme>, hasCandles: boolean): PlotSeries {
@@ -199,6 +321,57 @@ export class CanvasAdapter implements RenderAdapter {
       scaleLabel: l.lastValueVisible !== false,
       area: type === "area" ? { top: l.topColor ? this.css(l.topColor) : withAlpha(color, 0.35), bottom: l.bottomColor ? this.css(l.bottomColor) : withAlpha(color, 0), baseline: l.baseline } : undefined,
     };
+  }
+
+  // ---- v0.3 extension points ----
+  setLayers(layers: EngineLayer[]) {
+    if (!this.destroyed) this.engine.setLayers(layers);
+  }
+  setInteraction(d: InteractionDelegate | null) {
+    if (!this.destroyed) this.engine.setInteraction(d);
+  }
+  setEvents(e: AdapterEvents) {
+    this.events = e;
+  }
+  setCrosshair(c: { index: number; price: number | null } | null) {
+    if (!this.destroyed) this.engine.setCrosshair(c);
+  }
+  requestRedraw() {
+    if (!this.destroyed) this.engine.requestRedraw();
+  }
+  xOfIndex(i: number) {
+    return this.engine.xOfIndex(i);
+  }
+  indexOfX(x: number) {
+    return this.engine.indexOfX(x);
+  }
+  priceToY(p: number, paneId = "main", scaleId = "right") {
+    return this.engine.priceToY(p, paneId, scaleId);
+  }
+  yToPrice(y: number, paneId = "main", scaleId = "right") {
+    return this.engine.yToPrice(y, paneId, scaleId);
+  }
+  setPriceRange(min: number, max: number) {
+    this.engine.setScale({ auto: false, range: [min, max] });
+  }
+  getPanes() {
+    return this.engine.getPanes();
+  }
+  getSpacing() {
+    return this.engine.getSpacing();
+  }
+  setSpacing(px: number) {
+    this.engine.setSpacing(px);
+  }
+  getPlotWidth() {
+    return this.engine.getPlotWidth();
+  }
+  renderStats() {
+    const e = this.engine as unknown as { frames: { full: number; overlay: number }; lastDrawMs: number; lastOverlayMs: number };
+    return { fullFrames: e.frames.full, overlayFrames: e.frames.overlay, lastDrawMs: e.lastDrawMs, lastOverlayMs: e.lastOverlayMs };
+  }
+  toDataURL(scale?: number) {
+    return this.engine.toDataURL(scale);
   }
 
   onCrosshair(cb: (index: number | null, time: number | null, price: number | null) => void) {
@@ -243,6 +416,25 @@ export class CanvasAdapter implements RenderAdapter {
       this.wrapper.remove();
       this.data = null;
       this.colorCtx = null;
+      this.events = {};
     }
   }
+}
+
+/** Time labels in an IANA time zone / locale. Daily bars are calendar dates (00:00 UTC), so they are formatted in UTC. */
+export function timeFormatter(timeZone?: string, locale = "en-GB", fixedOffsetSeconds = 19800) {
+  // Without a zone, intraday labels use the fixed offset (formatted as UTC after shifting).
+  const tz = timeZone ?? "UTC";
+  const shift = timeZone ? 0 : fixedOffsetSeconds;
+  const f = {
+    hm: new Intl.DateTimeFormat(locale, { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }),
+    dhm: new Intl.DateTimeFormat(locale, { timeZone: tz, day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }),
+    d: new Intl.DateTimeFormat(locale, { timeZone: "UTC", day: "numeric", month: "short" }),
+    dy: new Intl.DateTimeFormat(locale, { timeZone: "UTC", day: "numeric", month: "short", year: "numeric" }),
+  };
+  return (t: number, intraday: boolean, long: boolean): string => {
+    const d = new Date(t * 1000);
+    if (!intraday) return (long ? f.dy : f.d).format(d);
+    return (long ? f.dhm : f.hm).format(new Date((t + shift) * 1000));
+  };
 }

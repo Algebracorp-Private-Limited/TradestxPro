@@ -5,13 +5,47 @@
  * Error policy (v0.2.1): every failure is an XChartError with a code, raised BEFORE any state
  * changes, so a rejected call leaves the chart and its series exactly as they were.
  */
-import { SeriesStore, type Change } from "./store.ts";
-import { CanvasAdapter, type RenderAdapter, type RenderModel } from "./canvas-adapter.ts";
-import { XChartError, validateChartOptions, validateRange, validateSeriesOptions, validateZoom } from "./validation.ts";
+import { SeriesStore, search, type Change } from "./store.ts";
+import { CanvasAdapter, seriesPaneId, type RenderAdapter, type RenderModel } from "./canvas-adapter.ts";
+import { PANE_ID, XChartError, validateBars, validateSeriesType, validateChartOptions, validateRange, validateSeriesOptions, validateZoom } from "./validation.ts";
+import { Emitter } from "./events/emitter.ts";
+import { IndicatorRegistry } from "./indicators/registry.ts";
+import { defaultRegistry } from "./indicators/index.ts";
+import { IndicatorInstance, indicatorPlots, type IndicatorHost } from "./indicators/runtime.ts";
+import { StreamGraph } from "./indicators/dependencies.ts";
+import type { IndicatorApi, IndicatorDefinition, IndicatorInput, IndicatorOptions } from "./indicators/types.ts";
+import type { ChartEvents } from "./events/types.ts";
+import { DrawingManager, type DrawingHost } from "./drawings/manager.ts";
+import type { DrawingApi, DrawingData, DrawingEvent, DrawingSpec, DrawingType } from "./drawings/types.ts";
+import { Decorations, type PriceLineApi, type PriceLineOptions, type SeriesMarker } from "./decorations.ts";
+import type { EngineLayer } from "../../components/chart/engine.ts";
+import { TradingCalendar, type CalendarId } from "./calendar/index.ts";
+import { isCssColor } from "./validation.ts";
+import { engineType, heikinAshi, isDerivedType, validateChartType, type ChartType, type ChartTypeStyle } from "./chart-types.ts";
+import { DerivedSeriesEngine, type DerivedKind, type DerivedPoint } from "./derived/index.ts";
+import type { AxisBar } from "./store.ts";
+import { PluginManager, type PluginInfo, type XChartPlugin } from "./plugins.ts";
+import { CALENDARS } from "./calendar/index.ts";
+import { LAYOUT_CHART_KEYS, LAYOUT_FORMAT, LAYOUT_VERSION, parseLayout, type ChartLayout, type LayoutLoadOptions, type LayoutLoadReport } from "./layout.ts";
+
+export type SessionHighlightOptions = {
+  calendar: TradingCalendar | CalendarId;
+  /** Shading of pre-market / post-market / closed bars (intraday charts only). */
+  preColor?: string;
+  postColor?: string;
+  closedColor?: string;
+  /** Vertical line where the exchange-local date changes (default true). */
+  dayBreaks?: boolean;
+  /** Shading of bars on dates whose schedule no calendar provider confirms (default none). */
+  unknownColor?: string;
+  dayBreakColor?: string;
+};
 import type {
   AreaSeriesOptions,
+  CandlestickData,
   CandlestickSeriesOptions,
   ChartApi,
+  CloudSeriesOptions,
   ChartOptions,
   ChartSeriesType,
   CrosshairEvent,
@@ -22,7 +56,13 @@ import type {
   SeriesOptionsMap,
   Unsubscribe,
   VisibleTimeRange,
+  PaneApi,
+  PriceScaleApi,
+  PriceScaleSettings,
 } from "./types.ts";
+
+/** Price-scale fields a layout may carry (the formatter function is never serialised). */
+const SCALE_LAYOUT_KEYS = ["mode", "autoScale", "range", "margins", "visible", "invert", "precision", "minMove"];
 
 const DEFAULTS: ChartOptions = { theme: "dark", autoSize: true, crosshair: true, followLatest: false };
 
@@ -57,10 +97,10 @@ class SeriesImpl<T extends ChartSeriesType> implements SeriesApi<T> {
     return this.chart;
   }
   setData(data: ReadonlyArray<SeriesData<T>>): void {
-    this.owner().mutate((s) => s.setData(this.id, data));
+    this.owner().mutate((s) => s.setData(this.id, data), this.id);
   }
   update(bar: SeriesData<T>): void {
-    this.owner().mutate((s) => s.update(this.id, bar));
+    this.owner().mutate((s) => s.update(this.id, bar), this.id);
   }
   data(): ReadonlyArray<SeriesData<T>> {
     return this.owner().pointsOf(this.id) as SeriesData<T>[];
@@ -77,6 +117,34 @@ class SeriesImpl<T extends ChartSeriesType> implements SeriesApi<T> {
   options(): Readonly<SeriesOptionsMap[T]> {
     return { ...this.opts };
   }
+  // ---------- markers & price lines (v0.3; view-only, never modify data) ----------
+  setMarkers(markers: ReadonlyArray<SeriesMarker>): void {
+    this.owner().decor(this.id).setMarkers(markers);
+  }
+  addMarker(marker: SeriesMarker): string {
+    return this.owner().decor(this.id).addMarker(marker);
+  }
+  removeMarker(id: string): boolean {
+    return this.owner().decor(this.id).removeMarker(id);
+  }
+  getMarkers(): SeriesMarker[] {
+    return this.owner().decor(this.id).getMarkers();
+  }
+  clearMarkers(): void {
+    this.owner().decor(this.id).clearMarkers();
+  }
+  createPriceLine(options: PriceLineOptions): PriceLineApi {
+    return this.owner().decor(this.id).createLine(options);
+  }
+  priceLines(): PriceLineApi[] {
+    return this.owner().decor(this.id).priceLines();
+  }
+  /** Alias of line.remove(). */
+  removePriceLine(line: PriceLineApi): void {
+    this.owner();
+    line.remove();
+  }
+
   remove(): void {
     const chart = this.chart;
     if (!chart) return; // already removed: no-op
@@ -101,6 +169,41 @@ export class ChartImpl implements ChartApi {
   private pointer: { index: number; time: number | null; price: number | null } | null = null;
   // Key of the last delivered event. Starts as "outside" so no leave event fires before entering.
   private lastKey = "none";
+  /** Typed events (v0.3). */
+  readonly events = new Emitter<ChartEvents>();
+  private indicators = new Map<string, IndicatorInstance>();
+  private registry = new IndicatorRegistry(defaultRegistry);
+  private indSeq = 0;
+  private inputCache: { version: number; value: ReturnType<IndicatorHost["input"]> } | null = null;
+  /** Shared incremental indicator graph (released by remove()). */
+  private graph = new StreamGraph();
+  private inputRev = 0;
+  private graphRev = -1;
+  /** First input bar changed since the graph's last sync (undefined = unknown → compare). */
+  private pendingFrom: number | undefined = undefined;
+  /** Series used as the benchmark input of correlation/beta/alpha-type indicators. */
+  private benchmarkId: number | null = null;
+  private decorations = new Map<number, Decorations>();
+  private drawingSubs = new Set<(e: DrawingEvent) => void>();
+  private drawings: DrawingManager;
+  private extraLayers: EngineLayer[] = [];
+  /** Price-scale settings by id ("right" = main scale). */
+  private scaleOpts = new Map<string, PriceScaleSettings>();
+  /** Pane slot heights in px (from setHeight or separator drags), collapsed panes and order. */
+  private paneSizes: Record<string, number> | undefined;
+  private collapsedPanes = new Set<string>();
+  private paneOrder: string[] = [];
+  private sessionLayer: EngineLayer | null = null;
+  private chartType: ChartType = "candles";
+  private chartStyle: ChartTypeStyle = {};
+  /** Heikin Ashi display bars (the store keeps the original OHLCV). */
+  private ha: AxisBar[] | null = null;
+  /** Price-based chart type state (null for time-based types). */
+  private derived: DerivedSeriesEngine | null = null;
+  private derivedError: string | null = null;
+  private plugins_: PluginManager;
+  private sessionCalendar: string | null = null;
+  private layerKey = "";
 
   constructor(adapter: RenderAdapter, options: ChartOptions = {}, onRemove?: () => void) {
     const opts = mergeOptions(DEFAULTS, options);
@@ -109,6 +212,1221 @@ export class ChartImpl implements ChartApi {
     this.onRemove = onRemove;
     this.opts = opts;
     adapter.onCrosshair((index, time, price) => this.onPointer(index, time, price));
+    adapter.setEvents?.({
+      beforeDraw: () => this.flushIndicators(),
+      click: (p) => this.events.emit("click", this.pointerPayload(p)),
+      dblClick: (p) => this.events.emit("dblClick", this.pointerPayload(p)),
+      view: () => this.emitVisibleRange(),
+      paneResize: (sizes) => {
+        const before = this.paneSizes ?? {};
+        this.paneSizes = { ...sizes };
+        for (const [paneId, height] of Object.entries(sizes)) if (before[paneId] !== height) this.events.emit("paneResize", { paneId, height });
+      },
+    });
+    this.drawings = new DrawingManager(this.drawingHost());
+    adapter.setInteraction?.(this.drawings.delegate());
+    this.plugins_ = new PluginManager({
+      chart: this,
+      setLayers: (layers) => this.setExtraLayers(layers),
+      registerIndicator: (def) => this.registerIndicator(def),
+      unregisterIndicator: (id) => void this.registry.unregister(id),
+      removeIndicatorsOfType: (id) => {
+        for (const i of [...this.indicators.values()]) if (i.type === id) i.remove();
+      },
+      registerTool: (type, spec) => this.drawings.registerTool(type, spec),
+      unregisterTool: (type) => void this.drawings.unregisterTool(type),
+      removeDrawingsOfType: (type) => {
+        for (const d of this.drawings.list()) if (d.type === type) this.drawings.remove(d.id, false);
+      },
+      on: (type, handler) => this.events.on(type, handler),
+      emitError: (pluginId, error) => {
+        if (this.events.has("pluginError")) this.events.emit("pluginError", { pluginId, error });
+        else console.error(`[XChart] plugin "${pluginId}" failed: ${error}`);
+      },
+      redraw: () => this.requestRedraw(),
+    });
+    this.syncLayers(true);
+  }
+
+  // ---------- layers: decorations, drawings, plugin layers ----------
+  private paneOf(id: number): string {
+    const s = this.seriesById.get(id);
+    return s ? seriesPaneId(id, s.type, s.options() as { pane?: string }) : "main";
+  }
+
+  // ---------- price scales ----------
+  /** Settings of a price scale: "right" (the main scale), "left", or an overlay scale id. */
+  priceScale(id = "right", paneId = "main"): PriceScaleApi {
+    this.assertAlive();
+    if (typeof id !== "string" || !PANE_ID.test(id)) throw new XChartError("INVALID_OPTION", "Price scale id must be 1–32 letters, digits, _ or -");
+    if (typeof paneId !== "string" || !/^[A-Za-z0-9_-]{1,40}$/.test(paneId)) throw new XChartError("INVALID_OPTION", "Invalid pane id");
+    const key = `${paneId}|${id}`;
+    return {
+      id,
+      paneId,
+      applyOptions: (o: Partial<PriceScaleSettings>) => this.applyScaleOptions(paneId, id, o),
+      options: (): PriceScaleSettings => {
+        const base = { ...this.scaleOpts.get(key) };
+        if (key === "main|right") Object.assign(base, { mode: this.opts.priceScale?.mode ?? "normal", autoScale: this.opts.priceScale?.autoScale ?? true });
+        return base;
+      },
+      seriesCount: () => this.seriesOnScale(paneId, id).length,
+      priceToCoordinate: (price: number) => this.priceToCoordinate(price, paneId, id),
+      coordinateToPrice: (y: number) => this.coordinateToPrice(y, paneId, id),
+    };
+  }
+
+  private seriesOnScale(paneId: string, id: string) {
+    return [...this.seriesById.values()].filter((s) => (s.type === "candlestick" ? paneId === "main" && id === "right" : this.paneOf(s.id) === paneId && ((s.options() as { priceScaleId?: string }).priceScaleId ?? "right") === id));
+  }
+
+  private checkScaleOptions(id: string, o: Partial<PriceScaleSettings>, paneId = "main") {
+    if (typeof id !== "string" || !PANE_ID.test(id)) throw new XChartError("INVALID_OPTION", "Price scale id must be 1–32 letters, digits, _ or -");
+    if (!o || typeof o !== "object") throw new XChartError("INVALID_OPTION", "Price scale options must be an object");
+    const KEYS = ["mode", "autoScale", "margins", "visible", "invert", "range", "precision", "minMove", "formatter"];
+    for (const k of Object.keys(o)) if (!KEYS.includes(k)) throw new XChartError("INVALID_OPTION", `Unknown price scale option "${k}"`);
+    if (o.mode !== undefined && !["normal", "logarithmic", "percentage", "indexed"].includes(o.mode)) throw new XChartError("INVALID_OPTION", 'mode must be "normal", "logarithmic", "percentage" or "indexed"');
+    if (o.margins !== undefined) {
+      const m = o.margins as { top?: unknown; bottom?: unknown };
+      const ok = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v < 1;
+      if (!m || typeof m !== "object" || !ok(m.top) || !ok(m.bottom) || (m.top as number) + (m.bottom as number) > 0.9) {
+        throw new XChartError("INVALID_OPTION", "margins must be { top, bottom } fractions in [0, 1) that sum to at most 0.9");
+      }
+    }
+    for (const k of ["visible", "invert", "autoScale"] as const) if (o[k] !== undefined && typeof o[k] !== "boolean") throw new XChartError("INVALID_OPTION", `${k} must be a boolean`);
+    if (o.range !== undefined) {
+      const r = o.range as unknown;
+      if (!Array.isArray(r) || r.length !== 2 || !r.every((v) => typeof v === "number" && Number.isFinite(v)) || !(r[0] < r[1])) throw new XChartError("INVALID_RANGE", "range must be [min, max] with min < max");
+    }
+    if (o.precision !== undefined && !(Number.isInteger(o.precision) && o.precision >= 0 && o.precision <= 10)) throw new XChartError("INVALID_OPTION", "precision must be an integer from 0 to 10");
+    if (o.minMove !== undefined && !(typeof o.minMove === "number" && Number.isFinite(o.minMove) && o.minMove > 0)) throw new XChartError("INVALID_OPTION", "minMove must be a positive number");
+    if (o.formatter !== undefined && typeof o.formatter !== "function") throw new XChartError("INVALID_OPTION", "formatter must be a function (value) => string");
+    const merged = { ...this.scaleOpts.get(`${paneId}|${id}`), ...o };
+    if (merged.autoScale === false && !merged.range && !(paneId === "main" && id === "right")) throw new XChartError("INVALID_OPTION", "autoScale: false needs a range [min, max]");
+    const mode = paneId === "main" && id === "right" ? o.mode ?? this.opts.priceScale?.mode : merged.mode;
+    if (mode === "logarithmic" && merged.range && merged.range[0] <= 0) throw new XChartError("INVALID_RANGE", "A logarithmic scale needs a positive range");
+  }
+
+  private applyScaleOptions(paneId: string, id: string, o: Partial<PriceScaleSettings>) {
+    this.assertAlive();
+    this.checkScaleOptions(id, o, paneId);
+    const key = `${paneId}|${id}`;
+    if (key === "main|right" && (o.mode !== undefined || o.autoScale !== undefined)) {
+      const ps: Record<string, unknown> = {};
+      if (o.mode !== undefined) ps.mode = o.mode;
+      if (o.autoScale !== undefined) ps.autoScale = o.autoScale;
+      this.applyOptions({ priceScale: ps }); // validated there (atomic)
+    }
+    const next: PriceScaleSettings = { ...this.scaleOpts.get(key) };
+    for (const [k, v] of Object.entries(o)) if (!(key === "main|right" && (k === "mode" || k === "autoScale"))) (next as Record<string, unknown>)[k] = Array.isArray(v) ? [...v] : v && typeof v === "object" ? { ...v } : v;
+    this.scaleOpts.set(key, next);
+    if (key === "main|right" && o.range) this.adapter.setPriceRange?.(o.range[0], o.range[1]);
+    // Non-positive values cannot be shown on a log scale: they are left out of the drawing — say so.
+    const mode = key === "main|right" ? this.opts.priceScale?.mode : next.mode;
+    if (mode === "logarithmic") {
+      const bad = this.seriesOnScale(paneId, id).filter((s) => (s.type === "candlestick" ? this.store.bars.some((b) => b.l <= 0) : this.store.series.get(s.id)!.values.some((v) => v <= 0)));
+      if (bad.length) this.events.emit("scaleWarning", { scaleId: id, paneId, message: `${bad.length} series on this logarithmic scale have values ≤ 0; those points are not drawn` });
+    }
+    this.render({ kind: "full" });
+    this.events.emit("scaleChange", { scaleId: id, paneId });
+  }
+
+  /** Engine scale specs from the stored settings (label formatter built from precision / minMove / formatter). */
+  private scaleSpecs() {
+    return [...this.scaleOpts].map(([key, o]) => {
+      const [pane, id] = key.split("|");
+      const fmt = o.formatter || o.precision !== undefined || o.minMove !== undefined
+        ? (v: number) => {
+            if (o.formatter) return String(o.formatter(v));
+            const x = o.minMove ? Math.round(v / o.minMove) * o.minMove : v;
+            const dec = o.precision ?? (o.minMove ? Math.max(0, Math.min(10, Math.ceil(-Math.log10(o.minMove) - 1e-9))) : 2);
+            return x.toFixed(dec);
+          }
+        : undefined;
+      const main = key === "main|right";
+      return {
+        id, pane, margins: o.margins as { top: number; bottom: number } | undefined, visible: o.visible, invert: o.invert, format: fmt,
+        mode: main ? undefined : o.mode === "logarithmic" ? ("log" as const) : (o.mode as "normal" | "percentage" | "indexed" | undefined),
+        range: !main && o.autoScale === false ? o.range : undefined,
+      };
+    });
+  }
+
+  // ---------- panes ----------
+  /** Pane ids top to bottom ("main" first). */
+  private paneIds(): string[] {
+    const fromAdapter = this.adapter.getPanes?.().map((p) => p.id);
+    if (fromAdapter && fromAdapter.length) return fromAdapter;
+    const ids: string[] = [];
+    for (const s of this.seriesById.values()) {
+      const id = this.paneOf(s.id);
+      if (id !== "main" && !ids.includes(id)) ids.push(id);
+    }
+    for (const ind of this.indicators.values()) for (const p of indicatorPlots([ind]).panes) if (!ids.includes(p.id)) ids.push(p.id);
+    const rank = (id: string) => (this.paneOrder.indexOf(id) < 0 ? Number.MAX_SAFE_INTEGER : this.paneOrder.indexOf(id));
+    return ["main", ...ids.sort((a, b) => rank(a) - rank(b))];
+  }
+
+  panes(): PaneApi[] {
+    this.assertAlive();
+    return this.paneIds().map((id) => this.paneApi(id));
+  }
+  pane(id: string): PaneApi | undefined {
+    this.assertAlive();
+    return this.paneIds().includes(id) ? this.paneApi(id) : undefined;
+  }
+
+  private paneApi(id: string): PaneApi {
+    const exists = () => {
+      this.assertAlive();
+      if (!this.paneIds().includes(id)) throw new XChartError("PANE_REMOVED", `Pane "${id}" no longer exists`);
+    };
+    return {
+      id,
+      height: () => {
+        exists();
+        const box = this.adapter.getPanes?.().find((p) => p.id === id);
+        return box ? box.height : this.paneSizes?.[id] ?? null;
+      },
+      setHeight: (px: number) => {
+        exists();
+        if (typeof px !== "number" || !Number.isFinite(px) || px < 30 || px > 5000) throw new XChartError("INVALID_NUMBER", "Pane height must be a number of pixels from 30 to 5000");
+        const ids = this.paneIds();
+        const boxes = this.adapter.getPanes?.() ?? [];
+        // Sizes are pane SLOT heights in px (a pane's slot = its height + the 1 px separator).
+        const slot = (p: string) => {
+          const b = boxes.find((x) => x.id === p);
+          return b ? (p === "main" ? b.height : b.height + 1) : this.paneSizes?.[p] ?? (p === "main" ? 300 : 100);
+        };
+        const sizes: Record<string, number> = {};
+        for (const p of ids) sizes[p] = slot(p);
+        const total = ids.reduce((acc, p) => acc + sizes[p], 0);
+        if (id === "main") sizes.main = px;
+        else {
+          sizes[id] = px + 1;
+          // The main pane absorbs the difference (never below 30 px).
+          sizes.main = Math.max(30, total - ids.filter((p) => p !== "main").reduce((acc, p) => acc + sizes[p], 0));
+        }
+        this.paneSizes = sizes;
+        this.render({ kind: "full" });
+        this.events.emit("paneResize", { paneId: id, height: px });
+      },
+      collapse: () => {
+        exists();
+        if (id === "main") throw new XChartError("INVALID_OPTION", "The main pane cannot be collapsed");
+        if (this.collapsedPanes.has(id)) return;
+        this.collapsedPanes.add(id);
+        this.render({ kind: "full" });
+        this.events.emit("layoutChange", { reason: "pane-collapse" });
+      },
+      expand: () => {
+        exists();
+        if (!this.collapsedPanes.delete(id)) return;
+        this.render({ kind: "full" });
+        this.events.emit("layoutChange", { reason: "pane-expand" });
+      },
+      isCollapsed: () => {
+        return this.collapsedPanes.has(id);
+      },
+      moveTo: (index: number) => {
+        exists();
+        if (id === "main") throw new XChartError("INVALID_OPTION", "The main pane is always first");
+        const others = this.paneIds().filter((p) => p !== "main" && p !== id);
+        if (!Number.isInteger(index) || index < 1 || index > others.length + 1) throw new XChartError("INVALID_NUMBER", `Pane index must be an integer from 1 to ${others.length + 1}`);
+        others.splice(index - 1, 0, id);
+        this.paneOrder = others;
+        this.render({ kind: "full" });
+        this.events.emit("layoutChange", { reason: "pane-move" });
+      },
+    };
+  }
+
+  // ---------- layouts ----------
+  private paneRef(id: string, seriesIdx: Map<number, number>, indIdx: Map<string, number>): string {
+    if (id.startsWith("xs-")) return `series:${seriesIdx.get(Number(id.slice(3))) ?? -1}`;
+    if (id.startsWith("xind-")) return `indicator:${indIdx.get(id.slice(5)) ?? -1}`;
+    return id;
+  }
+
+  /** JSON-safe description of how the chart looks. Market data only with includeData: true. */
+  saveLayout(options: { includeData?: boolean } = {}): ChartLayout {
+    this.assertAlive();
+    if (!options || typeof options !== "object") throw new XChartError("INVALID_OPTION", "saveLayout options must be an object");
+    const chart: Record<string, unknown> = {};
+    for (const k of LAYOUT_CHART_KEYS) {
+      const v = (this.opts as Record<string, unknown>)[k];
+      if (v === undefined) continue;
+      if (k === "priceScale") {
+        const ps = Object.fromEntries(Object.entries(v as object).filter(([, x]) => x !== undefined));
+        if (Object.keys(ps).length) chart[k] = ps;
+      } else chart[k] = v;
+    }
+    const seriesIdx = new Map<number, number>();
+    const series = [...this.seriesById.values()].map((s, i) => {
+      seriesIdx.set(s.id, i);
+      const out: ChartLayout["series"][number] = { type: s.type, options: { ...s.options() } as Record<string, unknown> };
+      if (options.includeData) out.data = this.pointsOf(s.id);
+      return out;
+    });
+    const indIdx = new Map<string, number>();
+    const indicators = [...this.indicators.values()].map((ind, i) => {
+      indIdx.set(ind.id, i);
+      const o = { ...ind.options() } as Record<string, unknown>;
+      if (o.visible === true) delete o.visible;
+      return { type: ind.type, params: { ...ind.parameters() } as Record<string, unknown>, options: o };
+    });
+    const ref = (id: string) => this.paneRef(id, seriesIdx, indIdx);
+    const sizes = this.paneSizes ? Object.fromEntries(Object.entries(this.paneSizes).map(([k, v]) => [ref(k), Math.round(v)])) : undefined;
+    const layout: ChartLayout = {
+      format: LAYOUT_FORMAT,
+      version: LAYOUT_VERSION,
+      sdkVersion: "0.3.0",
+      chart,
+      chartType: { type: this.chartType, style: { ...this.chartStyle } as Record<string, unknown> },
+      series,
+      indicators,
+      drawings: this.drawings.serialize().map((d) => (d.paneId ? { ...d, paneId: ref(d.paneId) } : d)),
+      priceScales: Object.fromEntries([...this.scaleOpts].map(([key, o]) => {
+        const [pane, id] = key.split("|");
+        const v: Record<string, unknown> = {};
+        for (const k of SCALE_LAYOUT_KEYS) if ((o as Record<string, unknown>)[k] !== undefined) v[k] = JSON.parse(JSON.stringify((o as Record<string, unknown>)[k]));
+        return [pane === "main" ? id : `${ref(pane)}:${id}`, v];
+      })),
+      panes: { sizes, collapsed: [...this.collapsedPanes].map(ref), order: this.paneOrder.map(ref) },
+      session: this.sessionCalendar && this.sessionCalendar in CALENDARS ? { calendar: this.sessionCalendar } : null,
+      plugins: this.plugins_.ids(),
+    };
+    return JSON.parse(JSON.stringify(layout)) as ChartLayout;
+  }
+
+  /**
+   * Applies a saved layout. Everything is validated first; on any error nothing changes.
+   * Series are matched to this chart's series by type and order; layout series without a match
+   * are created only when the layout carries their data. Plugins are never installed by a load.
+   */
+  loadLayout(input: unknown, options: LayoutLoadOptions = {}): LayoutLoadReport {
+    this.assertAlive();
+    if (!options || typeof options !== "object") throw new XChartError("INVALID_OPTION", "loadLayout options must be an object");
+    const L = parseLayout(input);
+    const applyData = options.applyData !== false;
+
+    // ---- validate everything ----
+    const nextOpts = mergeOptions(this.opts, L.chart as Partial<ChartOptions>);
+    validateChartOptions(nextOpts);
+    validateChartType(L.chartType.type, L.chartType.style);
+    const existing = [...this.seriesById.values()];
+    const used = new Set<AnySeries>();
+    const plan = L.series.map((ls, i) => {
+      validateSeriesType(ls.type);
+      const type = ls.type as ChartSeriesType;
+      const match = existing.find((s) => !used.has(s) && s.type === type);
+      if (match) used.add(match);
+      const willHaveData = Boolean(ls.data && applyData);
+      if (ls.data && applyData) {
+        try {
+          validateBars(type, ls.data as never);
+        } catch (e) {
+          throw new XChartError((e as XChartError).code ?? "INVALID_LAYOUT", `layout.series[${i}]: ${(e as Error).message.replace(/^\[XChart\] /, "")}`);
+        }
+      }
+      return { ls, type, match, create: !match && willHaveData };
+    });
+    const candles = plan.filter((p) => p.type === "candlestick" && (p.match || p.create)).length + (existing.some((s) => s.type === "candlestick" && !used.has(s)) ? 1 : 0);
+    if (plan.filter((p) => p.type === "candlestick" && p.create).length && existing.some((s) => s.type === "candlestick")) throw new XChartError("INVALID_LAYOUT", "Only one candlestick series per chart is supported");
+    for (const [i, p] of plan.entries()) {
+      try {
+        this.checkOptions(p.type, p.ls.options as never);
+        validateSeriesOptions(p.type, p.ls.options as never, { hasCandles: candles > 0 });
+      } catch (e) {
+        throw new XChartError((e as XChartError).code ?? "INVALID_LAYOUT", `layout.series[${i}].options: ${(e as Error).message.replace(/^\[XChart\] /, "")}`);
+      }
+    }
+    const skippedInd: string[] = [];
+    const inds = L.indicators.filter((d, i) => {
+      const def = this.registry.get(d.type);
+      if (!def) {
+        if (options.skipUnknownIndicators) {
+          skippedInd.push(d.type);
+          return false;
+        }
+        throw new XChartError("UNKNOWN_INDICATOR", `layout.indicators[${i}]: indicator "${d.type}" is not registered on this chart`);
+      }
+      const OPTION_KEYS = ["color", "colors", "lineWidth", "lineStyle", "pane", "priceScaleId", "visible", "title", "hiddenOutputs", "fills"];
+      for (const k of Object.keys(d.options)) if (!OPTION_KEYS.includes(k)) throw new XChartError("INVALID_LAYOUT", `layout.indicators[${i}].options.${k} is not an indicator option`);
+      for (const k of Object.keys(d.params)) if (OPTION_KEYS.includes(k)) throw new XChartError("INVALID_LAYOUT", `layout.indicators[${i}].params.${k} is a display option`);
+      try {
+        // Dry run: the constructor validates parameters and options and touches nothing.
+        new IndicatorInstance("check", def, d.params, d.options as IndicatorOptions, this.indicatorHost, () => {});
+      } catch (e) {
+        throw new XChartError((e as XChartError).code ?? "INVALID_LAYOUT", `layout.indicators[${i}]: ${(e as Error).message.replace(/^\[XChart\] /, "")}`);
+      }
+      return true;
+    });
+    this.drawings.check(L.drawings);
+    for (const [key, o] of Object.entries(L.priceScales)) {
+      if (!o || typeof o !== "object") throw new XChartError("INVALID_LAYOUT", `layout.priceScales.${key} must be an object`);
+      for (const k of Object.keys(o)) if (!SCALE_LAYOUT_KEYS.includes(k)) throw new XChartError("INVALID_LAYOUT", `layout.priceScales.${key}.${k} is not allowed`);
+      const id = key.includes(":") ? key.slice(key.lastIndexOf(":") + 1) : key;
+      this.checkScaleOptions(id, o as Partial<PriceScaleSettings>, key.includes(":") ? "__layout__" : "main");
+    }
+    if (isDerivedType(L.chartType.type) && !existing.some((x) => x.type === "candlestick") && !plan.some((p) => p.type === "candlestick" && p.create)) {
+      throw new XChartError("INVALID_LAYOUT", `Chart type "${L.chartType.type}" needs a candlestick series`);
+    }
+    if (L.session && !(L.session.calendar in CALENDARS)) throw new XChartError("INVALID_LAYOUT", `Unknown session calendar "${L.session.calendar}"`);
+
+    // ---- apply ----
+    const report: LayoutLoadReport = { seriesMatched: 0, seriesCreated: 0, seriesSkipped: 0, indicatorsAdded: 0, indicatorsSkipped: skippedInd, drawings: L.drawings.length, pluginsNotInstalled: L.plugins.filter((id) => !this.plugins_.ids().includes(id)) };
+    this.opts = nextOpts;
+    this.adapter.setOptions(this.opts);
+    const loadType = { type: L.chartType.type as ChartType, style: { ...(L.chartType.style as ChartTypeStyle) } };
+    const layoutSeries: (AnySeries | null)[] = [];
+    for (const p of plan) {
+      let s: AnySeries | null = p.match ?? null;
+      if (s) {
+        s.applyOptions(p.ls.options as never);
+        report.seriesMatched++;
+      } else if (p.create) {
+        s = this.add(p.type, p.ls.options as never) as unknown as AnySeries;
+        report.seriesCreated++;
+      } else report.seriesSkipped++;
+      if (s && p.ls.data && applyData) s.setData(p.ls.data as never);
+      layoutSeries.push(s);
+    }
+    this.applyChartType(loadType.type, loadType.style);
+    for (const i of [...this.indicators.values()]) i.remove();
+    const newInd = inds.map((d) => {
+      report.indicatorsAdded++;
+      return this.addIndicator(d.type, { ...d.params, ...d.options });
+    });
+    this.scaleOpts = new Map();
+    const scaleEntries = Object.entries(L.priceScales);
+    const unref = (r: string): string | null => {
+      const m = /^(series|indicator):(-?\d+)$/.exec(r);
+      if (!m) return r;
+      const k = Number(m[2]);
+      if (m[1] === "series") {
+        const s = layoutSeries[k];
+        return s ? this.paneOf(s.id) : null;
+      }
+      const ind = newInd[k];
+      return ind ? `xind-${ind.id}` : null;
+    };
+    // Drawings on indicator/series panes: map their portable pane references to the new pane ids.
+    this.drawings.load((L.drawings as DrawingData[]).filter((d) => !d.paneId || unref(d.paneId) !== null).map((d) => (d.paneId ? { ...d, paneId: unref(d.paneId)! } : d)));
+    for (const [key, o] of scaleEntries) {
+      const at = key.lastIndexOf(":");
+      const pane = at < 0 ? "main" : unref(key.slice(0, at));
+      if (pane) this.scaleOpts.set(`${pane}|${at < 0 ? key : key.slice(at + 1)}`, JSON.parse(JSON.stringify(o)) as PriceScaleSettings);
+    }
+    const sizes = L.panes.sizes ? Object.fromEntries(Object.entries(L.panes.sizes).flatMap(([k, v]) => (unref(k) ? [[unref(k)!, v]] : []))) : undefined;
+    this.paneSizes = sizes && Object.keys(sizes).length ? sizes : undefined;
+    this.collapsedPanes = new Set(L.panes.collapsed.map(unref).filter((x): x is string => x !== null && x !== "main"));
+    this.paneOrder = L.panes.order.map(unref).filter((x): x is string => x !== null && x !== "main");
+    if (L.session) this.setSessionHighlight({ calendar: L.session.calendar as CalendarId });
+    else this.setSessionHighlight(null);
+    this.render({ kind: "full" });
+    this.events.emit("layoutChange", { reason: "layout-load" });
+    return report;
+  }
+
+  // ---------- plugins (trusted code; not sandboxed) ----------
+  use(plugin: XChartPlugin): void {
+    this.assertAlive();
+    try {
+      this.plugins_.install(plugin);
+    } catch (e) {
+      if (e instanceof XChartError) throw e;
+      throw new XChartError("PLUGIN_FAILED", (e as Error).message);
+    }
+  }
+  removePlugin(id: string): boolean {
+    this.assertAlive();
+    return this.plugins_.remove(id);
+  }
+  plugins(): PluginInfo[] {
+    return this.plugins_.list();
+  }
+  /** Drawing tool ids available on this chart (built-in and plugin tools). */
+  drawingTools(): string[] {
+    return this.drawings.toolTypes();
+  }
+
+  // ---------- chart type ----------
+  /** Changes how the candlestick series is drawn. Display only: the series data is never modified. */
+  setChartType(type: ChartType, style?: ChartTypeStyle): void {
+    this.assertAlive();
+    validateChartType(type, style); // atomic: throws before anything changes
+    this.applyChartType(type, style);
+    this.events.emit("layoutChange", { reason: "chart-type" });
+  }
+
+  private applyChartType(type: ChartType, style?: ChartTypeStyle) {
+    const wasDerived = this.derived !== null;
+    const prevKind = this.derived?.kind;
+    if (isDerivedType(type)) {
+      const cs = this.store.candle();
+      if (!cs) throw new XChartError("UNSUPPORTED_CHART_TYPE", `"${type}" is built from a candlestick series; add one first`);
+      const eng = new DerivedSeriesEngine(type as DerivedKind, style as never); // validates settings
+      eng.sync(cs.points as CandlestickData[], this.store.version); // throws DERIVED_LIMIT before anything changes
+      this.derived = eng;
+    } else this.derived = null;
+    this.derivedError = null;
+    this.chartType = type;
+    this.chartStyle = { ...(style ?? {}) };
+    this.ha = null;
+    for (const i of this.indicators.values()) i.invalidate("full");
+    this.inputCache = null;
+    this.render({ kind: "full" }, wasDerived || this.derived ? null : undefined);
+    // Switching between the time axis and a logical axis (or between derived kinds) starts from a fitted view.
+    if (wasDerived !== (this.derived !== null) || (this.derived && this.derived.kind !== prevKind)) this.adapter.fit();
+    this.adapter.requestRedraw?.();
+  }
+
+  /** Price-based chart state: points (copies), methodology, compatibility of other chart content. */
+  getDerivedInfo(): null | { type: DerivedKind; settings: Record<string, unknown>; points: DerivedPoint[]; provisional: number; methodology: string; error: string | null; hidden: { series: number[]; indicators: string[]; markers: boolean; drawings: number; sessionHighlight: boolean } } {
+    this.assertAlive();
+    const d = this.derived;
+    if (!d) return null;
+    const snap = d.snapshot();
+    return {
+      type: d.kind,
+      settings: { ...d.settings },
+      points: snap.points,
+      provisional: d.provisionalCount(),
+      methodology: snap.methodology,
+      error: this.derivedError,
+      hidden: {
+        series: [...this.seriesById.values()].filter((x) => x.type !== "candlestick").map((x) => x.id),
+        indicators: [...this.indicators.values()].filter((i) => !this.indicatorUsable(i)).map((i) => i.id),
+        markers: [...this.decorations.values()].some((x) => x.getMarkers().length > 0),
+        drawings: this.drawings.serialize().filter((x) => (x.domain ?? "time") !== "logical").length,
+        sessionHighlight: this.sessionLayer !== null,
+      },
+    };
+  }
+
+  /** In derived mode only price-only indicators are meaningful (no volume, no session time). */
+  private indicatorUsable(i: IndicatorInstance): boolean {
+    if (!this.derived) return true;
+    const def = i.definition();
+    const needs = def.requires ?? (def.inputs.includes("volume") ? ["volume"] : []);
+    return !needs.length;
+  }
+
+  /** Bar index of a market time on the current axis (time axis, or the derived logical axis). */
+  private axisIndexOf(t: number): number {
+    const d = this.derived;
+    if (!d) return this.store.indexOfTime(t);
+    const b = d.bars;
+    if (!b.length) return 0;
+    let lo = 0, hi = b.length;
+    while (lo < hi) {
+      const m = (lo + hi) >> 1;
+      if (b[m].t < t) lo = m + 1;
+      else hi = m;
+    }
+    return Math.min(lo, b.length - 1);
+  }
+  private axisTimeAt(i: number): number {
+    const d = this.derived;
+    if (!d) return Number.isInteger(i) && i >= 0 && i < this.store.times.length ? this.store.times[i] : this.store.timeAt(i);
+    const b = d.bars;
+    if (!b.length) return 0;
+    const k = Math.max(0, Math.min(b.length - 1, Math.round(i)));
+    return b[k].t;
+  }
+  private axisLength(): number {
+    return this.derived ? this.derived.bars.length : this.store.times.length;
+  }
+
+  /** Visible range in bar indexes of the current axis (logical points on price-based types). */
+  getVisibleLogicalRange(): { from: number; to: number } | null {
+    this.assertAlive();
+    return this.adapter.getViewRange();
+  }
+  setVisibleLogicalRange(range: { from: number; to: number }): void {
+    this.assertAlive();
+    if (!range || typeof range.from !== "number" || typeof range.to !== "number" || !Number.isFinite(range.from) || !Number.isFinite(range.to) || range.to <= range.from) {
+      throw new XChartError("INVALID_RANGE", "setVisibleLogicalRange needs finite { from, to } with to > from");
+    }
+    this.adapter.setViewRange(range.from, range.to);
+  }
+
+  /** PNG data URL of the chart as drawn (scale = device pixels per CSS pixel; default the screen's). */
+  takeScreenshot(scale?: number): string {
+    this.assertAlive();
+    if (scale !== undefined && (typeof scale !== "number" || !(scale >= 0.5 && scale <= 8))) throw new XChartError("INVALID_NUMBER", "Screenshot scale must be between 0.5 and 8");
+    if (!this.adapter.toDataURL) throw new XChartError("UNSUPPORTED", "This renderer cannot export images");
+    return this.adapter.toDataURL(scale);
+  }
+  getChartType(): { type: ChartType; style: ChartTypeStyle } {
+    return { type: this.chartType, style: { ...this.chartStyle } };
+  }
+
+  /** Updates display transforms; returns the change the renderer should apply. */
+  private updateDisplayBars(change: Change): Change {
+    const d = this.derived;
+    if (d) {
+      const cs = this.store.candle();
+      if (!cs) {
+        this.derived = null;
+        this.chartType = "candles";
+        return { kind: "full" };
+      }
+      if (d.sourceRevision === this.store.version && d.revision > 0 && change.kind !== "full") return { kind: "tick", appended: 0 };
+      const before = d.points.length;
+      let appended: number;
+      try {
+        appended = d.sync(cs.points as CandlestickData[], this.store.version);
+      } catch (e) {
+        // A live update pushed the series past its size limit: keep the last good points and report it.
+        this.derivedError = (e as Error).message;
+        this.events.emit("layoutChange", { reason: "derived-limit" });
+        return { kind: "full" };
+      }
+      if (appended < 0 || change.kind === "full") return { kind: "full" };
+      return { kind: "tick", appended: Math.max(0, d.points.length - before) };
+    }
+    this.updateHa(change);
+    return change;
+  }
+
+  private updateHa(change: Change) {
+    if (this.chartType !== "heikin-ashi") {
+      this.ha = null;
+      return;
+    }
+    const src = this.store.bars;
+    if (!this.ha || change.kind === "full" || this.ha.length < src.length - 1) this.ha = heikinAshi(src, []);
+    else heikinAshi(src, this.ha, Math.max(0, src.length - 2)); // in place: the renderer's tick path keeps its array
+  }
+
+  private realLast(): { price: number; prev: number | null } | undefined {
+    if (this.chartType !== "heikin-ashi" && !this.derived) return undefined;
+    const b = this.store.bars;
+    let i = b.length - 1;
+    while (i >= 0 && !Number.isFinite(b[i].c)) i--;
+    if (i < 0) return undefined;
+    let j = i - 1;
+    while (j >= 0 && !Number.isFinite(b[j].c)) j--;
+    return { price: b[i].c, prev: j >= 0 ? b[j].c : null };
+  }
+
+  // ---------- trading sessions ----------
+  /** Shades extended-hours / closed bars and marks day breaks using a trading calendar; null removes it. View-only. */
+  setSessionHighlight(o: SessionHighlightOptions | null): void {
+    this.assertAlive();
+    if (o === null) {
+      this.sessionLayer = null;
+      this.sessionCalendar = null;
+      this.syncLayers(true);
+      this.adapter.requestRedraw?.();
+      return;
+    }
+    if (!o || typeof o !== "object") throw new XChartError("INVALID_OPTION", "setSessionHighlight expects options or null");
+    const cal = o.calendar instanceof TradingCalendar ? o.calendar : new TradingCalendar(o.calendar);
+    this.sessionCalendar = cal.id;
+    for (const k of ["preColor", "postColor", "closedColor", "dayBreakColor", "unknownColor"] as const) if (o[k] !== undefined && !isCssColor(o[k])) throw new XChartError("INVALID_COLOR", `Invalid ${k}`);
+    if (o.dayBreaks !== undefined && typeof o.dayBreaks !== "boolean") throw new XChartError("INVALID_OPTION", "dayBreaks must be a boolean");
+    const st = this.store;
+    const colors = { pre: o.preColor ?? "rgba(56,189,248,0.07)", post: o.postColor ?? "rgba(168,85,247,0.07)", closed: o.closedColor ?? "rgba(148,163,184,0.08)", unknown: o.unknownColor ?? "transparent" };
+    const breaks = o.dayBreaks !== false;
+    const breakColor = o.dayBreakColor ?? "rgba(148,163,184,0.35)";
+    // Per-bar cache: the session of a timestamp never changes.
+    const cache = new Map<number, { state: string; date: string }>();
+    const info = (t: number) => {
+      let v = cache.get(t);
+      if (!v) {
+        const date = cal.localDate(t);
+        v = { state: o.unknownColor && cal.dayStatus(date).status === "unknown" ? "unknown" : cal.sessionAt(t), date };
+        if (cache.size > 200_000) cache.clear();
+        cache.set(t, v);
+      }
+      return v;
+    };
+    this.sessionLayer = {
+      pane: "main",
+      z: "below",
+      draw: (api) => {
+        if (!st.intraday() || this.derived) return; // time-based shading has no meaning on a logical axis
+        const { ctx } = api;
+        const n = st.times.length;
+        const from = Math.max(0, api.from), to = Math.min(n - 1, api.to);
+        let prevDate: string | null = from > 0 ? info(st.times[from - 1]).date : null;
+        for (let i = from; i <= to; i++) {
+          const v = info(st.times[i]);
+          const x = api.xOfIndex(i) - api.spacing / 2;
+          if (v.state !== "regular") {
+            ctx.fillStyle = colors[v.state as keyof typeof colors];
+            ctx.fillRect(x, api.pane.top, api.spacing + 0.5, api.pane.height);
+          }
+          if (breaks && prevDate !== null && v.date !== prevDate) {
+            ctx.strokeStyle = breakColor;
+            ctx.setLineDash([2, 3]);
+            ctx.beginPath();
+            ctx.moveTo(Math.round(x) + 0.5, api.pane.top);
+            ctx.lineTo(Math.round(x) + 0.5, api.pane.top + api.pane.height);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+          prevDate = v.date;
+        }
+      },
+    };
+    this.syncLayers(true);
+    this.adapter.requestRedraw?.();
+  }
+
+  // ---------- programmatic crosshair (synchronisation) ----------
+  /** Shows a crosshair at `time` (and `price` on the main pane) while the pointer is not over this chart. */
+  setCrosshairPosition(time: number, price: number | null = null): void {
+    this.assertAlive();
+    if (typeof time !== "number" || !Number.isFinite(time)) throw new XChartError("INVALID_NUMBER", "setCrosshairPosition needs a finite time");
+    if (price !== null && (typeof price !== "number" || !Number.isFinite(price))) throw new XChartError("INVALID_NUMBER", "price must be a finite number or null");
+    if (!this.axisLength()) return;
+    this.adapter.setCrosshair?.({ index: Math.round(this.axisIndexOf(time)), price });
+  }
+  clearCrosshairPosition(): void {
+    this.assertAlive();
+    this.adapter.setCrosshair?.(null);
+  }
+
+  /** @internal Pushes the current layer list to the renderer when it changed. */
+  syncLayers(force = false) {
+    if (this.removed) return;
+    const decor = [...this.decorations].filter(([id, d]) => !d.isEmpty() && this.seriesById.has(id));
+    const drawPanes = this.paneIds();
+    const key = decor.map(([id]) => `${id}:${this.paneOf(id)}`).join(",") + `|${this.extraLayers.length}|${this.sessionLayer ? 1 : 0}|${drawPanes.join(",")}`;
+    if (!force && key === this.layerKey) return;
+    this.layerKey = key;
+    const layers: EngineLayer[] = [...(this.sessionLayer ? [this.sessionLayer] : []), ...this.extraLayers.filter((l) => (l.z ?? "above") === "below")];
+    for (const [id, d] of decor) layers.push(d.layer(this.paneOf(id)));
+    layers.push(...this.extraLayers.filter((l) => (l.z ?? "above") === "above"));
+    // A drawing layer on every pane: drawings can be created and shown on any pane.
+    for (const pane of drawPanes) layers.push(this.drawings.layer(pane));
+    this.adapter.setLayers?.(layers);
+  }
+
+  /**
+   * Pane-removal policy: a drawing whose pane no longer exists (its indicator or series was removed)
+   * is deleted and reported with a drawingRemove event. Drawings never move to another pane.
+   */
+  private pruneOrphanDrawings() {
+    const panes = new Set(this.paneIds());
+    for (const d of this.drawings.serialize()) {
+      const pane = d.paneId ?? "main";
+      if (!panes.has(pane)) this.drawings.remove(d.id, false);
+    }
+  }
+
+  /** @internal Layers added by plugins (rendered between series decorations and drawings). */
+  setExtraLayers(layers: EngineLayer[]) {
+    this.extraLayers = layers;
+    this.syncLayers(true);
+  }
+
+  private requestRedraw() {
+    if (this.removed) return;
+    this.syncLayers();
+    this.adapter.requestRedraw?.();
+  }
+
+  /** @internal Markers & price lines of one series (created on first use). */
+  decor(id: number): Decorations {
+    let d = this.decorations.get(id);
+    if (!d) {
+      const st = this.store;
+      d = new Decorations({
+        indexOfTime: (t) => st.indexOfTime(t),
+        markersEnabled: () => !this.derived,
+        scaleId: () => {
+          const ser = this.seriesById.get(id);
+          return ser && ser.type !== "candlestick" ? (ser.options() as { priceScaleId?: string }).priceScaleId ?? "right" : "right";
+        },
+        valueAt: (i) => {
+          const rec = st.series.get(id);
+          if (!rec || i < 0 || i >= st.times.length) return null;
+          if (rec.type === "candlestick") {
+            const b = st.bars[i];
+            return Number.isFinite(b.c) ? b : null;
+          }
+          const v = rec.values[i];
+          if (!Number.isFinite(v)) return null;
+          if (rec.type === "cloud") {
+            const w = rec.values2[i];
+            return { o: v, h: Math.max(v, w), l: Math.min(v, w), c: v };
+          }
+          return rec.type === "histogram" ? { o: v, h: Math.max(v, 0), l: Math.min(v, 0), c: v } : { o: v, h: v, l: v, c: v };
+        },
+        last: () => {
+          const rec = st.series.get(id);
+          const out: number[] = [];
+          if (rec) {
+            const n = st.times.length;
+            for (let i = n - 1; i >= 0 && out.length < 2; i--) {
+              const v = rec.type === "candlestick" ? st.bars[i].c : rec.values[i];
+              if (Number.isFinite(v)) out.push(v);
+            }
+          }
+          return { last: out[0] ?? null, prev: out[1] ?? null };
+        },
+        fmt: (p) => this.fmtPrice(p),
+        color: () => (this.opts.theme === "light" ? "#2563eb" : "#60a5fa"),
+        redraw: () => this.requestRedraw(),
+      });
+      this.decorations.set(id, d);
+    }
+    return d;
+  }
+
+  private fmtPrice(p: number): string {
+    const fixed = this.opts.priceScale?.precision;
+    if (fixed !== undefined) return p.toFixed(fixed);
+    const a = Math.abs(p);
+    return p.toFixed(a >= 1 || a === 0 ? 2 : a >= 0.01 ? 4 : 6);
+  }
+
+  private fmtTime(t: number): string {
+    const off = (this.opts.utcOffsetMinutes ?? 330) * 60;
+    const iso = new Date((this.store.intraday() ? t + off : t) * 1000).toISOString();
+    return this.store.intraday() ? `${iso.slice(0, 10)} ${iso.slice(11, 16)}` : iso.slice(0, 10);
+  }
+
+  private drawingHost(): DrawingHost {
+    const st = this.store;
+    return {
+      indexOfTime: (t) => this.axisIndexOf(t),
+      timeAt: (i) => this.axisTimeAt(i),
+      bar: (i) => (this.derived ? this.derived.bars[i] : st.bars[i]),
+      barCount: () => this.axisLength(),
+      domain: () => (this.derived ? "logical" : "time"),
+      geometry: (paneId = "main", scaleId = "right") => {
+        const a = this.adapter;
+        const box = a.getPanes?.().find((p) => p.id === paneId);
+        if (!box || !a.xOfIndex || !a.priceToY || !a.yToPrice || !a.getPlotWidth) return null;
+        if (scaleId !== "right" && a.priceToY(1, paneId, scaleId) === null && a.priceToY(-1, paneId, scaleId) === null) return null;
+        return {
+          xOfIndex: (i) => a.xOfIndex!(i),
+          yOfPrice: (p) => a.priceToY!(p, paneId, scaleId) ?? NaN,
+          priceOfY: (y) => a.yToPrice!(y, paneId, scaleId) ?? NaN,
+          width: a.getPlotWidth(),
+          top: box.top,
+          height: box.height,
+        };
+      },
+      snapValues: (paneId, i) => {
+        const out: number[] = [];
+        for (const s of this.seriesById.values()) {
+          if (s.type === "candlestick" || this.paneOf(s.id) !== paneId) continue;
+          const rec = this.store.series.get(s.id)!;
+          out.push(rec.values[i], rec.values2?.[i] ?? NaN);
+        }
+        for (const ind of this.indicators.values()) {
+          const pane = ind.options().pane ?? (ind.definition().pane === "overlay" ? "overlay" : "separate");
+          const id = pane === "separate" ? `xind-${ind.id}` : pane;
+          if (id === paneId) for (const arr of Object.values(ind.aligned)) out.push(arr[i]);
+        }
+        return out.filter((v) => Number.isFinite(v));
+      },
+      fmt: (p) => this.fmtPrice(p),
+      timeLabel: (t) => this.fmtTime(t),
+      redraw: () => this.requestRedraw(),
+      emit: (e) => {
+        if (e.type === "create") this.events.emit("drawingCreate", { drawing: e.drawing });
+        else if (e.type === "update") this.events.emit("drawingUpdate", { drawing: e.drawing });
+        else if (e.type === "remove") this.events.emit("drawingRemove", { id: e.id });
+        else if (e.type === "select") this.events.emit("drawingSelect", { id: e.id });
+        else this.events.emit("drawingTool", { tool: e.tool });
+        for (const h of [...this.drawingSubs]) {
+          if (!this.drawingSubs.has(h)) continue;
+          try {
+            h(e);
+          } catch (err) {
+            console.error("[XChart] drawing handler failed", err);
+          }
+        }
+      },
+    };
+  }
+
+  // ---------- coordinates (CSS px relative to the chart canvas) ----------
+  timeToCoordinate(time: number): number | null {
+    this.assertAlive();
+    if (!this.store.times.length || !this.adapter.xOfIndex || typeof time !== "number" || !Number.isFinite(time)) return null;
+    if (this.derived) {
+      // Price-based axis: the first element formed at or after `time` (by source candle time); none → null.
+      const b = this.derived.bars;
+      if (!b.length || time > b[b.length - 1].t) return null;
+      return this.adapter.xOfIndex(this.axisIndexOf(time));
+    }
+    return this.adapter.xOfIndex(this.store.indexOfTime(time));
+  }
+  coordinateToTime(x: number): number | null {
+    this.assertAlive();
+    if (!this.store.times.length || !this.adapter.indexOfX || !Number.isFinite(x)) return null;
+    const i = Math.round(this.adapter.indexOfX(x));
+    // Price-based axis: the source candle time of the element (no times are invented between or past elements).
+    if (this.derived) return this.derived.bars[i]?.t ?? null;
+    return i >= 0 && i < this.store.times.length ? this.store.times[i] : this.store.timeAt(i);
+  }
+  priceToCoordinate(price: number, paneId = "main", scaleId = "right"): number | null {
+    this.assertAlive();
+    if (typeof price !== "number" || !Number.isFinite(price)) return null;
+    return this.adapter.priceToY?.(price, paneId, scaleId) ?? null;
+  }
+  coordinateToPrice(y: number, paneId = "main", scaleId = "right"): number | null {
+    this.assertAlive();
+    if (!Number.isFinite(y)) return null;
+    return this.adapter.yToPrice?.(y, paneId, scaleId) ?? null;
+  }
+
+  // ---------- drawings ----------
+  addDrawing(spec: DrawingSpec): DrawingApi {
+    this.assertAlive();
+    return this.drawings.add(spec);
+  }
+  getDrawing(id: string): DrawingApi | undefined {
+    this.assertAlive();
+    return this.drawings.get(id);
+  }
+  getDrawings(): DrawingApi[] {
+    this.assertAlive();
+    return this.drawings.list();
+  }
+  removeDrawing(drawing: DrawingApi | string): boolean {
+    this.assertAlive();
+    return this.drawings.remove(typeof drawing === "string" ? drawing : drawing.id);
+  }
+  clearDrawings(): void {
+    this.assertAlive();
+    this.drawings.clear();
+  }
+  duplicateDrawing(id: string): DrawingApi | undefined {
+    this.assertAlive();
+    return this.drawings.duplicate(id);
+  }
+  selectDrawing(id: string | null): void {
+    this.assertAlive();
+    this.drawings.select(id);
+  }
+  selectedDrawing(): string | null {
+    return this.drawings.selected;
+  }
+  /** Starts interactive creation with a tool; null returns to normal pan/zoom. */
+  setDrawingTool(tool: DrawingType | (string & {}) | null): void {
+    this.assertAlive();
+    this.drawings.setTool(tool);
+  }
+  getDrawingTool(): DrawingType | null {
+    return this.drawings.tool();
+  }
+  setDrawingSnap(on: boolean): void {
+    if (typeof on !== "boolean") throw new XChartError("INVALID_OPTION", "setDrawingSnap expects a boolean");
+    this.drawings.snap = on;
+  }
+  undoDrawing(): boolean {
+    this.assertAlive();
+    return this.drawings.undo();
+  }
+  redoDrawing(): boolean {
+    this.assertAlive();
+    return this.drawings.redo();
+  }
+  serializeDrawings(): DrawingData[] {
+    this.assertAlive();
+    return this.drawings.serialize();
+  }
+  loadDrawings(data: unknown): void {
+    this.assertAlive();
+    this.drawings.load(data);
+  }
+  subscribeDrawingEvents(handler: (e: DrawingEvent) => void): Unsubscribe {
+    this.assertAlive();
+    if (typeof handler !== "function") throw new XChartError("INVALID_HANDLER", "subscribeDrawingEvents expects a function");
+    this.drawingSubs.add(handler);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      this.drawingSubs.delete(handler);
+    };
+  }
+
+  once<K extends keyof ChartEvents>(type: K, handler: (payload: ChartEvents[K]) => void): Unsubscribe {
+    this.assertAlive();
+    if (typeof handler !== "function") throw new XChartError("INVALID_HANDLER", `once("${String(type)}") expects a function`);
+    return this.events.once(type, handler);
+  }
+
+  /** Removes a handler added with on(). */
+  off<K extends keyof ChartEvents>(type: K, handler: (payload: ChartEvents[K]) => void): boolean {
+    return this.events.off(type, handler);
+  }
+  /** Alias of on("click", …). */
+  subscribeClick(handler: (p: ChartEvents["click"]) => void): Unsubscribe {
+    return this.on("click", handler);
+  }
+  /** Aliases of saveLayout / loadLayout. */
+  exportLayout(options?: { includeData?: boolean }) {
+    return this.saveLayout(options);
+  }
+  importLayout(layout: unknown, options?: LayoutLoadOptions) {
+    return this.loadLayout(layout, options);
+  }
+  /** Time-scale facade (the same operations as the chart methods, grouped). */
+  timeScale() {
+    this.assertAlive();
+    return {
+      setVisibleRange: (r: VisibleTimeRange) => this.setVisibleRange(r),
+      getVisibleRange: () => this.getVisibleRange(),
+      setVisibleLogicalRange: (r: { from: number; to: number }) => this.setVisibleLogicalRange(r),
+      getVisibleLogicalRange: () => this.getVisibleLogicalRange(),
+      fitContent: () => this.fitContent(),
+      scrollToRealTime: () => this.scrollToRealTime(),
+      scrollBy: (bars: number) => this.scrollBy(bars),
+      timeToCoordinate: (t: number) => this.timeToCoordinate(t),
+      coordinateToTime: (x: number) => this.coordinateToTime(x),
+      subscribeVisibleTimeRangeChange: (h: (r: VisibleTimeRange) => void) => this.on("visibleRangeChange", (e) => h(e.range)),
+    };
+  }
+
+  /** Subscribes to a typed chart event; returns an unsubscribe function. */
+  on<K extends keyof ChartEvents>(type: K, handler: (payload: ChartEvents[K]) => void): Unsubscribe {
+    this.assertAlive();
+    if (typeof handler !== "function") throw new XChartError("INVALID_HANDLER", `on("${String(type)}") expects a function`);
+    return this.events.on(type, handler);
+  }
+
+  private lastRangeKey = "";
+  private emitVisibleRange() {
+    if (!this.events.has("visibleRangeChange") || !this.axisLength()) return;
+    const r = this.adapter.getViewRange();
+    if (!r) return;
+    const range = this.derived ? { from: this.axisTimeAt(r.from), to: this.axisTimeAt(r.to) } : { from: this.store.timeAt(r.from), to: this.store.timeAt(r.to) };
+    const key = `${range.from}|${range.to}|${r.from.toFixed(3)}|${r.to.toFixed(3)}`;
+    if (key === this.lastRangeKey) return;
+    this.lastRangeKey = key;
+    this.events.emit("visibleRangeChange", { range, logical: { from: r.from, to: r.to } });
+  }
+
+  private pointerPayload(p: { x: number; y: number; index: number; price: number | null; paneId: string | null }) {
+    const i = Math.round(p.index);
+    return { time: this.axisLength() ? this.axisTimeAt(i) : null, price: p.price, paneId: p.paneId, point: { x: p.x, y: p.y }, logical: p.index };
+  }
+
+  // ---------- indicators ----------
+  private indicatorHost: IndicatorHost = {
+    input: () => this.indicatorInput(),
+    futureTime: (k) => {
+      const T = this.store.times;
+      const lastCandle = this.lastCandleTime();
+      return lastCandle === null ? 0 : this.store.timeAt(this.store.indexOfTime(lastCandle) + k) || T[T.length - 1];
+    },
+    changed: () => this.render({ kind: "full" }),
+    emit: (type, payload) => this.events.emit(type, payload),
+    graph: () => {
+      const src = this.indicatorInput();
+      if (!src) return null;
+      if (this.graphRev !== this.inputRev || this.graph.needsSync()) {
+        this.graph.sync(src.input, this.pendingFrom);
+        this.graphRev = this.inputRev;
+        this.pendingFrom = Number.POSITIVE_INFINITY;
+      }
+      return this.graph;
+    },
+  };
+
+  /** Diagnostics: incremental-graph statistics. */
+  indicatorEngineStats() {
+    return { ...this.graph.stats, nodes: this.graph.size() };
+  }
+
+  /**
+   * Applies a live tick of the candlestick series to the cached indicator input in place (O(1)),
+   * so indicators do not pay an O(n) rebuild per tick. Anything unusual drops the cache instead.
+   */
+  private patchInput(change: Change, isCandle: boolean) {
+    const c = this.inputCache;
+    if (this.benchmarkId !== null && !isCandle) {
+      // The benchmark series moved: rebuild the aligned input.
+      this.inputCache = null;
+      this.pendingFrom = undefined;
+      this.inputRev++;
+      return;
+    }
+    const drop = () => {
+      this.inputCache = null;
+      this.pendingFrom = undefined;
+      this.inputRev++;
+    };
+    if (!c || !c.value || this.derived || c.version !== this.store.version - 1 || change.kind !== "tick") return drop();
+    const st = this.store;
+    const v = c.value;
+    const inp = v.input;
+    const n = inp.time.length;
+    const mark = (k: number) => {
+      if (this.pendingFrom !== undefined) this.pendingFrom = Math.min(this.pendingFrom, k);
+    };
+    if (isCandle) {
+      const cs = st.candle()!;
+      const p = cs.points[cs.points.length - 1] as CandlestickData;
+      const bs = this.benchmarkId !== null ? st.series.get(this.benchmarkId) : undefined;
+      const at = (i: number) => {
+        inp.time[i] = p.time; inp.open[i] = p.open; inp.high[i] = p.high; inp.low[i] = p.low; inp.close[i] = p.close; inp.volume[i] = p.volume ?? 0;
+        if (inp.benchmark && bs) inp.benchmark[i] = bs.values[search(st.times, p.time)] ?? NaN;
+      };
+      if (n && inp.time[n - 1] === p.time) {
+        at(n - 1);
+        mark(n - 1);
+      } else if (!n || p.time > inp.time[n - 1]) {
+        at(n);
+        v.axisIdx.push(search(st.times, p.time));
+        mark(Math.max(0, n - 1));
+      } else return drop();
+    }
+    v.axisLength = st.times.length;
+    inp.revision = (inp.revision ?? 0) + 1;
+    c.version = st.version;
+    this.inputRev++;
+  }
+
+  private lastCandleTime(): number | null {
+    const b = this.store.bars;
+    for (let i = b.length - 1; i >= 0; i--) if (Number.isFinite(b[i].c)) return b[i].t;
+    return null;
+  }
+
+  /** Existing bars of the candlestick series (or, without one, the first line/area series). Cached per data version. */
+  private indicatorInput(): ReturnType<IndicatorHost["input"]> {
+    const key = this.derived ? -1 - this.derived.revision : this.store.version;
+    if (this.inputCache && this.inputCache.version === key) return this.inputCache.value;
+    const st = this.store;
+    if (this.derived) {
+      // Derived (logical) domain: indicators see the derived OHLC, one value per brick/line/column.
+      const b = this.derived.bars;
+      const input: IndicatorInput = { time: b.map((x) => x.t), open: b.map((x) => x.o), high: b.map((x) => x.h), low: b.map((x) => x.l), close: b.map((x) => x.c), volume: b.map(() => 0), intraday: st.intraday() };
+      const value = b.length ? { input, axisIdx: b.map((_, i) => i), axisLength: b.length } : null;
+      this.inputCache = { version: key, value };
+      this.pendingFrom = undefined;
+      this.inputRev++;
+      return value;
+    }
+    const time: number[] = [], open: number[] = [], high: number[] = [], low: number[] = [], close: number[] = [], volume: number[] = [], axisIdx: number[] = [];
+    if (st.candle()) {
+      for (let i = 0; i < st.bars.length; i++) {
+        const b = st.bars[i];
+        if (!Number.isFinite(b.c)) continue;
+        time.push(b.t); open.push(b.o); high.push(b.h); low.push(b.l); close.push(b.c); volume.push(b.v); axisIdx.push(i);
+      }
+    } else {
+      const src = [...st.series.values()].find((x) => x.type === "line" || x.type === "area");
+      if (src) {
+        for (let i = 0; i < src.values.length; i++) {
+          const v = src.values[i];
+          if (!Number.isFinite(v)) continue;
+          time.push(st.times[i]); open.push(v); high.push(v); low.push(v); close.push(v); volume.push(0); axisIdx.push(i);
+        }
+      }
+    }
+    const input: IndicatorInput = { time, open, high, low, close, volume, intraday: st.intraday(), revision: 0 };
+    const bs = this.benchmarkId !== null ? st.series.get(this.benchmarkId) : undefined;
+    if (bs) input.benchmark = axisIdx.map((i) => (bs.type === "candlestick" ? st.bars[i].c : bs.values[i]));
+    const value = time.length ? { input, axisIdx, axisLength: st.times.length } : null;
+    this.inputCache = { version: key, value };
+    this.pendingFrom = undefined; // rebuilt: the graph compares against its committed copy
+    this.inputRev++;
+    return value;
+  }
+
+  private flushIndicators(): boolean {
+    let any = false;
+    for (const i of this.indicators.values()) if (this.indicatorUsable(i)) any = i.flush() || any;
+    return any;
+  }
+
+  /**
+   * Sets the series used as the benchmark input of indicators that require one (rolling
+   * correlation, covariance, beta, alpha). Values are aligned to the candles by time; bars where
+   * the benchmark has no value are NaN (never filled in). null clears it.
+   */
+  setBenchmarkSeries(series: SeriesApi<ChartSeriesType> | null): void {
+    this.assertAlive();
+    if (series === null) {
+      if ([...this.indicators.values()].some((i) => i.definition().requires?.includes("benchmark"))) throw new XChartError("INDICATOR_IN_USE", "Remove the indicators that use the benchmark first");
+      this.benchmarkId = null;
+    } else {
+      const id = (series as unknown as { id?: number }).id;
+      if (typeof id !== "number" || !this.seriesById.has(id)) throw new XChartError("SERIES_REMOVED", "setBenchmarkSeries needs a series of this chart");
+      this.benchmarkId = id;
+    }
+    this.inputCache = null;
+    this.pendingFrom = undefined;
+    for (const i of this.indicators.values()) i.invalidate("full");
+    this.render({ kind: "full" });
+  }
+
+  /** Indicator discovery (see IndicatorRegistry.search). */
+  searchIndicators(q: Parameters<IndicatorRegistry["search"]>[0] = {}): IndicatorDefinition[] {
+    return this.registry.search(q);
+  }
+  /** Whether an indicator can run on this chart's data, with reasons when not. */
+  indicatorCompatibility(id: string): { ok: boolean; reasons: string[] } {
+    const st = this.store;
+    const hasVolume = st.bars.some((b) => b.v > 0);
+    return this.registry.compatibility(id, { hasVolume, hasBenchmark: this.benchmarkId !== null, derived: this.derived !== null });
+  }
+
+  /** Adds an indicator. `config` mixes calculation parameters (e.g. period) and display options (color, pane...). */
+  addIndicator(type: string, config: Record<string, unknown> = {}): IndicatorApi {
+    this.assertAlive();
+    const def = this.registry.get(type);
+    if (!def) throw new XChartError("UNKNOWN_INDICATOR", `Unknown indicator "${type}". Registered: ${this.registry.list().map((d) => d.id).join(", ")}`);
+    if (def.requires?.includes("benchmark") && this.benchmarkId === null) {
+      throw new XChartError("MISSING_INPUT", `"${type}" needs a benchmark series: call chart.setBenchmarkSeries(series) first (no benchmark data is assumed or fabricated)`);
+    }
+    if (!config || typeof config !== "object") throw new XChartError("INVALID_OPTION", "addIndicator config must be an object");
+    const OPTION_KEYS = ["color", "colors", "lineWidth", "lineStyle", "pane", "priceScaleId", "visible", "title", "hiddenOutputs", "fills"];
+    const opts: Record<string, unknown> = {};
+    const params: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(config)) (OPTION_KEYS.includes(k) ? opts : params)[k] = v;
+    const id = `${type}-${++this.indSeq}`;
+    const inst = new IndicatorInstance(id, def, params, opts as IndicatorOptions, this.indicatorHost, (x) => {
+      this.indicators.delete(x.id);
+      this.render({ kind: "full" });
+      this.events.emit("indicatorChange", { indicator: x, action: "removed" });
+    });
+    this.indicators.set(id, inst);
+    this.render({ kind: "full" });
+    this.events.emit("indicatorChange", { indicator: inst, action: "added" });
+    return inst;
+  }
+
+  getIndicators(): IndicatorApi[] {
+    return [...this.indicators.values()];
+  }
+
+  removeIndicator(indicator: IndicatorApi | string): boolean {
+    this.assertAlive();
+    const inst = typeof indicator === "string" ? this.indicators.get(indicator) : this.indicators.get(indicator.id);
+    if (!inst) return false;
+    inst.remove();
+    return true;
+  }
+
+  /** Registers an indicator definition for this chart only. */
+  registerIndicator(def: IndicatorDefinition): void {
+    this.assertAlive();
+    this.registry.register(def);
+  }
+  unregisterIndicator(id: string): boolean {
+    if ([...this.indicators.values()].some((i) => i.type === id)) throw new XChartError("INDICATOR_IN_USE", `Indicator "${id}" is used on this chart; remove those instances first`);
+    return this.registry.unregister(id);
+  }
+  listIndicators(): IndicatorDefinition[] {
+    return this.registry.list();
+  }
+  getIndicatorDefinition(id: string): IndicatorDefinition | undefined {
+    return this.registry.get(id);
   }
 
   // ---------- series ----------
@@ -123,6 +1441,10 @@ export class ChartImpl implements ChartApi {
   }
   addHistogramSeries(options: HistogramSeriesOptions = {}): SeriesApi<"histogram"> {
     return this.add("histogram", options);
+  }
+  /** Two-boundary band with colour switching at crossings (clouds, channels, forecast ranges). */
+  addCloudSeries(options: CloudSeriesOptions = {}): SeriesApi<"cloud"> {
+    return this.add("cloud", options);
   }
 
   private add<T extends ChartSeriesType>(type: T, options: SeriesOptionsMap[T]): SeriesApi<T> {
@@ -151,17 +1473,33 @@ export class ChartImpl implements ChartApi {
   /** @internal Removes a series (its unique timestamps leave the shared axis). */
   detachSeries(s: AnySeries) {
     if (this.removed || !this.seriesById.has(s.id)) return;
+    if (this.benchmarkId === s.id) {
+      // Indicators needing the benchmark cannot continue without it: they are removed, not left with silent NaNs.
+      for (const i of [...this.indicators.values()]) if (i.definition().requires?.includes("benchmark")) i.remove();
+      this.benchmarkId = null;
+    }
     const keep = this.captureView();
     this.seriesById.delete(s.id);
+    this.decorations.get(s.id)?.clear();
+    this.decorations.delete(s.id);
+    for (const i of this.indicators.values()) i.invalidate("full");
     this.render(this.store.remove(s.id), keep);
   }
 
   /** @internal Applies a data change (validated by the store before mutating) and redraws. */
-  mutate(fn: (store: SeriesStore) => Change) {
+  mutate(fn: (store: SeriesStore) => Change, seriesId?: number) {
     this.assertAlive();
     // The viewport must be captured BEFORE the data changes (cheap: two index→time lookups).
     const keep = this.captureView();
-    this.render(fn(this.store), keep);
+    const change = fn(this.store);
+    if (this.indicators.size) this.patchInput(change, seriesId !== undefined && this.store.series.get(seriesId)?.type === "candlestick");
+    if (this.indicators.size) {
+      const isInput = seriesId !== undefined && this.store.series.get(seriesId)?.type === "candlestick";
+      const kind = change.kind === "full" ? "full" : this.derived ? (isInput ? "full" : null) : isInput ? "tail" : change.appended ? "full" : null;
+      if (kind) for (const i of this.indicators.values()) i.invalidate(kind);
+    }
+    this.render(change, keep);
+    if (seriesId !== undefined) this.events.emit("seriesUpdate", { seriesId, kind: change.kind });
   }
 
   /** @internal */
@@ -182,22 +1520,55 @@ export class ChartImpl implements ChartApi {
     for (const [id, s] of this.seriesById) {
       const rec = this.store.series.get(id)!;
       if (s.type === "candlestick") candle = s.options() as CandlestickSeriesOptions;
-      else series.push({ id, type: s.type as Exclude<ChartSeriesType, "candlestick">, values: rec.values, options: s.options() as LineSeriesOptions });
+      else if (!this.derived) series.push({ id, type: s.type as Exclude<ChartSeriesType, "candlestick">, values: rec.values, values2: rec.values2, options: s.options() as LineSeriesOptions });
     }
-    return { times: this.store.times, bars: this.store.bars, intraday: this.store.intraday(), candle, series, followLatest: this.opts.followLatest === true };
+    let extraOverlays: RenderModel["extraOverlays"];
+    let extraPanes: RenderModel["extraPanes"];
+    let future = 0;
+    if (this.indicators.size) {
+      this.flushIndicators();
+      const p = indicatorPlots([...this.indicators.values()].filter((i) => this.indicatorUsable(i)));
+      extraOverlays = p.overlays;
+      extraPanes = p.panes;
+      future = p.future;
+    }
+    const scales = this.scaleSpecs();
+    const st = this.chartStyle as import("./chart-types.ts").TimeChartTypeStyle;
+    const d = this.derived;
+    const ds = d?.settings as Record<string, string | number | boolean | undefined> | undefined;
+    return {
+      derived: d
+        ? {
+            kind: d.kind, points: d.points,
+            up: String(ds!.upColor ?? ds!.xColor ?? "#22c55e"), down: String(ds!.downColor ?? ds!.oColor ?? "#ef4444"),
+            wicks: ds!.wicks === true, yangWidth: Number(ds!.yangWidth ?? 3), yinWidth: Number(ds!.yinWidth ?? 1), boxLevel: d.boxLevel(),
+          }
+        : undefined,
+      chartType: engineType(this.chartType),
+      mainStyle: { line: st.lineColor, lineWidth: st.lineWidth, areaTop: st.areaTopColor, areaBottom: st.areaBottomColor, baseline: st.baseline, up: st.upColor, down: st.downColor, markers: this.chartType === "line-markers" },
+      lastPrice: this.realLast(),
+      times: this.store.times, bars: d ? d.bars : this.ha ?? this.store.bars, intraday: this.store.intraday(), candle, series, followLatest: this.opts.followLatest === true, extraOverlays, extraPanes, future,
+      scales, paneSizes: this.paneSizes, collapsed: [...this.collapsedPanes], paneOrder: this.paneOrder,
+    };
   }
 
   private render(change: Change, before?: ReturnType<ChartImpl["captureView"]>) {
     if (this.removed) return;
     // Full re-renders keep the viewport on the same TIMES (bars may shift index when the axis changes).
     const keep = change.kind === "full" ? (before === undefined ? this.captureView() : before) : null;
+    change = this.updateDisplayBars(change);
     this.adapter.render(this.model(), change);
+    if (change.kind === "full") {
+      this.pruneOrphanDrawings();
+      this.syncLayers();
+    }
     if (keep) this.restoreView(keep);
     // Data under a stationary pointer may have changed: let the next frame re-emit.
     if (this.pointer && this.subs.size) this.lastKey = "";
   }
 
   private captureView(): { range: VisibleTimeRange; intraday: boolean } | null {
+    if (this.derived) return null; // the logical axis keeps its own index-based view
     const r = this.adapter.getViewRange();
     if (!r || !this.store.times.length) return null;
     return { range: { from: this.store.timeAt(r.from), to: this.store.timeAt(r.to) }, intraday: this.store.intraday() };
@@ -243,24 +1614,77 @@ export class ChartImpl implements ChartApi {
 
   private onPointer(index: number | null, time: number | null, price: number | null) {
     this.pointer = index === null ? null : { index, time, price };
-    if (!this.subs.size) return;
+    if (!this.subs.size && !this.events.has("crosshairMove")) return;
     // The renderer reports on every frame. Emit when the position OR the data changed.
     const key = index === null ? "none" : `${index}|${time}|${price}|${this.store.version}`;
     if (key === this.lastKey) return;
     this.lastKey = key;
-    this.deliver([...this.subs], this.buildEvent(this.pointer));
+    const ev = this.buildEvent(this.pointer);
+    this.deliver([...this.subs], ev);
+    this.events.emit("crosshairMove", ev);
   }
 
   private buildEvent(p: { index: number; time: number | null; price: number | null } | null): CrosshairEvent {
     const seriesData = new Map<SeriesApi<ChartSeriesType>, SeriesData<ChartSeriesType>>();
-    if (!p) return { time: null, price: null, seriesData };
+    if (!p) return { time: null, price: null, seriesData, indicators: new Map(), projected: false };
+    if (this.derived) return this.buildDerivedEvent(p, seriesData);
     const T = this.store.times;
     const time = p.index < T.length ? T[p.index] : p.time ?? this.store.timeAt(p.index);
     for (const [id, d] of this.store.pointsAt(p.index)) {
       const s = this.seriesById.get(id);
       if (s) seriesData.set(s, d);
     }
-    return { time, price: p.price, seriesData };
+    const indicators = new Map<IndicatorApi, Record<string, number>>();
+    for (const ind of this.indicators.values()) {
+      const vals: Record<string, number> = {};
+      let any = false;
+      for (const [k, arr] of Object.entries(ind.aligned)) {
+        const v = arr[p.index];
+        if (Number.isFinite(v)) {
+          vals[k] = v;
+          any = true;
+        }
+      }
+      if (any) indicators.set(ind, vals);
+    }
+    const lastBar = this.lastCandleTime();
+    const projected = lastBar !== null && p.index > this.store.indexOfTime(lastBar);
+    const ev: CrosshairEvent = { time, price: p.price, seriesData, indicators, projected };
+    const hb = this.ha?.[p.index];
+    if (hb && Number.isFinite(hb.c)) ev.display = { open: hb.o, high: hb.h, low: hb.l, close: hb.c };
+    return ev;
+  }
+
+  private indicatorValuesAt(index: number) {
+    const indicators = new Map<IndicatorApi, Record<string, number>>();
+    for (const ind of this.indicators.values()) {
+      if (!this.indicatorUsable(ind)) continue;
+      const vals: Record<string, number> = {};
+      let any = false;
+      for (const [k, arr] of Object.entries(ind.aligned)) {
+        const v = arr[index];
+        if (Number.isFinite(v)) {
+          vals[k] = v;
+          any = true;
+        }
+      }
+      if (any) indicators.set(ind, vals);
+    }
+    return indicators;
+  }
+
+  /** Crosshair on a price-based chart: the derived point plus the ORIGINAL source candle. */
+  private buildDerivedEvent(p: { index: number; price: number | null }, seriesData: Map<SeriesApi<ChartSeriesType>, SeriesData<ChartSeriesType>>): CrosshairEvent {
+    const d = this.derived!;
+    const pt = d.points[Math.max(0, Math.min(d.points.length - 1, Math.round(p.index)))];
+    if (!pt) return { time: null, price: p.price, seriesData, indicators: new Map(), projected: false };
+    const cs = this.store.candle();
+    const src = cs?.points[pt.sourceIndex] as CandlestickData | undefined;
+    if (cs && src) {
+      const api = this.seriesById.get(cs.id);
+      if (api) seriesData.set(api, { ...src });
+    }
+    return { time: pt.sourceTime, price: p.price, seriesData, indicators: this.indicatorValuesAt(pt.logical), projected: false, derived: { ...pt } };
   }
 
   private deliver(handlers: Handler[], e: CrosshairEvent) {
@@ -279,14 +1703,16 @@ export class ChartImpl implements ChartApi {
   setVisibleRange(range: VisibleTimeRange): void {
     this.assertAlive();
     validateRange(range);
-    if (!this.store.times.length) throw new XChartError("NO_DATA", "setVisibleRange needs data on the chart");
-    this.adapter.setViewRange(this.store.indexOfTime(range.from), this.store.indexOfTime(range.to));
+    if (!this.axisLength()) throw new XChartError("NO_DATA", "setVisibleRange needs data on the chart");
+    const a = this.axisIndexOf(range.from), b = this.axisIndexOf(range.to);
+    this.adapter.setViewRange(a, b > a ? b : a + 1);
   }
 
   getVisibleRange(): VisibleTimeRange | null {
     this.assertAlive();
     const r = this.adapter.getViewRange();
-    if (!r || !this.store.times.length) return null;
+    if (!r || !this.axisLength()) return null;
+    if (this.derived) return { from: this.axisTimeAt(r.from), to: this.axisTimeAt(r.to) };
     return { from: this.store.timeAt(r.from), to: this.store.timeAt(r.to) };
   }
 
@@ -335,6 +1761,23 @@ export class ChartImpl implements ChartApi {
   remove(): void {
     if (this.removed) return;
     this.removed = true;
+    this.events.emit("destroy", {});
+    this.events.clear();
+    for (const i of [...this.indicators.values()]) i.remove();
+    this.indicators.clear();
+    this.inputCache = null;
+    this.graph.destroy();
+    this.plugins_.destroyAll();
+    this.drawings.destroy();
+    this.drawingSubs.clear();
+    for (const d of this.decorations.values()) d.clear();
+    this.decorations.clear();
+    this.extraLayers = [];
+    this.scaleOpts.clear();
+    this.sessionLayer = null;
+    this.ha = null;
+    this.derived = null;
+    this.collapsedPanes.clear();
     this.subs.clear();
     this.pointer = null;
     for (const s of this.seriesById.values()) s.detach();
@@ -349,6 +1792,11 @@ export class ChartImpl implements ChartApi {
       this.onRemove = undefined;
       cb?.();
     }
+  }
+
+  /** Renderer diagnostics: full frames, crosshair-only frames and their last durations (null without a canvas renderer). */
+  renderStats(): { fullFrames: number; overlayFrames: number; lastDrawMs: number; lastOverlayMs: number } | null {
+    return this.adapter.renderStats?.() ?? null;
   }
 
   /** Duration of the renderer's last redraw in ms (diagnostics), or null if not reported. */

@@ -1,8 +1,49 @@
-# XChart SDK (v0.2.1)
+# XChart SDK (v0.3.1)
 
 A TypeScript API for building financial charts on top of TradestXPro's own canvas chart engine.
 It is **not published as an npm package**. It lives in `lib/xchart-sdk/` in this repository and is
 structured so it can later be published as `@tradestxpro/xchart`.
+
+## What's new in v0.3.1 (rendering, performance, SDK completion)
+
+* **Price-based chart types rendered**: Renko, Kagi, Point & Figure, Line Break and Range bars on a
+  logical axis, built incrementally from candles, with confirmed / provisional elements and no
+  invented timestamps ([derived-data-model.md](xchart/derived-data-model.md)).
+* **Incremental indicator engine**: all built-ins update in O(1)–O(window) per tick, exactly,
+  with shared nodes and checkpoints; live ticks at 100k candles × 20 indicators went from 264 ms
+  to 3.6 ms median ([incremental-indicators.md](xchart/incremental-indicators.md),
+  [performance.md](xchart/performance.md)).
+* **122 built-in indicators** with formula metadata, search and compatibility checks
+  ([indicator-catalog.md](xchart/indicator-catalog.md)).
+* **Indicator Web Worker** with versioned, validated protocol, coalescing, stale-result rejection
+  and cancellation ([worker-architecture.md](xchart/worker-architecture.md)).
+* **Independent price scales** (log / % / indexed / inverted / manual range on every scale),
+  **drawings on any pane**, crosshair-only redraws from a cached frame.
+* **Calendar providers**: versioned exchange-calendar datasets, `dayStatus`, overnight sessions
+  ([calendar-providers.md](xchart/calendar-providers.md)).
+* **Cross-browser CI**: Chromium, Firefox and WebKit are mandatory jobs
+  ([browser-compatibility.md](xchart/browser-compatibility.md)).
+* Upgrading: [migration-v0.3.1.md](xchart/migration-v0.3.1.md).
+
+## What's new in v0.3.0 (Advanced API)
+
+Detailed guides live in [`docs/xchart/`](xchart/README.md).
+
+| Area | API | Guide |
+|---|---|---|
+| Indicators | `chart.addIndicator(type, config)`, registries, custom definitions, 22 built-ins | [indicators.md](xchart/indicators.md) |
+| Clouds | `chart.addCloudSeries()` (two boundaries, colour switch at crossings, displacement) | [indicators.md](xchart/indicators.md#cloud-series) |
+| Drawings | 27 tools, `chart.addDrawing()`, interactive tools, undo/redo, serialisation | [drawings.md](xchart/drawings.md) |
+| Markers & price lines | `series.setMarkers()`, `series.createPriceLine()` | [drawings.md](xchart/drawings.md#markers) |
+| Scales & panes | percentage/indexed modes, overlay & left scales, margins, `chart.panes()` | [scales-and-panes.md](xchart/scales-and-panes.md) |
+| Sync & calendars | `syncCharts()`, `TradingCalendar`, session shading, IANA time zones | [sync-and-calendars.md](xchart/sync-and-calendars.md) |
+| Chart types | `chart.setChartType()` (11 time-based types), price-based calculations | [chart-types.md](xchart/chart-types.md) |
+| Layouts | `chart.saveLayout()` / `chart.loadLayout()` | [layouts.md](xchart/layouts.md) |
+| Plugins | `chart.use()` (trusted, not sandboxed) | [plugins.md](xchart/plugins.md) |
+| Events | `chart.on()`, `chart.once()` | [events.md](xchart/events.md) |
+| Performance | benchmarks and limits | [performance.md](xchart/performance.md) |
+
+Everything from v0.2.1 keeps working unchanged; see [migration](xchart/migration-v0.3.md).
 
 ## What changed in v0.2.1
 
@@ -324,25 +365,32 @@ raised before any state changes: a rejected call leaves the chart and its series
   * **`browser`**: installs Chromium with system dependencies and runs the browser tests in
     mandatory mode; any failure or unexpected skip fails the job.
   No secrets are used; the build needs no database or broker credentials.
-* Demo: `/xchart-demo` (synthetic data).
+* v0.3 suites: `tests/xchart-indicators.test.ts`, `tests/xchart-drawings.test.ts`,
+  `tests/xchart-scales-panes.test.ts`, `tests/xchart-advanced.test.ts`, plus Chromium tests for
+  indicators, clouds, drawings (real pointer), markers, price lines, overlay scales, panes,
+  synchronised charts, session shading, chart types, plugin layers and layout restore.
+* v0.3.1 suites: `tests/xchart-derived.test.ts`, `tests/xchart-incremental.test.ts`,
+  `tests/xchart-catalog.test.ts`; the browser suite runs in Chromium, Firefox and WebKit (CI matrix
+  `browser (chromium|firefox|webkit)`, all mandatory).
+* Benchmarks: `scripts/xchart-bench.ts` compares two checkouts (see
+  [performance.md](xchart/performance.md)).
+* Demo: `/xchart-demo` (synthetic data) — basics, v0.3 and 15 v0.3.1 sections.
 
 
-## Known limitations (v0.2.1)
+## Known limitations (v0.3.1)
 
-* One candlestick series per chart (it is the engine's main series).
-* Bars are spaced by index, not wall-clock time (gaps collapse); no time-proportional spacing.
-* Line/area/histogram on the main pane share the candles' price scale; no left/right scales or
-  scale margins. Separate panes have their own auto-scaled axis.
-* No per-point colours; colours come from series options.
-* Minimum bar spacing is 0.5 px (at most ~2 bars per pixel in view).
-* Dark/light theme presets only; no custom palettes, fonts or grid options.
-* Markers, price lines, drawings and the indicator catalogue are in the engine but not exposed through the SDK.
-* Time labels use a fixed UTC offset (no DST-aware time zones).
-* Strict market-data validation rejects the whole dataset on one bad record; use tolerant mode
-  if a partial chart with a report is acceptable.
-* Browser tests run against Chromium only (no Firefox/WebKit runs yet).
+See [docs/xchart/README.md](xchart/README.md#known-limitations-v031) for the full, current list. In short:
 
-## Migrating from v0.2
+* One candlestick series per chart; bars are spaced by index (gaps collapse).
+* Price-based chart types are built from candles (intrabar path assumed and flagged); tick-based
+  construction is not wired into charts.
+* The worker is not used by the live chart and computes only the 22 original built-ins.
+* Adding indicators is ~1.2–1.7× slower than v0.3.0 at large histories (one-off cost).
+* No exchange holiday datasets are bundled; uncovered weekdays are `unknown`.
+* Plugins are trusted code and are not sandboxed.
+* Volume profile is not implemented; Hurst is validated only directionally.
+
+## Migrating from v0.2 (to v0.2.1)
 
 * `fromTradestxproBars()` **may now throw** `MarketDataError` where v0.2 silently clamped
   high/low, dropped duplicates/out-of-order/malformed rows, truncated fractional times and turned

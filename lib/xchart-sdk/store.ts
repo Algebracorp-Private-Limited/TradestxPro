@@ -4,7 +4,7 @@
  * tick costs O(1) (replace) or O(series) (append) instead of rebuilding history.
  * Pure TypeScript: no DOM access.
  */
-import type { CandlestickData, ChartSeriesType, SeriesData, SingleValueData } from "./types.ts";
+import type { CandlestickData, ChartSeriesType, CloudData, SeriesData, SingleValueData } from "./types.ts";
 import { XChartError, validateBars, validateSeriesType, validateUpdate } from "./validation.ts";
 
 /** Same shape as the engine's Bar. NaN prices mark a gap (no candle at this time). */
@@ -16,6 +16,8 @@ export type StoreSeries = {
   points: SeriesData<ChartSeriesType>[];
   /** Values aligned to the axis (NaN where the series has no point); unused for candlesticks. */
   values: number[];
+  /** Second aligned array: the lower boundary of cloud series. */
+  values2: number[];
 };
 
 /** What changed, so the renderer can redraw cheaply. */
@@ -67,7 +69,7 @@ export class SeriesStore {
     if (type === "candlestick" && this.candle()) {
       throw new XChartError("UNSUPPORTED_SERIES", "Only one candlestick series per chart is supported in this version");
     }
-    const s: StoreSeries = { id: this.nextId++, type, points: [], values: new Array(this.times.length).fill(NaN) };
+    const s: StoreSeries = { id: this.nextId++, type, points: [], values: new Array(this.times.length).fill(NaN), values2: type === "cloud" ? new Array(this.times.length).fill(NaN) : [] };
     this.series.set(s.id, s);
     return s;
   }
@@ -119,7 +121,11 @@ export class SeriesStore {
       // New newest time: extend every aligned array by one slot.
       this.times.push(p.time);
       this.bars.push(gap(p.time));
-      for (const o of this.series.values()) if (o.type !== "candlestick") o.values.push(NaN);
+      for (const o of this.series.values()) {
+        if (o.type === "candlestick") continue;
+        o.values.push(NaN);
+        if (o.type === "cloud") o.values2.push(NaN);
+      }
       this.writeAt(s, n, p);
       return { kind: "tick", appended: 1 };
     }
@@ -133,7 +139,11 @@ export class SeriesStore {
     const at = -idx - 1;
     this.times.splice(at, 0, p.time);
     this.bars.splice(at, 0, gap(p.time));
-    for (const o of this.series.values()) if (o.type !== "candlestick") o.values.splice(at, 0, NaN);
+    for (const o of this.series.values()) {
+      if (o.type === "candlestick") continue;
+      o.values.splice(at, 0, NaN);
+      if (o.type === "cloud") o.values2.splice(at, 0, NaN);
+    }
     this.writeAt(s, at, p);
     return { kind: "full" };
   }
@@ -152,6 +162,8 @@ export class SeriesStore {
           if (src?.volume !== undefined) d.volume = src.volume;
           out.set(s.id, d);
         }
+      } else if (s.type === "cloud") {
+        if (Number.isFinite(s.values[i])) out.set(s.id, { time: t, upper: s.values[i], lower: s.values2[i] } as CloudData);
       } else if (Number.isFinite(s.values[i])) {
         out.set(s.id, { time: t, value: s.values[i] } as SingleValueData);
       }
@@ -209,7 +221,10 @@ export class SeriesStore {
 
   private writeAt(s: StoreSeries, i: number, p: SeriesData<ChartSeriesType>) {
     if (s.type === "candlestick") this.bars[i] = toBar(p as CandlestickData);
-    else s.values[i] = (p as SingleValueData).value;
+    else if (s.type === "cloud") {
+      s.values[i] = (p as CloudData).upper;
+      s.values2[i] = (p as CloudData).lower;
+    } else s.values[i] = (p as SingleValueData).value;
   }
 
   /** Rebuilds the axis and every aligned array (setData / remove / mid-axis insert). O(total points). */
@@ -228,6 +243,17 @@ export class SeriesStore {
           while (times[j] !== p.time) j++;
           this.bars[j] = toBar(p);
         }
+      } else if (s.type === "cloud") {
+        const u = new Array<number>(times.length).fill(NaN);
+        const l = new Array<number>(times.length).fill(NaN);
+        let j = 0;
+        for (const p of s.points as CloudData[]) {
+          while (times[j] !== p.time) j++;
+          u[j] = p.upper;
+          l[j] = p.lower;
+        }
+        s.values = u;
+        s.values2 = l;
       } else {
         const v = new Array<number>(times.length).fill(NaN);
         let j = 0;

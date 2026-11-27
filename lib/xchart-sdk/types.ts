@@ -1,3 +1,7 @@
+import type { IndicatorApi, IndicatorDefinition } from "./indicators/types.ts";
+import type { DrawingApi, DrawingData, DrawingEvent, DrawingSpec, DrawingType } from "./drawings/types.ts";
+import type { PriceLineApi, PriceLineOptions, SeriesMarker } from "./decorations.ts";
+import type { ChartEvents } from "./events/types.ts";
 /**
  * Public, framework-independent XChart SDK contracts (v0.2).
  *
@@ -7,8 +11,9 @@
  */
 export type ChartTime = number;
 export type ChartTheme = "dark" | "light";
-export type ChartSeriesType = "candlestick" | "line" | "area" | "histogram";
-export type PriceScaleMode = "normal" | "logarithmic";
+export type ChartSeriesType = "candlestick" | "line" | "area" | "histogram" | "cloud";
+/** "percentage" / "indexed" are relative to the first visible bar (indexed: first visible = 100). Display transforms only: data is never changed. */
+export type PriceScaleMode = "normal" | "logarithmic" | "percentage" | "indexed";
 
 export interface PriceScaleOptions {
   /** "logarithmic" applies to the main price pane. */
@@ -28,8 +33,12 @@ export interface ChartOptions {
   /** Draw the crosshair (default true). Crosshair events fire either way. */
   crosshair?: boolean;
   priceScale?: PriceScaleOptions;
-  /** Offset used for intraday time labels, in minutes east of UTC (default 330 = IST). */
+  /** Offset used for intraday time labels, in minutes east of UTC (default 330 = IST). Ignored when `timeZone` is set. */
   utcOffsetMinutes?: number;
+  /** v0.3: IANA time zone for time labels (daylight saving handled), e.g. "America/New_York". */
+  timeZone?: string;
+  /** v0.3: BCP 47 locale for time labels (default "en-GB"). */
+  locale?: string;
   /**
    * Keep the newest bar in view when live updates append bars (default false: the viewport stays
    * where the user left it). Only follows when the newest bar was already visible.
@@ -50,10 +59,16 @@ export interface CandlestickData extends TimeValue {
 export interface SingleValueData extends TimeValue {
   value: number;
 }
-export type SeriesData<T extends ChartSeriesType> = T extends "candlestick" ? CandlestickData : SingleValueData;
+/** Two boundaries at one time (cloud / band series). `upper` may fall below `lower` (a crossing). */
+export interface CloudData extends TimeValue {
+  upper: number;
+  lower: number;
+}
+export type SeriesData<T extends ChartSeriesType> = T extends "candlestick" ? CandlestickData : T extends "cloud" ? CloudData : SingleValueData;
 
 /** Where a series is drawn: the main price pane or its own pane below it. */
-export type SeriesPane = "main" | "separate";
+/** Where a series is drawn: the main pane, its own pane ("separate"), or a named pane shared with other series. */
+export type SeriesPane = "main" | "separate" | (string & {});
 
 export interface CandlestickSeriesOptions {
   upColor?: string;
@@ -66,6 +81,8 @@ export interface LineSeriesOptions {
   lineWidth?: number;
   lineStyle?: "solid" | "dashed" | "dotted";
   pane?: SeriesPane;
+  /** v0.3 (main pane): "right" (default, the main scale), "left", or an overlay scale id with its own range. */
+  priceScaleId?: string;
   /** Decimal places for this series' price label; omit for automatic. */
   precision?: number;
   /** Show the latest value on the price axis (default true). */
@@ -90,7 +107,29 @@ export interface HistogramSeriesOptions {
   opacity?: number;
   /** Default "separate" (own pane with a zero baseline). */
   pane?: SeriesPane;
+  priceScaleId?: string;
   precision?: number;
+  title?: string;
+}
+export interface CloudSeriesOptions {
+  /** Fill where upper ≥ lower (default translucent green). */
+  upColor?: string;
+  /** Fill where upper < lower (default translucent red). */
+  downColor?: string;
+  /** Multiplies the fill colours' alpha (0–1, default 1). */
+  opacity?: number;
+  upperColor?: string;
+  lowerColor?: string;
+  /** Draw the boundary lines (default true). */
+  lineVisible?: boolean;
+  lineWidth?: number;
+  lineStyle?: "solid" | "dashed" | "dotted";
+  /** Shift the drawing by whole bars: positive = forward (projection space), negative = back. */
+  displacement?: number;
+  pane?: SeriesPane;
+  priceScaleId?: string;
+  precision?: number;
+  lastValueVisible?: boolean;
   title?: string;
 }
 export type SeriesOptionsMap = {
@@ -98,6 +137,7 @@ export type SeriesOptionsMap = {
   line: LineSeriesOptions;
   area: AreaSeriesOptions;
   histogram: HistogramSeriesOptions;
+  cloud: CloudSeriesOptions;
 };
 /** @deprecated v0.1 name; use the per-type option interfaces. */
 export type SeriesOptions = CandlestickSeriesOptions & LineSeriesOptions;
@@ -114,7 +154,58 @@ export interface CrosshairEvent {
   price: number | null;
   /** Data of each series at `time` (series without a point there are absent). */
   seriesData: ReadonlyMap<SeriesApi<ChartSeriesType>, SeriesData<ChartSeriesType>>;
+  /** v0.3: indicator output values at `time` (absent during warm-up or gaps). */
+  indicators?: ReadonlyMap<IndicatorApi, Readonly<Record<string, number>>>;
+  /** v0.3: true when `time` lies after the last real candle (projected indicator space, not market data). */
+  projected?: boolean;
+  /** v0.3: the drawn (transformed) candle when the chart type is a display transform such as Heikin Ashi; `seriesData` keeps the real OHLC. */
+  display?: { open: number; high: number; low: number; close: number };
+  /** v0.3.1: on price-based chart types, the derived point under the pointer. `seriesData` then holds the ORIGINAL source candle (the observed market price); derived values are chart constructs, never executable prices. */
+  derived?: import("./derived/types.ts").DerivedPoint;
 }
+
+export type PriceScaleSettings = {
+  /** Independent per scale (right, left, overlay and pane scales). Percentage / indexed are relative to the first visible value of the scale's first series. */
+  mode?: "normal" | "logarithmic" | "percentage" | "indexed";
+  /** false needs a manual `range` (except the main right scale, which keeps its dragged range). */
+  autoScale?: boolean;
+  /** Manual range [min, max] in price units. */
+  range?: [number, number];
+  /** Fractions of the pane kept free above and below the data on this scale. */
+  margins?: { top: number; bottom: number };
+  /** "left" scale: show its axis labels (default true). */
+  visible?: boolean;
+  /** Higher values drawn lower. */
+  invert?: boolean;
+  /** Axis label decimals. */
+  precision?: number;
+  /** Labels rounded to multiples of this tick size. */
+  minMove?: number;
+  /** Custom axis label (receives the displayed value: % / indexed value in those modes). Not saved in layouts. */
+  formatter?: (value: number) => string;
+};
+export interface PriceScaleApi {
+  readonly id: string;
+  readonly paneId: string;
+  priceToCoordinate(price: number): number | null;
+  coordinateToPrice(y: number): number | null;
+  applyOptions(o: Partial<PriceScaleSettings>): void;
+  options(): PriceScaleSettings;
+  /** Series currently on this scale (main pane). */
+  seriesCount(): number;
+}
+export interface PaneApi {
+  readonly id: string;
+  /** Current height in px (null before the first layout without explicit sizes). */
+  height(): number | null;
+  setHeight(px: number): void;
+  collapse(): void;
+  expand(): void;
+  isCollapsed(): boolean;
+  /** Position among the panes below the main pane (1 = directly below). */
+  moveTo(index: number): void;
+}
+
 
 export type Unsubscribe = () => void;
 
@@ -129,6 +220,15 @@ export interface SeriesApi<T extends ChartSeriesType> {
   applyOptions(options: Partial<SeriesOptionsMap[T]>): void;
   options(): Readonly<SeriesOptionsMap[T]>;
   remove(): void;
+  // v0.3 — markers and price lines are view-only and never modify the series data.
+  setMarkers(markers: ReadonlyArray<SeriesMarker>): void;
+  addMarker(marker: SeriesMarker): string;
+  removeMarker(id: string): boolean;
+  getMarkers(): SeriesMarker[];
+  clearMarkers(): void;
+  createPriceLine(options: PriceLineOptions): PriceLineApi;
+  priceLines(): PriceLineApi[];
+  removePriceLine(line: PriceLineApi): void;
 }
 
 export interface ChartApi {
@@ -154,4 +254,71 @@ export interface ChartApi {
   /** Re-measures the container (only needed with autoSize: false after manual resizes). */
   resize(width: number, height: number): void;
   remove(): void;
+
+  // ---------- v0.3 ----------
+  addCloudSeries(options?: CloudSeriesOptions): SeriesApi<"cloud">;
+  /** Typed events; returns an unsubscribe function. */
+  on<K extends keyof ChartEvents>(type: K, handler: (payload: ChartEvents[K]) => void): Unsubscribe;
+  once<K extends keyof ChartEvents>(type: K, handler: (payload: ChartEvents[K]) => void): Unsubscribe;
+  off<K extends keyof ChartEvents>(type: K, handler: (payload: ChartEvents[K]) => void): boolean;
+  subscribeClick(handler: (p: ChartEvents["click"]) => void): Unsubscribe;
+  exportLayout(options?: { includeData?: boolean }): import("./layout.ts").ChartLayout;
+  importLayout(layout: unknown, options?: import("./layout.ts").LayoutLoadOptions): import("./layout.ts").LayoutLoadReport;
+  timeScale(): ReturnType<import("./create-chart.ts").ChartImpl["timeScale"]>;
+  addIndicator(type: string, config?: Record<string, unknown>): IndicatorApi;
+  setBenchmarkSeries(series: SeriesApi<ChartSeriesType> | null): void;
+  searchIndicators(q?: { text?: string; category?: string; requires?: string; incremental?: boolean; param?: string }): IndicatorDefinition[];
+  indicatorCompatibility(id: string): { ok: boolean; reasons: string[] };
+  /** Incremental indicator engine diagnostics (shared nodes, committed bars, rebuilds, replays, last sync time). */
+  indicatorEngineStats(): ReturnType<import("./create-chart.ts").ChartImpl["indicatorEngineStats"]>;
+  /** Renderer diagnostics: full vs crosshair-only frames and their last durations (null if the renderer does not report them). */
+  renderStats(): { fullFrames: number; overlayFrames: number; lastDrawMs: number; lastOverlayMs: number } | null;
+  /** Duration of the renderer's last full redraw in ms (diagnostics), or null if not reported. */
+  renderTimeMs(): number | null;
+  getIndicators(): IndicatorApi[];
+  removeIndicator(indicator: IndicatorApi | string): boolean;
+  registerIndicator(definition: IndicatorDefinition): void;
+  unregisterIndicator(id: string): boolean;
+  listIndicators(): IndicatorDefinition[];
+  getIndicatorDefinition(id: string): IndicatorDefinition | undefined;
+  /** Canvas x (CSS px) of a time; null without data or renderer geometry. */
+  timeToCoordinate(time: ChartTime): number | null;
+  coordinateToTime(x: number): ChartTime | null;
+  /** Canvas y (CSS px) of a price in a pane ("main" by default). */
+  priceToCoordinate(price: number, paneId?: string, scaleId?: string): number | null;
+  coordinateToPrice(y: number, paneId?: string, scaleId?: string): number | null;
+  priceScale(id?: string, paneId?: string): PriceScaleApi;
+  panes(): PaneApi[];
+  pane(id: string): PaneApi | undefined;
+  saveLayout(options?: { includeData?: boolean }): import("./layout.ts").ChartLayout;
+  loadLayout(layout: unknown, options?: import("./layout.ts").LayoutLoadOptions): import("./layout.ts").LayoutLoadReport;
+  use(plugin: import("./plugins.ts").XChartPlugin): void;
+  removePlugin(id: string): boolean;
+  plugins(): import("./plugins.ts").PluginInfo[];
+  drawingTools(): string[];
+  setChartType(type: import("./chart-types.ts").ChartType, style?: import("./chart-types.ts").ChartTypeStyle): void;
+  getChartType(): { type: import("./chart-types.ts").ChartType; style: import("./chart-types.ts").ChartTypeStyle };
+  getDerivedInfo(): ReturnType<import("./create-chart.ts").ChartImpl["getDerivedInfo"]>;
+  getVisibleLogicalRange(): { from: number; to: number } | null;
+  setVisibleLogicalRange(range: { from: number; to: number }): void;
+  takeScreenshot(scale?: number): string;
+  setSessionHighlight(options: import("./create-chart.ts").SessionHighlightOptions | null): void;
+  setCrosshairPosition(time: ChartTime, price?: number | null): void;
+  clearCrosshairPosition(): void;
+  addDrawing(spec: DrawingSpec): DrawingApi;
+  getDrawing(id: string): DrawingApi | undefined;
+  getDrawings(): DrawingApi[];
+  removeDrawing(drawing: DrawingApi | string): boolean;
+  clearDrawings(): void;
+  duplicateDrawing(id: string): DrawingApi | undefined;
+  selectDrawing(id: string | null): void;
+  selectedDrawing(): string | null;
+  setDrawingTool(tool: DrawingType | (string & {}) | null): void;
+  getDrawingTool(): DrawingType | null;
+  setDrawingSnap(on: boolean): void;
+  undoDrawing(): boolean;
+  redoDrawing(): boolean;
+  serializeDrawings(): DrawingData[];
+  loadDrawings(data: unknown): void;
+  subscribeDrawingEvents(handler: (e: DrawingEvent) => void): Unsubscribe;
 }
