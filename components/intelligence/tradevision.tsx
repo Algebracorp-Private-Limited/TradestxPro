@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ChartApi, PriceLineApi, SeriesApi } from "@/lib/xchart-sdk";
+import type { ChartApi, IndicatorApi, PriceLineApi, SeriesApi } from "@/lib/xchart-sdk";
 import type { ChartSpec, Element } from "@/lib/intelligence/tradevision/spec";
 import { Card, Empty, FreshnessBadge, KV, Loading, Notice, fmt, inr, type Prov } from "./ui";
 
@@ -25,6 +25,7 @@ const LAYERS: { key: string; label: string; match: (e: Element) => boolean; colo
   { key: "plan", label: "Trade plan", match: (e) => e.id.startsWith("plan-"), color: "#f59e0b" },
   { key: "ai", label: "AI levels", match: (e) => e.source === "ai", color: "#c084fc" },
   { key: "last", label: "Last close", match: (e) => e.kind === "level" && e.role === "last-close", color: "#e2e8f0" },
+  { key: "ind", label: "Indicators", match: (e) => e.kind === "indicator", color: "#f472b6" },
 ];
 const ROLE_COLOR: Record<string, string> = { support: "#22c55e", resistance: "#ef4444", stop: "#ef4444", target: "#22c55e", entry: "#f59e0b", demand: "#22c55e", supply: "#ef4444", "expected-move": "#38bdf8", "last-close": "#e2e8f0" };
 const PREF_KEY = "txp.tradevision.layers";
@@ -35,7 +36,7 @@ function loadPrefs(): Record<string, boolean> {
 
 function ChartView({ bars, elements, visible }: { bars: Bar[]; elements: Element[]; visible: Record<string, boolean> }) {
   const box = useRef<HTMLDivElement>(null);
-  const ref = useRef<{ chart: ChartApi; candles: SeriesApi<"candlestick">; lines: PriceLineApi[] } | null>(null);
+  const ref = useRef<{ chart: ChartApi; candles: SeriesApi<"candlestick">; lines: PriceLineApi[]; indicators: IndicatorApi[] } | null>(null);
   const [ready, setReady] = useState(false);
   useEffect(() => {
     let disposed = false;
@@ -45,7 +46,7 @@ function ChartView({ bars, elements, visible }: { bars: Bar[]; elements: Element
       const chart = createChart(box.current, { theme: dark ? "dark" : "light", autoSize: true, crosshair: true, priceScale: { precision: 2 } });
       const candles = chart.addCandlestickSeries({ upColor: "#22c55e", downColor: "#ef4444" });
       candles.setData(bars.map((b) => ({ time: b.t, open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v })));
-      ref.current = { chart, candles, lines: [] };
+      ref.current = { chart, candles, lines: [], indicators: [] };
       setReady(true);
     });
     return () => { disposed = true; ref.current?.chart.remove(); ref.current = null; setReady(false); };
@@ -55,13 +56,18 @@ function ChartView({ bars, elements, visible }: { bars: Bar[]; elements: Element
     if (!ready || !r) return;
     for (const l of r.lines) r.candles.removePriceLine(l);
     r.lines = [];
+    for (const i of r.indicators) r.chart.removeIndicator(i);
+    r.indicators = [];
     r.chart.clearDrawings();
     const shown = elements.filter((e) => LAYERS.some((L) => L.match(e) && visible[L.key] !== false));
     const lastT = bars.at(-1)?.t ?? 0;
     for (const e of shown) {
       const color = e.source === "ai" ? "#c084fc" : ROLE_COLOR["role" in e ? e.role : ""] ?? "#94a3b8";
       if (e.kind === "level") r.lines.push(r.candles.createPriceLine({ price: e.price, title: e.label.slice(0, 32), color, lineStyle: e.role === "support" || e.role === "resistance" ? "dashed" : "solid", axisLabelVisible: true }));
-      else if (e.kind === "zone") r.chart.addDrawing({ type: "rectangle", points: [{ time: e.from, price: e.high }, { time: e.to ?? lastT, price: e.low }], style: { color, fillColor: color, fillOpacity: 0.12, lineWidth: 1, extendRight: e.to === null }, text: e.label.slice(0, 40), locked: true });
+      else if (e.kind === "indicator") {
+        // Only registry ids pass the spec validator; a failing indicator must not break the chart.
+        try { r.indicators.push(r.chart.addIndicator(e.indicator, { ...e.params })); } catch { /* skipped: shown as not drawn in the evidence table */ }
+      } else if (e.kind === "zone") r.chart.addDrawing({ type: "rectangle", points: [{ time: e.from, price: e.high }, { time: e.to ?? lastT, price: e.low }], style: { color, fillColor: color, fillOpacity: 0.12, lineWidth: 1, extendRight: e.to === null }, text: e.label.slice(0, 40), locked: true });
     }
     r.candles.setMarkers(shown.filter((e) => e.kind === "marker").map((e) => e.kind === "marker" ? { time: e.time, position: e.position, shape: e.shape, text: e.label.slice(0, 12) } : null!).filter(Boolean));
   }, [ready, elements, visible, bars]);
@@ -235,9 +241,9 @@ export function TradeVision({ initial }: { initial?: string }) {
           <Card title="Elements and evidence">
             {!elements.length ? <Empty>No levels or zones could be computed.</Empty> : (
               <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead className="text-muted"><tr><th className="py-1">Element</th><th>Price</th><th>Source</th><th>Evidence</th></tr></thead>
-                <tbody>{elements.filter((e) => e.kind === "level" || e.kind === "zone").map((e) => (
+                <tbody>{elements.filter((e) => e.kind !== "marker").map((e) => (
                   <tr key={e.id} className="border-t border-line align-top"><td className="py-1 pr-2">{e.label}</td>
-                    <td className="pr-2 font-mono">{e.kind === "level" ? fmt(e.price) : e.kind === "zone" ? `${fmt(e.low)}–${fmt(e.high)}` : "—"}</td>
+                    <td className="pr-2 font-mono">{e.kind === "level" ? fmt(e.price) : e.kind === "zone" ? `${fmt(e.low)}–${fmt(e.high)}` : e.kind === "indicator" ? "indicator" : "—"}</td>
                     <td className="pr-2">{e.source === "ai" ? "AI (validated)" : "Engine"}</td>
                     <td className="text-muted">{e.evidence}{notesById.get(e.id) ? <span className="block text-soft">AI note: {notesById.get(e.id)}</span> : null}</td></tr>
                 ))}</tbody></table></div>

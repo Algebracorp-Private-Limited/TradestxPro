@@ -3,9 +3,10 @@ import { analyzeContract } from "@/lib/intelligence/options/contract";
 import { explainContract } from "@/lib/intelligence/options/explain";
 import { chainFor, underlyingContext } from "@/lib/intelligence/options/server";
 import { recordAnalysis } from "@/lib/intelligence/audit/store";
-import { requireFlag, symbolParam } from "@/lib/intelligence/http";
+import { requireFlag, symbolParam, rateLimit } from "@/lib/intelligence/http";
 import { intelligenceAI } from "@/lib/intelligence/server";
 import { gate, present } from "@/lib/intelligence/present";
+import { applyContractValidation } from "@/lib/intelligence/validation/plans";
 import { db } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -14,6 +15,8 @@ const num = (v: string | null, d: number, lo: number, hi: number) => (v !== null
 
 /** Detailed contract analysis (deterministic) + optional grounded AI explanation. */
 export const GET = userHandler(async ({ user, req }) => {
+  const limited = rateLimit("contract", user.id);
+  if (limited) return limited;
   const off = await requireFlag("RESEARCH");
   if (off) return off;
   const p = new URL(req.url).searchParams;
@@ -26,7 +29,9 @@ export const GET = userHandler(async ({ user, req }) => {
   if (!src.chain.rows.some((r) => r.strike === strike && (right === "CE" ? r.ce : r.pe))) return fail("This contract does not exist in the chain.", 404);
   const ctx = await underlyingContext(u);
   const capital = num(p.get("capital"), 500_000, 1_000, 1e10);
-  const a = analyzeContract(src.chain, strike, right, ctx, { capital, maxRiskPerTrade: num(p.get("maxRisk"), 5_000, 1, capital), minRewardRisk: num(p.get("minRR"), 1.5, 0.5, 10), maxSpreadPct: num(p.get("maxSpread"), 2, 0.05, 50), definedRiskOnly: p.get("definedRiskOnly") === "1" })!;
+  const definedRiskOnly = p.get("definedRiskOnly") === "1";
+  // Independent validation (contract, levels, Greeks, freshness, margin claims): failing plans are withheld.
+  const a = applyContractValidation(analyzeContract(src.chain, strike, right, ctx, { capital, maxRiskPerTrade: num(p.get("maxRisk"), 5_000, 1, capital), minRewardRisk: num(p.get("minRR"), 1.5, 0.5, 10), maxSpreadPct: num(p.get("maxSpread"), 2, 0.05, 50), definedRiskOnly })!, src.chain, { definedRiskOnly });
   const g = gate();
   let explanation = null;
   if (p.get("explain") === "1" && g.actionable) {

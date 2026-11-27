@@ -4,7 +4,7 @@ import { isEnabled } from "@/lib/flags";
 import { chainAnalytics, termStructure } from "@/lib/intelligence/options/chain-analytics";
 import { quickView } from "@/lib/intelligence/options/contract";
 import { chainFor, underlyingContext } from "@/lib/intelligence/options/server";
-import { symbolParam } from "@/lib/intelligence/http";
+import { symbolParam, rateLimit } from "@/lib/intelligence/http";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -15,6 +15,8 @@ export const maxDuration = 30;
  * cached views, so no language model is called per hover.
  */
 export const GET = userHandler(async ({ user, req }) => {
+  const limited = rateLimit("chain", user.id);
+  if (limited) return limited;
   if (!isEnabled("MARKET_ANALYTICS")) return fail("Market analytics are not activated.", 403);
   const p = new URL(req.url).searchParams;
   const u = symbolParam(p.get("u"));

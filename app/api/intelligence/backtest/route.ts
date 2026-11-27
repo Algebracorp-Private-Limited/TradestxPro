@@ -2,7 +2,7 @@ import { db } from "@/lib/db";
 import { fail, json, userHandler } from "@/lib/api";
 import { backtestEquity } from "@/lib/intelligence/backtest/engine";
 import type { Horizon } from "@/lib/intelligence/equity/setup";
-import { requireFlag, symbolParam } from "@/lib/intelligence/http";
+import { requireFlag, symbolParam, rateLimit } from "@/lib/intelligence/http";
 import { dailyBars } from "@/lib/intelligence/market-data/data";
 import { HORIZONS } from "@/lib/intelligence/market-scan/config";
 
@@ -10,7 +10,9 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 /** Walk-forward backtest of the equity setup engine on one stock's stored daily history. */
-export const GET = userHandler(async ({ req }) => {
+export const GET = userHandler(async ({ user, req }) => {
+  const limited = rateLimit("backtest", user.id);
+  if (limited) return limited;
   const off = await requireFlag("RESEARCH");
   if (off) return off;
   const p = new URL(req.url).searchParams;

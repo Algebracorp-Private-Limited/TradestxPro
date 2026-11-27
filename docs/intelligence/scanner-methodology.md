@@ -45,3 +45,30 @@ but return INSUFFICIENT DATA without real-time data and intraday bars), directio
 capital per trade, reward:risk, liquidity. Instrument filters for futures/options, margin, spread and
 option buy/sell/multi-leg options are part of the configuration and are used by the F&O stage (`market-scan/fo.ts`; futures prices need migration `004-fo-futures`). Margin is never available, so the max-margin filter is not applied.
 Saved configurations: up to 25 per user.
+
+## Measured performance (synthetic benchmark)
+
+`npm run bench:scan` (`scripts/bench-scan.ts`) seeds **synthetic** universes into a scratch database (`TEST_DATABASE_URL`, never production) and times comprehensive scans through the real job code: `createScan`, then leased 40-symbol `advanceScan` chunks.
+
+Measured on the Phase 4 build container (Linux x64, 4 vCPU, Node 22, local Postgres 16, 2026-11-27):
+
+| Universe (synthetic) | Instruments | Symbols scanned | Chains / contracts | Chunks | Total | Per symbol | AI requests |
+|---|---|---|---|---|---|---|---|
+| 50 | equity | 50 | — | 2 | 0.26 s | 5.2 ms | 0 |
+| 100 | equity | 100 | — | 3 | 0.34 s | 3.4 ms | 0 |
+| 200 | equity | 200 | — | 5 | 0.83 s | 4.1 ms | 0 |
+| 500 | equity | 500 | — | 13 | 2.19 s | 4.4 ms | 0 |
+| 2,000 | equity | 2,000 | — | 50 | 8.25 s | 4.1 ms | 0 |
+| 50 | stock futures + options | 50 | 50 / 2,100 | 2 | 1.66 s | 33.3 ms | 0 |
+| 180 | stock futures + options | 180 | 180 / 7,560 | 5 | 5.53 s | 30.7 ms | 0 |
+
+**What this measures:** database and CPU time on this machine.
+
+**What it does not measure:**
+- Production database latency (Vercel ↔ the hosted Postgres region).
+- Market-data provider latency: the scanner reads stored EOD data, not live feeds.
+- AI cost: explanations were not requested in the benchmark. AI cost per scan is measured per job in its coverage record (`aiRequests`, `aiInputTokens`, `aiOutputTokens`, `aiCostUsd`) and depends on the configured provider and `explainTop`.
+
+Scans on the real NIFTY 50/100/200/500 constituents and the full NSE equity and F&O lists **have not been timed on production data** from this environment.
+
+Each chunk (40 symbols) finished well inside the 45-second lease: the slowest F&O chunk took about 1.3 s.

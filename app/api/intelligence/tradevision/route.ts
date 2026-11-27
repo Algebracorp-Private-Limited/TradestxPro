@@ -2,7 +2,7 @@ import { db } from "@/lib/db";
 import { fail, json, userHandler } from "@/lib/api";
 import { recordAnalysis } from "@/lib/intelligence/audit/store";
 import { analyzeEquity, type Horizon } from "@/lib/intelligence/equity/setup";
-import { requireFlag, symbolParam } from "@/lib/intelligence/http";
+import { requireFlag, symbolParam, rateLimit } from "@/lib/intelligence/http";
 import { dailyBars, resolveInstrument } from "@/lib/intelligence/market-data/data";
 import { HORIZONS } from "@/lib/intelligence/market-scan/config";
 import { gate, RESTRICTED_NOTICE } from "@/lib/intelligence/present";
@@ -21,6 +21,8 @@ export const maxDuration = 60;
  * action, cached by the AI client; never on hover).
  */
 export const GET = userHandler(async ({ user, req }) => {
+  const limited = rateLimit("tradevision", user.id);
+  if (limited) return limited;
   const off = await requireFlag("MARKET_ANALYTICS");
   if (off) return off;
   const p = new URL(req.url).searchParams;
@@ -47,6 +49,8 @@ export const GET = userHandler(async ({ user, req }) => {
   }
   let annotation = null;
   if (p.get("annotate") === "1" && g.research) {
+    const lim = rateLimit("annotate", user.id);
+    if (lim) return lim;
     const r = await annotateChart(intelligenceAI(), spec, user.id, { setupStatus: setup?.status ?? null });
     const acc = acceptAnnotation(r.value, spec, annotationFacts(spec, { setupStatus: setup?.status ?? null }), indicatorIds);
     annotation = { ...acc, source: r.source, model: r.model, prompt: `${r.promptId}@${r.promptVersion}`, fallbackReason: r.fallbackReason ?? null };

@@ -13,6 +13,7 @@
  * Every attempt is reported to `onUsage` (tokens, cost, latency, outcome) for cost monitoring.
  */
 import { createHash } from "node:crypto";
+import { TokenBucket } from "../ratelimit.ts";
 import { extractJson, validate, wireSchema } from "../core/schema.ts";
 import { promptHash, type PromptTemplate } from "./prompts.ts";
 import { ProviderError, type AIProvider, type Pricing, type ProviderId, type UsageRecord } from "./types.ts";
@@ -48,23 +49,6 @@ export type ClientOptions = {
   now?: () => number;
 };
 
-class Bucket {
-  private tokens: number;
-  private at: number;
-  private readonly rate: number;
-  constructor(perMinute: number, now: number) {
-    this.rate = perMinute;
-    this.tokens = perMinute;
-    this.at = now;
-  }
-  take(now: number): boolean {
-    this.tokens = Math.min(this.rate, this.tokens + ((now - this.at) / 60_000) * this.rate);
-    this.at = now;
-    if (this.tokens < 1) return false;
-    this.tokens -= 1;
-    return true;
-  }
-}
 
 export function costOf(pricing: Pricing | undefined, model: string, inTok: number, outTok: number): number | null {
   const p = pricing?.[model];
@@ -74,8 +58,8 @@ export function costOf(pricing: Pricing | undefined, model: string, inTok: numbe
 export class AIClient {
   private readonly o: Required<Omit<ClientOptions, "pricing" | "onUsage">> & Pick<ClientOptions, "pricing" | "onUsage">;
   private cache = new Map<string, { at: number; value: unknown; provider: ProviderId; model: string }>();
-  private users = new Map<number, Bucket>();
-  private global: Bucket;
+  private users = new Map<number, TokenBucket>();
+  private global: TokenBucket;
 
   constructor(opts: ClientOptions) {
     this.o = {
@@ -85,7 +69,7 @@ export class AIClient {
       cacheTtlMs: opts.cacheTtlMs ?? 15 * 60_000, cacheMax: opts.cacheMax ?? 500,
       sleep: opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))), now: opts.now ?? (() => Date.now()),
     };
-    this.global = new Bucket(this.o.globalPerMinute, this.o.now());
+    this.global = new TokenBucket(this.o.globalPerMinute, this.o.now());
   }
 
   get configured(): boolean {
@@ -125,7 +109,7 @@ export class AIClient {
     }
     if (args.userId !== null) {
       let b = this.users.get(args.userId);
-      if (!b) this.users.set(args.userId, (b = new Bucket(this.o.userPerMinute, now)));
+      if (!b) this.users.set(args.userId, (b = new TokenBucket(this.o.userPerMinute, now)));
       if (!b.take(now)) return fallback("per-user AI rate limit reached", [], "rate-limited");
     }
     if (!this.global.take(now)) return fallback("global AI rate limit reached", [], "rate-limited");

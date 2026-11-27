@@ -1,10 +1,13 @@
 import { json, userHandler } from "@/lib/api";
 import { filterStrategies, type RegistryFilter } from "@/lib/intelligence/strategy/registry";
+import { requireFlag } from "@/lib/intelligence/http";
 
 export const dynamic = "force-dynamic";
 
 /** Strategy catalogue (educational: structures only, no prices or levels). */
 export const GET = userHandler(async ({ req }) => {
+  const off = await requireFlag("EDUCATIONAL_DEMOS");
+  if (off) return off;
   const p = new URL(req.url).searchParams;
   const mode = p.get("mode");
   const f: RegistryFilter = {
