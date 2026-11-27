@@ -4,6 +4,7 @@ import { db } from "../db";
 import { fail } from "../api";
 import { isEnabled, type Flag } from "../flags";
 import { scanTablesAvailable } from "./market-scan/jobs.ts";
+import { monitoringAvailable } from "./monitoring/store.ts";
 
 export async function requireFlag(flag: Flag): Promise<Response | null> {
   return isEnabled(flag) ? null : fail(`This feature is not activated (${flag.toLowerCase().replace(/_/g, " ")}).`, 403);
@@ -13,6 +14,13 @@ export async function requireFlag(flag: Flag): Promise<Response | null> {
 export async function scanDb() {
   const sql = await db();
   if (!(await scanTablesAvailable(sql))) return { error: fail("AI Intelligence storage is not configured yet (database migration pending).", 503) };
+  return { sql };
+}
+
+/** Database client after checking that the monitoring tables exist (migration 005). */
+export async function monitorDb() {
+  const sql = await db();
+  if (!(await monitoringAvailable(sql))) return { error: fail("Trade monitoring storage is not configured yet (database migration 005 pending).", 503) };
   return { sql };
 }
 
