@@ -26,7 +26,7 @@ export const LIVE_LINKS: { href: string; label: string; icon: string; sub?: bool
   { href: "/brokers", label: "Brokers", icon: "⛓" },
 ];
 
-const LIVE_SLUGS = new Set(["strategy-lab", "options-screener", "futures", "ai", "dashboard", "markets", "watchlists", "charts", "screener", "xscript", "brokers", "options"]);
+const LIVE_SLUGS = new Set(["strategy-lab", "options-screener", "futures", "ai", "dashboard", "markets", "watchlists", "charts", "screener", "xscript", "brokers", "options", "alerts"]);
 
 export function TerminalNav() {
   const path = usePathname();

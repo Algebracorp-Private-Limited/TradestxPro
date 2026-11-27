@@ -12,7 +12,6 @@ type Alert = { id: number; instrument: string; condition: string; threshold: num
 type Backtest = { status: string; missing?: string[]; truncated?: boolean; evaluatedThrough?: string; symbol: string; horizon: string; from: string; to: string; evaluations: number; signals: number; skipped: Record<string, number>; stats: Stats; bySetup: Record<string, Stats>; calibration: Calib; limitations: string[]; costFraction: number; durationMs: number;
   trades: { date: string; exitDate: string; setup: string; score: number | null; exitReason: string; entry: number; stop: number; target: number; r: number; netR: number; sessionsHeld: number }[] };
 
-const COND: Record<string, string> = { close_above: "Close above", close_below: "Close below", high_above: "High above", low_below: "Low below", pct_change_above: "Daily change above (%)", pct_change_below: "Daily change below (%)" };
 const field = "mt-1 block rounded-md border border-line bg-ink px-2 py-1.5 text-sm text-white";
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
@@ -114,54 +113,148 @@ function Plans() {
   );
 }
 
+type CondDef = { id: string; category: string; label: string; thresholdLabel: string; min: number; max: number; params?: { key: string; label: string; min: number; max: number; default: number }[] };
+const CATEGORY_LABEL: Record<string, string> = { price: "Price", technical: "Technical", oi: "Open interest", iv: "Implied volatility", setup: "Engine setup" };
+const INSTRUMENT_HINT: Record<string, string> = { price: "Symbol, or NSEIDX:NIFTY 50", technical: "Symbol, or NSEIDX:NIFTY 50", oi: "F&O underlying, e.g. NIFTY", iv: "F&O underlying, e.g. NIFTY", setup: "NSE symbol" };
+
 function Alerts() {
-  const [alerts, setAlerts] = useState<Alert[] | null>(null);
+  const [alerts, setAlerts] = useState<(Alert & { description?: string; category?: string })[] | null>(null);
+  const [conds, setConds] = useState<CondDef[]>([]);
   const [basis, setBasis] = useState("");
   const [err, setErr] = useState<string | null>(null);
-  const [f, setF] = useState({ instrument: "", condition: "close_above", threshold: "", note: "", repeat: false });
+  const [f, setF] = useState<{ instrument: string; condition: string; threshold: string; note: string; repeat: boolean; params: Record<string, string> }>({ instrument: "", condition: "close_above", threshold: "", note: "", repeat: false, params: {} });
   const [reload, setReload] = useState(0);
   useEffect(() => {
     let alive = true;
-    api<{ alerts: Alert[]; basis: string }>("/api/intelligence/alerts").then((j) => {
+    api<{ alerts: (Alert & { description?: string; category?: string })[]; conditions: CondDef[]; basis: string }>("/api/intelligence/alerts").then((j) => {
       if (!alive) return;
-      setAlerts(j.alerts); setBasis(j.basis); setErr(null);
+      setAlerts(j.alerts); setConds(j.conditions ?? []); setBasis(j.basis); setErr(null);
       if (j.alerts.some((a) => a.unseen)) api("/api/intelligence/alerts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "seen" }) }).catch(() => {});
     }, (e) => alive && setErr(e.message));
     return () => { alive = false; };
   }, [reload]);
+  const def = conds.find((c) => c.id === f.condition);
+  const cat = def?.category ?? "price";
   const add = (e: React.FormEvent) => {
     e.preventDefault();
-    const sym = f.instrument.trim().toUpperCase();
-    api("/api/intelligence/alerts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ instrument: sym.includes(":") ? sym : `NSE:${sym}`, condition: f.condition, threshold: +f.threshold, note: f.note, repeat: f.repeat }) })
+    const raw = f.instrument.trim().toUpperCase();
+    const instrument = raw.includes(":") ? raw : cat === "oi" || cat === "iv" ? `FO:${raw}` : `NSE:${raw}`;
+    const params: Record<string, number> = {};
+    for (const p of def?.params ?? []) params[p.key] = Number(f.params[p.key] ?? p.default);
+    api("/api/intelligence/alerts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ instrument, condition: f.condition, threshold: +f.threshold, note: f.note, repeat: f.repeat, params }) })
       .then(() => { setF({ ...f, threshold: "", note: "" }); setReload((x) => x + 1); }, (er) => setErr(er.message));
   };
+  const categories = [...new Set(conds.map((c) => c.category))];
   return (
     <div className="space-y-4">
       {err && <Notice tone="error">{err}</Notice>}
-      <Card title="New price alert">
+      <Card title="New alert">
         <form onSubmit={add} className="flex flex-wrap items-end gap-2 text-xs text-muted">
-          <label>Symbol (or NSEIDX:NIFTY 50)<input required value={f.instrument} onChange={(e) => setF({ ...f, instrument: e.target.value })} className={`${field} w-44`} /></label>
-          <label>Condition<select value={f.condition} onChange={(e) => setF({ ...f, condition: e.target.value })} className={field}>{Object.entries(COND).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
-          <label>Value<input required type="number" step="0.01" value={f.threshold} onChange={(e) => setF({ ...f, threshold: e.target.value })} className={`${field} w-24`} /></label>
+          <label>Type<select value={cat} onChange={(e) => { const first = conds.find((c) => c.category === e.target.value); if (first) setF({ ...f, condition: first.id, threshold: "" }); }} className={field}>{(categories.length ? categories : ["price"]).map((c) => <option key={c} value={c}>{CATEGORY_LABEL[c] ?? c}</option>)}</select></label>
+          <label>Condition<select value={f.condition} onChange={(e) => setF({ ...f, condition: e.target.value, threshold: "" })} className={field}>{conds.filter((c) => c.category === cat).map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}</select></label>
+          <label>{INSTRUMENT_HINT[cat]}<input required value={f.instrument} onChange={(e) => setF({ ...f, instrument: e.target.value })} className={`${field} w-44`} /></label>
+          <label>{def?.thresholdLabel ?? "Value"}<input required type="number" step="any" min={def?.min} max={def?.max} value={f.threshold} onChange={(e) => setF({ ...f, threshold: e.target.value })} className={`${field} w-24`} /></label>
+          {(def?.params ?? []).map((p) => <label key={p.key}>{p.label}<input type="number" min={p.min} max={p.max} value={f.params[p.key] ?? String(p.default)} onChange={(e) => setF({ ...f, params: { ...f.params, [p.key]: e.target.value } })} className={`${field} w-20`} /></label>)}
           <label>Note<input value={f.note} maxLength={200} onChange={(e) => setF({ ...f, note: e.target.value })} className={`${field} w-40`} /></label>
           <label className="flex items-center gap-1 pb-2"><input type="checkbox" checked={f.repeat} onChange={(e) => setF({ ...f, repeat: e.target.checked })} />Repeat</label>
           <button className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-slate-950">Add alert</button>
         </form>
-        <p className="mt-2 text-[11px] text-muted">{basis || "Evaluated on end-of-day bars after each daily data load; not real-time."} Triggered alerts appear here.</p>
+        <p className="mt-2 text-[11px] text-muted">{basis || "Evaluated on end-of-day data after each daily load; not real-time."} {cat === "oi" ? "Total open interest across the underlying's F&O contracts, day over day. It does not show who holds the positions." : cat === "iv" ? "ATM implied volatility of the nearest expiry, computed from the end-of-day option chain." : cat === "setup" ? "Fires when the setup engine's status is an entry status and its score reaches your minimum (a rank, not a probability)." : ""}</p>
       </Card>
       <Card title="Your alerts">
         {!alerts ? <Loading /> : !alerts.length ? <Empty>No alerts yet.</Empty> : (
           <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead className="text-muted"><tr><th className="py-1">Instrument</th><th>Condition</th><th>Status</th><th>Triggered</th><th>Checked to</th><th /></tr></thead>
             <tbody>{alerts.map((a) => (
               <tr key={a.id} className={`border-t border-line ${a.unseen ? "bg-accent/10" : ""}`}>
-                <td className="py-1.5 font-semibold">{a.instrument.replace(/^NSE:/, "")}{a.note && <span className="block text-[10px] font-normal text-muted">{a.note}</span>}</td>
-                <td>{COND[a.condition]} {fmt(a.threshold)}{a.repeat ? " · repeats" : ""}</td>
+                <td className="py-1.5 font-semibold">{a.instrument.replace(/^(NSE|FO):/, "")}<span className="ml-1 text-[10px] font-normal text-muted">{CATEGORY_LABEL[a.category ?? "price"]}</span>{a.note && <span className="block text-[10px] font-normal text-muted">{a.note}</span>}</td>
+                <td>{a.description ?? `${a.condition} ${fmt(a.threshold)}`}{a.repeat ? " · repeats" : ""}</td>
                 <td>{a.status.toLowerCase()}</td>
                 <td>{a.triggeredOn ? `${a.triggeredOn} (${fmt(a.triggerValue)})` : "—"}</td>
                 <td>{a.lastEvaluated ?? "—"}</td>
                 <td className="text-right"><button onClick={() => api(`/api/intelligence/alerts?id=${a.id}`, { method: "DELETE" }).then(() => setReload((x) => x + 1), (e) => setErr(e.message))} className="rounded border border-line px-2 py-0.5 text-[11px]">Delete</button></td>
               </tr>
             ))}</tbody></table></div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+type WatchItem = { id: number; symbol: string; horizon: string; status: string | null; score: number | null; setup: string | null; evaluatedOn: string | null; changedAt: string | null };
+function Watchlist() {
+  const [items, setItems] = useState<WatchItem[] | null>(null);
+  const [basis, setBasis] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const [symbol, setSymbol] = useState("");
+  const [horizon, setHorizon] = useState("swing");
+  const [busy, setBusy] = useState(false);
+  const [reload, setReload] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    api<{ items: WatchItem[]; basis: string }>("/api/intelligence/watchlist").then((j) => { if (alive) { setItems(j.items); setBasis(j.basis); setErr(null); } }, (e) => alive && setErr(e.message));
+    return () => { alive = false; };
+  }, [reload]);
+  const add = (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    api("/api/intelligence/watchlist", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbol, horizon }) })
+      .then(() => { setSymbol(""); setBusy(false); setReload((x) => x + 1); }, (er) => { setErr(er.message); setBusy(false); });
+  };
+  return (
+    <div className="space-y-4">
+      {err && <Notice tone="error">{err}</Notice>}
+      <Card title="AI watchlist">
+        <form onSubmit={add} className="flex flex-wrap items-end gap-2 text-xs text-muted">
+          <label>NSE symbol<input required value={symbol} onChange={(e) => setSymbol(e.target.value)} className={`${field} w-32`} /></label>
+          <label>Horizon<select value={horizon} onChange={(e) => setHorizon(e.target.value)} className={field}><option value="swing">Swing</option><option value="positional">Positional</option><option value="short-term-investment">Short-term investment</option></select></label>
+          <button disabled={busy} className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-slate-950 disabled:opacity-50">{busy ? "Evaluating…" : "Watch"}</button>
+        </form>
+        <p className="mt-2 text-[11px] text-muted">{basis || "Re-evaluated on each new end-of-day session."} You get a notification when a symbol newly reaches &ldquo;enter if confirmed&rdquo; or &ldquo;wait for confirmation&rdquo;.</p>
+      </Card>
+      <Card title="Watched symbols">
+        {!items ? <Loading /> : !items.length ? <Empty>No symbols watched yet.</Empty> : (
+          <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead className="text-muted"><tr><th className="py-1">Symbol</th><th>Horizon</th><th>Status</th><th>Setup</th><th>Score</th><th>As of</th><th /></tr></thead>
+            <tbody>{items.map((w) => (
+              <tr key={w.id} className="border-t border-line">
+                <td className="py-1.5 font-semibold"><a className="hover:text-accent" href={`/ai-intelligence/equity?symbol=${encodeURIComponent(w.symbol)}`}>{w.symbol}</a></td>
+                <td>{w.horizon}</td><td>{w.status ? <StatusBadge status={w.status} /> : "—"}</td><td>{w.setup ?? "—"}</td><td>{w.score ?? "—"}</td><td>{w.evaluatedOn ?? "—"}</td>
+                <td className="text-right"><button onClick={() => api(`/api/intelligence/watchlist?id=${w.id}`, { method: "DELETE" }).then(() => setReload((x) => x + 1), (e) => setErr(e.message))} className="rounded border border-line px-2 py-0.5 text-[11px]">Remove</button></td>
+              </tr>
+            ))}</tbody></table></div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+type Note = { id: number; kind: string; title: string; body: string; link: string | null; d: string; read: boolean; createdAt: string };
+function Notifications() {
+  const [d, setD] = useState<{ unread: number; items: Note[]; settings: { emailAlerts: boolean }; emailAvailable: boolean } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    api<NonNullable<typeof d>>("/api/intelligence/notifications").then((j) => { if (alive) { setD(j); setErr(null); } }, (e) => alive && setErr(e.message));
+    return () => { alive = false; };
+  }, [reload]);
+  const post = (body: unknown) => api("/api/intelligence/notifications", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then(() => { setReload((x) => x + 1); window.dispatchEvent(new Event("txp:notifications")); }, (e) => setErr(e.message));
+  if (err) return <Notice tone="error">{err}</Notice>;
+  if (!d) return <Loading />;
+  return (
+    <div className="space-y-4">
+      <Card title="Notification settings">
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={d.settings.emailAlerts} disabled={!d.emailAvailable} onChange={(e) => post({ action: "settings", emailAlerts: e.target.checked })} />E-mail me a digest of new alerts, plan events and watchlist changes after each daily update</label>
+        {!d.emailAvailable && <p className="mt-1 text-[11px] text-muted">E-mail is not configured on this server.</p>}
+      </Card>
+      <Card title={`Notifications${d.unread ? ` · ${d.unread} unread` : ""}`} right={d.unread ? <button onClick={() => post({ action: "read", id: "all" })} className="rounded border border-line px-2 py-0.5 text-[11px]">Mark all read</button> : null}>
+        {!d.items.length ? <Empty>No notifications yet. Alerts, plan events and watchlist changes appear here after each daily update.</Empty> : (
+          <ul className="divide-y divide-line">{d.items.map((n) => (
+            <li key={n.id} className={`flex gap-3 py-2 text-xs ${n.read ? "" : "bg-accent/5"}`}>
+              <span className="w-20 shrink-0 font-mono text-muted">{n.d}</span>
+              <span className="min-w-0 flex-1"><b className="text-soft">{n.title}</b><span className="block text-muted">{n.body}</span></span>
+              <span className="flex shrink-0 flex-col items-end gap-1">{n.link && <a href={n.link} className="text-accent hover:underline">Open</a>}{!n.read && <button onClick={() => post({ action: "read", id: n.id })} className="text-muted hover:text-soft">Mark read</button>}</span>
+            </li>
+          ))}</ul>
         )}
       </Card>
     </div>
@@ -237,7 +330,7 @@ function PerformanceView() {
   );
 }
 
-const TABS = [["plans", "Plans"], ["alerts", "Alerts"], ["backtest", "Backtest"], ["performance", "Performance"]] as const;
+const TABS = [["plans", "Plans"], ["alerts", "Alerts"], ["watchlist", "AI watchlist"], ["notifications", "Notifications"], ["backtest", "Backtest"], ["performance", "Performance"]] as const;
 
 export function Monitor({ initialTab }: { initialTab?: string }) {
   const [tab, setTab] = useState<(typeof TABS)[number][0]>(TABS.some(([k]) => k === initialTab) ? (initialTab as (typeof TABS)[number][0]) : "plans");
@@ -247,7 +340,7 @@ export function Monitor({ initialTab }: { initialTab?: string }) {
       <div role="tablist" aria-label="Monitor" className="flex gap-1 overflow-x-auto border-b border-line">
         {TABS.map(([k, l]) => <button key={k} role="tab" aria-selected={tab === k} onClick={() => pick(k)} className={`-mb-px border-b-2 px-3 py-2 text-sm ${tab === k ? "border-accent text-white" : "border-transparent text-muted hover:text-soft"}`}>{l}</button>)}
       </div>
-      <div role="tabpanel">{tab === "plans" ? <Plans /> : tab === "alerts" ? <Alerts /> : tab === "backtest" ? <BacktestView /> : <PerformanceView />}</div>
+      <div role="tabpanel">{tab === "plans" ? <Plans /> : tab === "alerts" ? <Alerts /> : tab === "watchlist" ? <Watchlist /> : tab === "notifications" ? <Notifications /> : tab === "backtest" ? <BacktestView /> : <PerformanceView />}</div>
       <p className="text-[11px] text-muted">Research tools on end-of-day data. Paper tracking only; no orders are placed.</p>
     </div>
   );

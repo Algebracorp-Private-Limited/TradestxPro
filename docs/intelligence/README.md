@@ -28,6 +28,7 @@ Developer platform: [`docs/developers/`](../developers). XChart: [`docs/xchart/`
 | `003-market-scan` | `scan_jobs`, `scan_results`, `scan_configs`, `fundamentals_companies` |
 | `004-fo-futures` | `fo_futures` |
 | `005-trade-monitoring` | `trade_plans`, `trade_plan_events`, `price_alerts` |
+| `006-alerts-notifications` | extended `price_alerts` conditions and `params`, `notifications`, `notification_settings`, `ai_watch_items` |
 
 To preview changes (dry run, the default), then apply them after review:
 
@@ -67,9 +68,7 @@ The migrator checksums each applied migration and refuses to run if an applied o
 ## Deferred (not implemented in Phase 4)
 
 **Alerts and monitoring**
-- Technical, OI, IV and AI-condition alerts (only price alerts exist).
-- E-mail or push notifications for alerts.
-- An "AI watchlist" of engine opportunities beyond tracked plans and alerts.
+- Push notifications (in-app and e-mail notifications exist).
 
 **Charts and option workspaces**
 - Option-premium analytical charts.
