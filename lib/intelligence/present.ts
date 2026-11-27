@@ -43,3 +43,13 @@ export function present<T extends Record<string, unknown>>(x: T, g: Gate): T & {
   }
   return { ...(out as T), ...(restricted.length ? { restricted, notices } : {}) };
 }
+
+/** Futures analyses keep their plan levels in a nested `plan`: withheld the same way as top-level levels. */
+export function presentFutures<T extends { plan: Record<string, unknown> }>(a: T, g: Gate): T & { notices?: string[]; restricted?: string[] } {
+  if (!g.actionable) {
+    const { side, maxTheoreticalLoss, timeExit } = a.plan;
+    return { ...a, plan: { side, maxTheoreticalLoss, timeExit }, restricted: ["plan"], notices: [RESTRICTED_NOTICE] };
+  }
+  if (!g.personalized) return { ...a, plan: { ...a.plan, sizing: null, costs: null }, restricted: ["sizing"], notices: [PERSONAL_NOTICE] };
+  return a;
+}

@@ -129,7 +129,7 @@ export function ChainIntelligence({ initial }: { initial?: string }) {
           </label>
         )}
         <label className="text-xs text-muted">Strikes<select value={range} onChange={(e) => setRange(Number(e.target.value))} className="mt-1 block rounded-md border border-line bg-ink px-2 py-1.5 text-sm text-soft">{[8, 12, 20, 40].map((n) => <option key={n} value={n}>±{n}</option>)}</select></label>
-        <Link href={`/options?u=${encodeURIComponent(u)}`} className="ml-auto text-xs text-accent hover:underline">Open in option chain →</Link>
+        <span className="ml-auto flex gap-3"><Link href={`/ai-intelligence/strategy?u=${encodeURIComponent(u)}`} className="text-xs text-accent hover:underline">Strategy AI →</Link><Link href={`/options?u=${encodeURIComponent(u)}`} className="text-xs text-accent hover:underline">Open in option chain →</Link></span>
       </form>
       {err && <Notice tone="error">{err}</Notice>}
       {busy && <Loading label="Analysing the chain…" />}

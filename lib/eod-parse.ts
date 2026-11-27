@@ -150,6 +150,32 @@ export function parseFoContracts(text: string): FoContract[] {
   return out;
 }
 
+export type FoFuture = {
+  underlying: string; inst: "IDF" | "STF"; expiry: string; close: number; prev_close: number | null; settle: number | null; underlying_px: number | null;
+  oi_qty: number; oi_chg_qty: number; contracts: number; lot: number;
+};
+
+/** Futures contracts (index and stock) from the F&O bhavcopy that traded or carry open interest. */
+export function parseFoFutures(text: string): FoFuture[] {
+  const out: FoFuture[] = [];
+  for (const r of parseCsv(text)) {
+    const inst = r.FinInstrmTp as "IDF" | "STF";
+    if (inst !== "IDF" && inst !== "STF") continue;
+    const underlying = r.TckrSymb?.trim();
+    const expiry = r.XpryDt?.trim();
+    const close = num(r.ClsPric) ?? num(r.LastPric);
+    if (!underlying || !expiry || close === null || !(close > 0)) continue;
+    const contracts = num(r.TtlTradgVol) ?? 0;
+    const oi = num(r.OpnIntrst) ?? 0;
+    if (!contracts && !oi) continue;
+    out.push({
+      underlying, inst, expiry: expiry.slice(0, 10), close, prev_close: num(r.PrvsClsgPric), settle: num(r.SttlmPric), underlying_px: num(r.UndrlygPric),
+      oi_qty: oi, oi_chg_qty: num(r.ChngInOpnIntrst) ?? 0, contracts, lot: num(r.NewBrdLotQty) ?? 0,
+    });
+  }
+  return out;
+}
+
 export function nseFoUrl(iso: string): string {
   return `https://nsearchives.nseindia.com/content/fo/BhavCopy_NSE_FO_0_0_0_${iso.replaceAll("-", "")}_F_0000.csv.zip`;
 }

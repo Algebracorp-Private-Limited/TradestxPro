@@ -1,7 +1,7 @@
 import { fail, json, userHandler } from "@/lib/api";
 import { scanResults, ScanError } from "@/lib/intelligence/market-scan/jobs";
 import { intParam, requireFlag, scanDb } from "@/lib/intelligence/http";
-import { gate, present } from "@/lib/intelligence/present";
+import { gate, present, presentFutures } from "@/lib/intelligence/present";
 
 export const dynamic = "force-dynamic";
 const STATUSES = ["ENTER IF CONFIRMED", "WAIT FOR CONFIRMATION", "WATCHLIST", "AVOID", "NO TRADE", "INVALIDATED", "INSUFFICIENT DATA"];
@@ -21,7 +21,7 @@ export const GET = userHandler(async ({ user, req }) => {
   try {
     const res = await scanResults(r.sql, user.id, id, { page: intParam(p.get("page"), 1, 10_000) ?? 1, pageSize: intParam(p.get("pageSize"), 1, 100) ?? 25, status, sort });
     const g = gate();
-    return json({ ok: true, ...res, results: res.results.map((x) => ({ ...x, payload: present(x.payload as Record<string, unknown>, g) })) });
+    return json({ ok: true, ...res, results: res.results.map((x) => ({ ...x, payload: x.kind === "futures" ? presentFutures(x.payload as { plan: Record<string, unknown> }, g) : present(x.payload as Record<string, unknown>, g) })) });
   } catch (e) {
     if (e instanceof ScanError) return fail(e.message, e.status);
     throw e;

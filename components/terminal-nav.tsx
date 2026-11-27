@@ -20,6 +20,7 @@ export const LIVE_LINKS: { href: string; label: string; icon: string; sub?: bool
   { href: "/ai-intelligence/equity", label: "Equity AI", icon: "↗", sub: true },
   { href: "/ai-intelligence/investment", label: "Investment AI", icon: "◷", sub: true },
   { href: "/ai-intelligence/option-chain", label: "Chain Intelligence", icon: "⛓", sub: true },
+  { href: "/ai-intelligence/strategy", label: "Strategy AI", icon: "Σ", sub: true },
   { href: "/brokers", label: "Brokers", icon: "⛓" },
 ];
 

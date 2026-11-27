@@ -16,6 +16,8 @@ import type { AIClient } from "../ai-providers/client.ts";
 import { resolveUniverse } from "../market-data/data.ts";
 import { dedupeUniverse } from "../instruments/master.ts";
 import { sanitizeScanConfig, type ScanConfig } from "./config.ts";
+import { evaluateFoSymbol, loadFo } from "./fo.ts";
+import { UNDERLYING_INDEX } from "../../options/underlyings.ts";
 
 type Sql = postgres.Sql;
 export type ScanMode = "comprehensive" | "accelerated";
@@ -62,7 +64,7 @@ export async function scanTablesAvailable(sql: Sql): Promise<boolean> {
 
 const emptyCoverage = (mode: ScanMode, cfg: ScanConfig): Coverage => ({
   mode, universes: cfg.universes, unavailableUniverses: [], selected: 0, unique: 0, duplicates: 0, shortlisted: null, notDeepEvaluated: 0, scanned: 0, excluded: {},
-  missingData: 0, staleData: 0, opportunities: {}, instrumentsNotScanned: cfg.instruments.filter((i) => i !== "equity"), chainsRetrieved: 0, contractsEvaluated: 0,
+  missingData: 0, staleData: 0, opportunities: {}, instrumentsNotScanned: [], chainsRetrieved: 0, contractsEvaluated: 0,
   contractsExcluded: 0, aiRequests: 0, aiInputTokens: 0, aiOutputTokens: 0, aiCostUsd: 0, marketDataRequests: 0, startedAt: null, finishedAt: null,
 });
 
@@ -107,9 +109,17 @@ export async function createScan(sql: Sql, userId: number, rawConfig: unknown, m
     cov.notDeepEvaluated = queue.length - keep.size;
     queue = queue.filter((s) => keep.has(s));
   }
+  // Index F&O underlyings (index-futures / index-options) are queued as "IDX:<underlying>".
+  if (cfg.instruments.some((i) => i.startsWith("index-"))) {
+    const idx = await sql<{ underlying: string }[]>`SELECT DISTINCT underlying FROM fo_contracts WHERE inst = 'IDO' ORDER BY underlying`;
+    const keep = idx.map((r) => r.underlying).filter((x) => UNDERLYING_INDEX[x]);
+    queue = [...keep.map((x) => `IDX:${x}`), ...queue];
+    cov.unique += keep.length;
+  }
+  const jobKind = cfg.instruments.includes("equity") ? "equity" : "fo";
   const [job] = await sql<{ id: number }[]>`
     INSERT INTO scan_jobs (user_id, idempotency_key, kind, mode, config, queue, coverage)
-    VALUES (${userId}, ${idempotencyKey}, 'equity', ${mode}, ${sql.json(cfg as never)}, ${sql.json(queue)}, ${sql.json(cov as never)}) RETURNING id`;
+    VALUES (${userId}, ${idempotencyKey}, ${jobKind}, ${mode}, ${sql.json(cfg as never)}, ${sql.json(queue)}, ${sql.json(cov as never)}) RETURNING id`;
   return { id: Number(job.id), reused: false };
 }
 
@@ -135,12 +145,17 @@ export async function cancelScan(sql: Sql, userId: number, jobId: number): Promi
 
 type Bars = Map<string, { t: number; o: number; h: number; l: number; c: number; v: number }[]>;
 async function loadBars(sql: Sql, symbols: string[]): Promise<{ bars: Bars; last: Map<string, string> }> {
+  const r = await loadSeries(sql, symbols.map((s) => "NSE:" + s));
+  return { bars: new Map([...r.bars].map(([k, v]) => [k.slice(4), v])), last: new Map([...r.last].map(([k, v]) => [k.slice(4), v])) };
+}
+
+async function loadSeries(sql: Sql, series: string[]): Promise<{ bars: Bars; last: Map<string, string> }> {
   const rows = await sql<{ series: string; d: Date; o: number; h: number; l: number; c: number; v: number }[]>`
-    SELECT series, d, o, h, l, c, v FROM candles WHERE series IN ${sql(symbols.map((s) => "NSE:" + s))} AND d >= (CURRENT_DATE - 600) ORDER BY series, d`;
+    SELECT series, d, o, h, l, c, v FROM candles WHERE series IN ${sql(series)} AND d >= (CURRENT_DATE - 600) ORDER BY series, d`;
   const bars: Bars = new Map();
   const last = new Map<string, string>();
   for (const r of rows) {
-    const s = r.series.slice(4);
+    const s = r.series;
     if (!bars.has(s)) bars.set(s, []);
     bars.get(s)!.push({ t: Date.parse(r.d.toISOString().slice(0, 10) + "T00:00:00Z") / 1000, o: r.o, h: r.h, l: r.l, c: r.c, v: r.v });
     last.set(s, r.d.toISOString().slice(0, 10));
@@ -169,7 +184,20 @@ export async function advanceScan(sql: Sql, jobId: number, userId: number | null
   let rest = j.queue.slice(chunk.length);
   try {
     if (chunk.length) {
-      const { bars, last } = await loadBars(sql, chunk);
+      const stockSyms = chunk.filter((x) => !x.startsWith("IDX:"));
+      const idxSyms = chunk.filter((x) => x.startsWith("IDX:")).map((x) => x.slice(4));
+      const { bars, last } = await loadBars(sql, stockSyms.length ? stockSyms : ["-"]);
+      if (idxSyms.length) {
+        const ib = await loadSeries(sql, idxSyms.map((x) => `NSEIDX:${UNDERLYING_INDEX[x]}`));
+        for (const x of idxSyms) {
+          const b = ib.bars.get(`NSEIDX:${UNDERLYING_INDEX[x]}`);
+          if (b) { bars.set(`IDX:${x}`, b); last.set(`IDX:${x}`, ib.last.get(`NSEIDX:${UNDERLYING_INDEX[x]}`)!); }
+        }
+      }
+      const wantEquity = cfg.instruments.includes("equity");
+      const wantFo = cfg.instruments.some((i) => i !== "equity");
+      const fo = wantFo ? await loadFo(sql, [...stockSyms, ...idxSyms]) : null;
+      if (fo) cov.marketDataRequests += 2;
       const names = await sql<{ symbol: string; name: string | null }[]>`SELECT symbol, name FROM screener_snapshot WHERE symbol IN ${sql(chunk)}`;
       const inds = await sql<{ symbol: string; industry: string | null }[]>`SELECT DISTINCT ON (symbol) symbol, industry FROM index_constituents WHERE symbol IN ${sql(chunk)} AND industry IS NOT NULL`;
       cov.marketDataRequests += 3;
@@ -189,6 +217,19 @@ export async function advanceScan(sql: Sql, jobId: number, userId: number | null
           continue;
         }
         if (prov.freshness === "stale") cov.staleData++;
+        const isIdx = sym.startsWith("IDX:"), und = isIdx ? sym.slice(4) : sym;
+        if (fo) {
+          const r = evaluateFoSymbol(und, isIdx ? "index" : "stock", b, fo.options.get(und) ?? [], fo.futures.get(und) ?? [], fo.futuresProvenance, cfg, now);
+          cov.chainsRetrieved += r.chains;
+          cov.contractsEvaluated += r.contracts;
+          if (!r.results.length && r.missing.length) cov.excluded[`no F&O data (${r.missing.join(", ")})`] = (cov.excluded[`no F&O data (${r.missing.join(", ")})`] ?? 0) + 1;
+          for (const x of r.results) {
+            cov.opportunities[x.status] = (cov.opportunities[x.status] ?? 0) + 1;
+            await sql`INSERT INTO scan_results (job_id, key, symbol, kind, status, score, payload) VALUES (${jobId}, ${x.key}, ${x.symbol}, ${x.kind}, ${x.status}, ${x.score}, ${sql.json(x.payload as never)})
+                      ON CONFLICT (job_id, key) DO UPDATE SET status = EXCLUDED.status, score = EXCLUDED.score, payload = EXCLUDED.payload`;
+          }
+        }
+        if (!wantEquity || isIdx) continue;
         const setup: EquitySetup = analyzeEquity({
           symbol: sym, name: names.find((n) => n.symbol === sym)?.name ?? sym, sector: inds.find((n) => n.symbol === sym)?.industry ?? null, bars: b, provenance: prov,
           horizon: cfg.horizon, direction: cfg.direction === "bearish" ? "bearish" : cfg.direction === "bullish" ? "bullish" : "any",
@@ -239,9 +280,9 @@ export async function scanResults(sql: Sql, userId: number, jobId: number, q: Re
   if (!own) throw new ScanError("Scan not found", 404);
   const size = Math.min(100, Math.max(1, q.pageSize ?? 25));
   const page = Math.max(1, q.page ?? 1);
-  const order = q.sort === "symbol" ? sql`symbol ASC` : q.sort === "rr" ? sql`(payload->>'rewardRisk')::float DESC NULLS LAST` : sql`score DESC NULLS LAST, symbol`;
-  const rows = await sql<{ key: string; symbol: string; status: string; score: number | null; payload: unknown }[]>`
-    SELECT key, symbol, status, score, payload FROM scan_results WHERE job_id = ${jobId} ${q.status ? sql`AND status = ${q.status}` : sql``}
+  const order = q.sort === "symbol" ? sql`symbol ASC` : q.sort === "rr" ? sql`COALESCE((payload->>'rewardRisk')::float, (payload->'plan'->>'rewardRisk')::float) DESC NULLS LAST` : sql`score DESC NULLS LAST, symbol`;
+  const rows = await sql<{ key: string; symbol: string; kind: string; status: string; score: number | null; payload: unknown }[]>`
+    SELECT key, symbol, kind, status, score, payload FROM scan_results WHERE job_id = ${jobId} ${q.status ? sql`AND status = ${q.status}` : sql``}
      ORDER BY ${order} LIMIT ${size} OFFSET ${(page - 1) * size}`;
   const [{ total }] = await sql<{ total: number }[]>`SELECT count(*)::int AS total FROM scan_results WHERE job_id = ${jobId} ${q.status ? sql`AND status = ${q.status}` : sql``}`;
   return { page, pageSize: size, total, results: rows };
