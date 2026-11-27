@@ -14,7 +14,7 @@ availability (`yes | with-broker | partial | no`), source, freshness and entitle
 
 Consequences: intraday setups are not generated without a live broker session; IV rank/percentile is
 not shown; Investment AI returns INSUFFICIENT DATA; margin-dependent plans are "not
-execution-validated"; option premium charts cannot show observed history.
+execution-validated"; option premium charts (the option workspace) need a connected broker to show observed history.
 
 ## Freshness
 

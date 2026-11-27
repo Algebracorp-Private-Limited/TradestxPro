@@ -72,10 +72,6 @@ The migrator checksums each applied migration and refuses to run if an applied o
 **Alerts and monitoring**
 - Push notifications (in-app and e-mail notifications exist).
 
-**Charts and option workspaces**
-- Option-premium analytical charts.
-- A synchronised underlying + derivatives chart workspace.
-
 **Trading and research tiers**
 - Live execution (blocked in code).
 - Forward-testing results (tracking exists; no results have accumulated).

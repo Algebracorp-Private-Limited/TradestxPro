@@ -107,6 +107,23 @@ All of these are descriptive:
 
 **Positioning is never attributed.** OI does not reveal who is long or short, so no institutional or dealer positioning is inferred, and the text says so.
 
+## Option workspace (`/ai-intelligence/workspace`)
+
+Four XChart panes with linked time range and crosshair (`syncCharts`):
+
+- **Underlying** candles (broker intraday, or NSE end-of-day files for 1D), with the contract's levels:
+  strike, expiry breakeven, ±1σ expected move and the plan invalidation.
+- **Option premium** candles for the selected contract. Premium history comes only from a connected
+  broker (Dhan or ICICI Direct); without one the pane shows INSUFFICIENT DATA and nothing is synthesised.
+  Entry, stop and target lines appear only when the contract plan passes the presentation gate.
+- **Model IV** and **extrinsic value** (`workspace/premium.ts`): each premium bar is matched to the
+  underlying bar with the same timestamp; intrinsic = max(0, S−K) or max(0, K−S), extrinsic = premium −
+  intrinsic, IV is solved from the premium with Black–Scholes. Unmatched bars and failed IV solves are
+  left as gaps and counted. These are model values, not exchange-reported IV.
+
+Endpoint: `GET /api/intelligence/workspace?u=&expiry=&strike=&right=CE|PE&tf=5m|15m|1h|1D` (RESEARCH flag,
+rate-limited). Open it from a contract panel with **Open charts**.
+
 ## Feature flags
 
 | Endpoint | Flag |

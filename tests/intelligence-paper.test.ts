@@ -174,3 +174,23 @@ test("paper trading: orders fill on later sessions, P&L and cash reconcile, shor
     await sql.end();
   }
 });
+
+// ---------------- Premium analytics (workspace) ----------------
+test("premium analytics: aligned by timestamp, intrinsic/extrinsic, IV recovers the generating volatility, gaps stay gaps", async () => {
+  const { premiumAnalytics } = await import("../lib/intelligence/workspace/premium.ts");
+  const t0 = Date.parse("2026-11-18T05:30:00Z") / 1000;
+  const und = [0, 1, 2].map((i) => ({ t: t0 + i * 300, o: 24000, h: 24010, l: 23990, c: 24000 + i * 50, v: 0 }));
+  const T = (i: number) => (Date.parse("2026-12-16T10:00:00Z") - (t0 + i * 300) * 1000) / (365 * 86400e3);
+  const prem = [0, 1, 2, 3].map((i) => ({ t: t0 + i * 300, o: 0, h: 0, l: 0, c: bsPrice({ S: 24000 + i * 50, K: 23900, T: T(i), r: 0.065, sigma: 0.18, right: "CE" }), v: 0 }));
+  const r = premiumAnalytics(prem, und, 23900, "CE", "2026-12-16");
+  assert.equal(r.matched, 3);
+  assert.equal(r.points[3].iv, null, "no underlying bar at that time: left as a gap");
+  for (const p of r.points.slice(0, 3)) {
+    assert.ok(Math.abs(p.iv! - 18) < 0.05, `IV ${p.iv}`);
+    assert.equal(p.intrinsic, p.underlying! - 23900);
+    assert.ok(Math.abs(p.extrinsic! - (p.premium - p.intrinsic!)) < 0.01);
+  }
+  const below = premiumAnalytics([{ ...prem[0], c: 50 }], und, 23900, "CE", "2026-12-16");
+  assert.equal(below.points[0].iv, null, "premium below intrinsic has no IV solution");
+  assert.equal(below.ivSolved, 0);
+});
