@@ -18,7 +18,7 @@ marks the job failed and keeps what was done. Users can cancel; at most two scan
 |---|---|---|
 | 1 | Universe | Index constituents (NSE files) + the user's watchlists, deduplicated; indices without constituent data are listed as unavailable |
 | 2 | Deterministic scan | Daily bars per symbol (batched query per chunk), provenance and freshness per symbol, market regime |
-| 3 | Derivatives chains | F&O jobs (milestone 4E) |
+| 3 | Derivatives chains | F&O instruments: futures (Futures AI) and option strategies (Strategy AI), see `strategy-and-futures.md` |
 | 4 | Candidates | Equity setup engine (breakout, trend pullback, mean reversion; extended trends wait; bearish → no cash short) |
 | 5 | Constraints | Capital, risk per trade, capital per trade, minimum reward:risk, minimum liquidity, quantity, costs |
 | 6 | Ranking | Transparent score (stored per result; results sorted at read time by score, R:R or symbol) |
@@ -43,5 +43,5 @@ requests, AI requests/tokens/cost, start and completion times, progress.
 Universe, horizon (swing, positional, short-term investment; intraday/scalping/BTST/STBT are accepted
 but return INSUFFICIENT DATA without real-time data and intraday bars), direction, capital, risk per trade,
 capital per trade, reward:risk, liquidity. Instrument filters for futures/options, margin, spread and
-option buy/sell/multi-leg options are part of the configuration and are used by the F&O scanner (4E).
+option buy/sell/multi-leg options are part of the configuration and are used by the F&O stage (`market-scan/fo.ts`; futures prices need migration `004-fo-futures`). Margin is never available, so the max-margin filter is not applied.
 Saved configurations: up to 25 per user.

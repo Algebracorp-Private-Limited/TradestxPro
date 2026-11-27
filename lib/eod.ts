@@ -3,7 +3,7 @@ import { unzipSync } from "fflate";
 import { db } from "./db";
 import { istToday } from "./instrument-map.ts";
 import { betaCorr } from "./stats.ts";
-import { nseEquityUrl, nseFoUrl, nseIndexUrl, parseEquityBhavcopy, parseFoBhavcopy, parseFoContracts, parseIndexFile, recentWeekdays, type EodBar } from "./eod-parse.ts";
+import { nseEquityUrl, nseFoUrl, nseIndexUrl, parseEquityBhavcopy, parseFoBhavcopy, parseFoContracts, parseFoFutures, parseIndexFile, recentWeekdays, type EodBar } from "./eod-parse.ts";
 import * as ta from "./ta/indicators.ts";
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
@@ -94,6 +94,7 @@ export async function ingestFoDay(sql: Sql, d: string): Promise<number | null> {
 }
 
 async function storeFoContracts(sql: Sql, d: string, text: string) {
+  await storeFoFutures(sql, d, text);
   const rows = parseFoContracts(text);
   if (!rows.length) return;
   await sql.begin(async (tx) => {
@@ -101,6 +102,18 @@ async function storeFoContracts(sql: Sql, d: string, text: string) {
     for (let i = 0; i < rows.length; i += 2000) {
       await tx`INSERT INTO fo_contracts ${tx(rows.slice(i, i + 2000).map((r) => ({ d, ...r })))} ON CONFLICT DO NOTHING`;
     }
+  });
+}
+
+/** Futures rows go to fo_futures only when migration 004 has been applied (the table is never auto-created). */
+async function storeFoFutures(sql: Sql, d: string, text: string) {
+  const [{ t }] = await sql<{ t: string | null }[]>`SELECT to_regclass('public.fo_futures')::text AS t`;
+  if (!t) return;
+  const rows = parseFoFutures(text);
+  if (!rows.length) return;
+  await sql.begin(async (tx) => {
+    await tx`DELETE FROM fo_futures`;
+    await tx`INSERT INTO fo_futures ${tx(rows.map((r) => ({ d, ...r })))} ON CONFLICT DO NOTHING`;
   });
 }
 

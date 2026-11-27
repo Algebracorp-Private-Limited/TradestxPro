@@ -63,6 +63,26 @@ export async function eodChain(sql: Sql, underlying: string, expiry: string | nu
   return { value: out, provenance: provenance({ source: "nse-fo-bhavcopy", kind: "eod-file", exchangeTime: d, entitlement: "public-eod", now, missing: ["bid", "ask", "bid quantity", "ask quantity", "broker IV", "broker Greeks"] }) };
 }
 
+export type EodFutureRow = { underlying: string; inst: "IDF" | "STF"; expiry: string; close: number; prevClose: number | null; settle: number | null; underlyingPx: number | null; oi: number; oiChange: number; contracts: number; lot: number; d: string };
+
+/**
+ * Latest-session futures from the NSE F&O bhavcopy. Needs migration 004 (fo_futures); when the table is
+ * missing the result is empty with "futures dataset not configured" in `missing` (never estimated).
+ */
+export async function eodFutures(sql: Sql, underlyings: string[] | null, now = new Date()): Promise<Sourced<EodFutureRow[]>> {
+  const [{ t }] = await sql<{ t: string | null }[]>`SELECT to_regclass('public.fo_futures')::text AS t`;
+  if (!t) return { value: [], provenance: provenance({ source: "nse-fo-bhavcopy", kind: "eod-file", exchangeTime: null, entitlement: "public-eod", now, missing: ["futures dataset not configured (migration 004-fo-futures)"] }) };
+  const rows = underlyings
+    ? await sql<Record<string, unknown>[]>`SELECT * FROM fo_futures WHERE underlying IN ${sql(underlyings)} ORDER BY underlying, expiry`
+    : await sql<Record<string, unknown>[]>`SELECT * FROM fo_futures ORDER BY underlying, expiry`;
+  const n = (v: unknown) => (v === null || v === undefined ? null : Number(v));
+  const out: EodFutureRow[] = rows.map((r) => ({
+    underlying: String(r.underlying), inst: r.inst as "IDF" | "STF", expiry: iso(r.expiry as Date), close: Number(r.close), prevClose: n(r.prev_close), settle: n(r.settle),
+    underlyingPx: n(r.underlying_px), oi: Number(r.oi_qty), oiChange: Number(r.oi_chg_qty), contracts: Number(r.contracts), lot: Number(r.lot), d: iso(r.d as Date),
+  }));
+  return { value: out, provenance: provenance({ source: "nse-fo-bhavcopy", kind: "eod-file", exchangeTime: out[0]?.d ?? null, entitlement: "public-eod", now, missing: ["bid", "ask", "margin"] }) };
+}
+
 /** Resolves a canonical instrument id against the reference tables (null when it does not exist). */
 export async function resolveInstrument(sql: Sql, id: string): Promise<Instrument | null> {
   const p = parseInstrumentId(id);

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SetupDetail, type SetupView } from "./setup-detail";
+import { FuturesDetail, StrategyDetail, type FuturesView, type StrategyView } from "./fo-detail";
 import { Card, Empty, Loading, Notice, StatusBadge, fmt, inr } from "./ui";
 
 const UNIVERSES = [
@@ -21,7 +22,8 @@ type Coverage = {
   aiRequests: number; aiInputTokens: number; aiOutputTokens: number; aiCostUsd: number; marketDataRequests: number; startedAt: string | null; finishedAt: string | null;
 };
 type Job = { id: number; status: string; mode: string; progress: number; remaining: number; coverage: Coverage; createdAt: string; error: string | null };
-type Row = { key: string; symbol: string; status: string; score: number | null; payload: SetupView };
+type Row = { key: string; symbol: string; kind: "equity" | "futures" | "strategy"; status: string; score: number | null; payload: SetupView & Partial<StrategyView> & Partial<FuturesView> };
+const INSTRUMENTS = [["equity", "Cash equity"], ["stock-futures", "Stock futures"], ["stock-options", "Stock options"], ["index-futures", "Index futures"], ["index-options", "Index options"]] as const;
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, init);
@@ -36,6 +38,9 @@ export function MarketScanner({ initialJob }: { initialJob: number | null }) {
   const [direction, setDirection] = useState("any");
   const [mode, setMode] = useState<"comprehensive" | "accelerated">("comprehensive");
   const [capital, setCapital] = useState(500000);
+  const [instruments, setInstruments] = useState<string[]>(["equity"]);
+  const [optMode, setOptMode] = useState<"ALL" | "BUY_ONLY" | "SELL_ONLY">("ALL");
+  const [definedRisk, setDefinedRisk] = useState(true);
   const [maxRisk, setMaxRisk] = useState(5000);
   const [maxCap, setMaxCap] = useState(100000);
   const [minRR, setMinRR] = useState(1.5);
@@ -55,7 +60,7 @@ export function MarketScanner({ initialJob }: { initialJob: number | null }) {
   const [reload, setReload] = useState(0);
   const polling = useRef(false);
 
-  const config = useMemo(() => ({ universes, horizon, direction, capital, maxRiskPerTrade: maxRisk, maxCapitalPerTrade: maxCap, minRewardRisk: minRR, minLiquidity: minLiqCr * 1e7, instruments: ["equity"] }), [universes, horizon, direction, capital, maxRisk, maxCap, minRR, minLiqCr]);
+  const config = useMemo(() => ({ universes, horizon, direction, capital, maxRiskPerTrade: maxRisk, maxCapitalPerTrade: maxCap, minRewardRisk: minRR, minLiquidity: minLiqCr * 1e7, instruments, optionBuyingOnly: optMode === "BUY_ONLY", optionSellingOnly: optMode === "SELL_ONLY", definedRiskOnly: definedRisk }), [universes, horizon, direction, capital, maxRisk, maxCap, minRR, minLiqCr, instruments, optMode, definedRisk]);
 
   useEffect(() => {
     let alive = true;
@@ -115,6 +120,9 @@ export function MarketScanner({ initialJob }: { initialJob: number | null }) {
     if (typeof c.maxCapitalPerTrade === "number") setMaxCap(c.maxCapitalPerTrade);
     if (typeof c.minRewardRisk === "number") setMinRR(c.minRewardRisk);
     if (typeof c.minLiquidity === "number") setMinLiqCr(c.minLiquidity / 1e7);
+    if (Array.isArray(c.instruments) && c.instruments.length) setInstruments(c.instruments as string[]);
+    setOptMode(c.optionBuyingOnly ? "BUY_ONLY" : c.optionSellingOnly ? "SELL_ONLY" : "ALL");
+    if (typeof c.definedRiskOnly === "boolean") setDefinedRisk(c.definedRiskOnly);
   };
   const running = job && (job.status === "queued" || job.status === "running");
   const field = "w-full rounded-lg border border-line bg-panel px-2 py-1.5 text-sm";
@@ -135,7 +143,25 @@ export function MarketScanner({ initialJob }: { initialJob: number | null }) {
                 </label>
               ))}
             </div>
-            <p className="mt-2 text-[11px] text-muted">Instrument: cash equity. Futures and options are scanned by the F&O scanner (later milestone).</p>
+            <fieldset className="mt-3">
+              <legend className="mb-1 text-xs text-muted">Instruments</legend>
+              <div className="flex flex-wrap gap-1">
+                {INSTRUMENTS.map(([v, l]) => (
+                  <label key={v} className={`cursor-pointer rounded-md border px-2 py-0.5 text-[11px] ${instruments.includes(v) ? "border-accent/60 bg-accent/10 text-white" : "border-line text-soft"}`}>
+                    <input type="checkbox" className="sr-only" checked={instruments.includes(v)} onChange={() => setInstruments((s) => (s.includes(v) ? s.filter((x) => x !== v) : [...s, v]))} />{l}
+                  </label>
+                ))}
+              </div>
+              {instruments.some((i) => i.includes("options")) && (
+                <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px]">
+                  <span role="radiogroup" aria-label="Option strategies" className="flex overflow-hidden rounded-md border border-line">
+                    {([["ALL", "All strategies"], ["BUY_ONLY", "BUY ONLY"], ["SELL_ONLY", "SELL ONLY"]] as const).map(([v, l]) => <button key={v} type="button" role="radio" aria-checked={optMode === v} onClick={() => setOptMode(v)} className={`px-2 py-0.5 ${optMode === v ? "bg-white text-slate-950" : "text-soft"}`}>{l}</button>)}
+                  </span>
+                  <label className="flex items-center gap-1"><input type="checkbox" checked={definedRisk} onChange={(e) => setDefinedRisk(e.target.checked)} />Defined risk only</label>
+                </div>
+              )}
+              <p className="mt-1 text-[11px] text-muted">F&O results use the latest NSE F&O bhavcopy (end of day): futures and option strategies are research candidates, never entries.</p>
+            </fieldset>
           </fieldset>
           <div className="grid grid-cols-2 gap-2 text-xs">
             <label className="space-y-1"><span className="text-muted">Horizon</span><select className={field} value={horizon} onChange={(e) => setHorizon(e.target.value)}>{HORIZONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
@@ -150,7 +176,7 @@ export function MarketScanner({ initialJob }: { initialJob: number | null }) {
         </div>
         <p className="mt-2 text-[11px] text-muted">{mode === "accelerated" ? "Accelerated: a first-stage shortlist from the EOD snapshot; symbols outside it are counted as not deep-evaluated. This is not a comprehensive scan." : "Comprehensive: every unique symbol in the selected universes is evaluated."}</p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <button onClick={run} disabled={Boolean(running) || !universes.length} className="rounded-lg bg-white px-4 py-1.5 text-sm font-semibold text-slate-950 disabled:opacity-40">Run scan</button>
+          <button onClick={run} disabled={Boolean(running) || !universes.length || !instruments.length} className="rounded-lg bg-white px-4 py-1.5 text-sm font-semibold text-slate-950 disabled:opacity-40">Run scan</button>
           {running && <button onClick={cancel} className="rounded-lg border border-line px-3 py-1.5 text-sm">Cancel</button>}
           <span className="mx-1 h-5 w-px bg-line" />
           <input className="w-40 rounded-lg border border-line bg-panel px-2 py-1 text-xs" placeholder="Name this scan" value={saveName} onChange={(e) => setSaveName(e.target.value)} aria-label="Saved scan name" />
@@ -203,7 +229,8 @@ export function MarketScanner({ initialJob }: { initialJob: number | null }) {
                   {rows.map((r) => {
                     const p = r.payload;
                     const cell: Record<Column, React.ReactNode> = {
-                      Status: <StatusBadge status={r.status} />, Score: r.score ?? "—", Setup: p.setup, Price: inr(p.price),
+                      Status: <StatusBadge status={r.status} />, Score: r.score ?? "—", Setup: r.kind === "strategy" ? `${p.name} · ${p.expiry ?? ""}` : r.kind === "futures" ? `Futures ${p.plan?.side ?? "— no direction"}` : p.setup,
+                      Price: r.kind === "futures" ? inr(p.near?.price) : r.kind === "strategy" ? (p.netPremium === null || p.netPremium === undefined ? "—" : `net ${inr(p.netPremium, 0)}`) : inr(p.price),
                       Entry: p.entry ? `${fmt(p.entry.low)}–${fmt(p.entry.high)}` : p.notices ? "restricted" : "—", Stop: p.stop ? fmt(p.stop) : "—",
                       "Target 1": p.targets?.[0] ? fmt(p.targets[0].price) : "—", "R:R": p.rewardRisk ? fmt(p.rewardRisk) : "—", Sector: p.sector ?? "—",
                     };
@@ -212,7 +239,7 @@ export function MarketScanner({ initialJob }: { initialJob: number | null }) {
                         <td className="py-1.5 pr-2"><span className="font-semibold text-white">{r.symbol}</span> <span className="text-muted">{p.name !== r.symbol ? p.name : ""}</span></td>
                         {cols.map((col) => <td key={col} className="py-1.5 pr-2">{cell[col]}</td>)}
                       </tr>,
-                      open === r.key && <tr key={r.key + "-d"}><td colSpan={cols.length + 1} className="bg-white/[0.02] p-3"><SetupDetail s={p} /></td></tr>,
+                      open === r.key && <tr key={r.key + "-d"}><td colSpan={cols.length + 1} className="bg-white/[0.02] p-3">{r.kind === "strategy" ? <StrategyDetail s={p as unknown as StrategyView} /> : r.kind === "futures" ? <FuturesDetail f={p as unknown as FuturesView} /> : <SetupDetail s={p} />}</td></tr>,
                     ];
                   })}
                 </tbody>
