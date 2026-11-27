@@ -5,9 +5,10 @@ import { analyzeEquity, type Horizon } from "@/lib/intelligence/equity/setup";
 import { explainEquity } from "@/lib/intelligence/equity/explain";
 import { HORIZONS } from "@/lib/intelligence/market-scan/config";
 import { recordAnalysis } from "@/lib/intelligence/audit/store";
-import { requireFlag, symbolParam } from "@/lib/intelligence/http";
+import { requireFlag, symbolParam, rateLimit } from "@/lib/intelligence/http";
 import { intelligenceAI } from "@/lib/intelligence/server";
 import { gate, present } from "@/lib/intelligence/present";
+import { applyEquityValidation } from "@/lib/intelligence/validation/plans";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -19,6 +20,8 @@ const num = (v: string | null, d: number, lo: number, hi: number) => {
 
 /** Equity setup for one NSE stock: deterministic plan + (optional) grounded AI explanation. */
 export const GET = userHandler(async ({ user, req }) => {
+  const limited = rateLimit("equity", user.id);
+  if (limited) return limited;
   const off = await requireFlag("RESEARCH");
   if (off) return off;
   const p = new URL(req.url).searchParams;
@@ -30,10 +33,10 @@ export const GET = userHandler(async ({ user, req }) => {
   if (!inst) return fail("Unknown NSE equity.", 404);
   const bars = await dailyBars(sql, `NSE:${symbol}`, 400);
   const capital = num(p.get("capital"), 500_000, 1_000, 1e10);
-  const setup = analyzeEquity({
+  const setup = applyEquityValidation(analyzeEquity({
     symbol, name: inst.name, sector: inst.industry, bars: bars.value, provenance: bars.provenance, horizon,
     constraints: { capital, maxRiskPerTrade: num(p.get("maxRisk"), 5_000, 1, capital), maxCapitalPerTrade: num(p.get("maxCapital"), 100_000, 100, capital), minRewardRisk: num(p.get("minRR"), 1.5, 0.5, 10), minLiquidity: num(p.get("minLiquidity"), 5e7, 0, 1e11) },
-  });
+  }), bars.provenance);
   const g = gate();
   let explanation = null;
   if (p.get("explain") === "1" && g.actionable) {

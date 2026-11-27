@@ -185,3 +185,26 @@ test("scenarios: futures leg moves one-for-one with spot plus basis; options una
   const up = pnl({ ...inp, legs: [fut] }, S + 200, NOW);
   assert.equal(up, 200 * 75);
 });
+
+test("indicator selection: per setup, at most 4, each with a reason, all in the SDK registry", async () => {
+  const { selectIndicators } = await import("../lib/intelligence/tradevision/zones.ts");
+  const cases: [string | null, { primary: string; flags: string[] } | null, string[]][] = [
+    ["Breakout", null, ["ema", "volume", "atr"]],
+    ["Mean reversion to the 20-day mean", null, ["bb", "rsi"]],
+    ["Trend pullback", { primary: "Uptrend", flags: [] }, ["ema", "ema", "adx"]],
+    ["Trend pullback", { primary: "Uptrend", flags: ["Volatility expansion"] }, ["ema", "ema", "adx", "atr"]],
+    [null, null, ["ema"]],
+  ];
+  for (const [setup, regime, want] of cases) {
+    const got = selectIndicators(setup, regime);
+    assert.deepEqual(got.map((g) => g.indicator), want, String(setup));
+    assert.ok(got.length <= 4);
+    for (const g of got) {
+      assert.ok(IDS.includes(g.indicator), g.indicator);
+      assert.ok(g.evidence.length > 20, "each indicator explains why it is deployed");
+    }
+  }
+  const spec = buildEquitySpec("SYN", bars(), { setup: "Breakout", regime: { primary: "Uptrend", flags: [] }, entry: null, stop: null, targets: [] } as never);
+  assert.equal(validateChartSpec(spec, { window: spec.window, indicatorIds: IDS }).issues.length, 0);
+  assert.equal(spec.elements.filter((e) => e.kind === "indicator").length, 3);
+});

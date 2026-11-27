@@ -17,6 +17,7 @@ import { resolveUniverse } from "../market-data/data.ts";
 import { dedupeUniverse } from "../instruments/master.ts";
 import { sanitizeScanConfig, type ScanConfig } from "./config.ts";
 import { evaluateFoSymbol, loadFo } from "./fo.ts";
+import { applyEquityValidation } from "../validation/plans.ts";
 import { UNDERLYING_INDEX } from "../../options/underlyings.ts";
 
 type Sql = postgres.Sql;
@@ -230,12 +231,12 @@ export async function advanceScan(sql: Sql, jobId: number, userId: number | null
           }
         }
         if (!wantEquity || isIdx) continue;
-        const setup: EquitySetup = analyzeEquity({
+        const setup: EquitySetup = applyEquityValidation(analyzeEquity({
           symbol: sym, name: names.find((n) => n.symbol === sym)?.name ?? sym, sector: inds.find((n) => n.symbol === sym)?.industry ?? null, bars: b, provenance: prov,
           horizon: cfg.horizon, direction: cfg.direction === "bearish" ? "bearish" : cfg.direction === "bullish" ? "bullish" : "any",
           constraints: { capital: cfg.capital, maxRiskPerTrade: cfg.maxRiskPerTrade, maxCapitalPerTrade: cfg.maxCapitalPerTrade, minRewardRisk: cfg.minRewardRisk, minLiquidity: cfg.minLiquidity },
           today: now.toISOString().slice(0, 10),
-        });
+        }), prov);
         if (setup.status === "INSUFFICIENT DATA") cov.missingData++;
         cov.opportunities[setup.status] = (cov.opportunities[setup.status] ?? 0) + 1;
         await sql`INSERT INTO scan_results (job_id, key, symbol, kind, status, score, payload) VALUES (${jobId}, ${sym}, ${sym}, 'equity', ${setup.status}, ${setup.score?.total ?? null}, ${sql.json(setup as never)})

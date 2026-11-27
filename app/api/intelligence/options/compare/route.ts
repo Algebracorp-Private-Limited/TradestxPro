@@ -1,12 +1,14 @@
 import { fail, json, userHandler } from "@/lib/api";
 import { metrics, quickView } from "@/lib/intelligence/options/contract";
 import { chainFor, underlyingContext } from "@/lib/intelligence/options/server";
-import { requireFlag, symbolParam } from "@/lib/intelligence/http";
+import { requireFlag, symbolParam, rateLimit } from "@/lib/intelligence/http";
 
 export const dynamic = "force-dynamic";
 
 /** Side-by-side comparison of contracts: strikes of one expiry and/or the same moneyness in other expiries (EOD). */
 export const GET = userHandler(async ({ user, req }) => {
+  const limited = rateLimit("contract", user.id);
+  if (limited) return limited;
   const off = await requireFlag("RESEARCH");
   if (off) return off;
   const p = new URL(req.url).searchParams;

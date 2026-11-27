@@ -48,6 +48,23 @@ Every element carries `source` (engine or ai), a `label` and its `evidence`.
 
 **Trade plan:** entry zone, stop and targets from the equity setup engine (4C), when it produces them. These elements are withheld unless `ACTIONABLE_RECOMMENDATIONS` is on.
 
+## Indicator selection (`selectIndicators`)
+
+Indicators are chosen by a rule table keyed on the equity engine's setup and the market regime. There are at most 4 per chart, and each one states why it is deployed. They are drawn on the XChart canvas with `addIndicator`, in their own "Indicators" layer.
+
+| Setup | Indicators |
+|---|---|
+| Breakout | EMA 20, Volume (20-day average), ATR 14 |
+| Mean reversion / range | Bollinger Bands 20·2, RSI 14 |
+| Trend pullback / uptrend | EMA 20, EMA 50, ADX 14, plus ATR 14 when volatility is expanding |
+| No qualifying setup | EMA 50 (context only) |
+
+Some measures from the spec's lists are not drawn here:
+- **Intraday tools** (VWAP, opening range): they need intraday bars, which are not stored.
+- **Option measures** (IV, Greeks, premium momentum): these are shown in the option workspaces, not on the underlying's price chart.
+
+The selection is deterministic. The AI annotation can comment on indicator elements through notes, but cannot add indicators.
+
 ## AI annotation (`annotate.ts`, prompt `tradevision.annotate@1`)
 
 The AI runs once per explicit **AI annotate** click. The AI client caches the result, and nothing runs on hover.
