@@ -15,6 +15,10 @@ export const LIVE_LINKS: { href: string; label: string; icon: string; sub?: bool
   { href: "/options/strategies", label: "Strategies", icon: "∑", sub: true },
   { href: "/options/screener", label: "Option screener", icon: "⌕", sub: true },
   { href: "/derivatives", label: "F&O", icon: "⇄" },
+  { href: "/ai-intelligence", label: "AI Intelligence", icon: "✦" },
+  { href: "/ai-intelligence/market-scan", label: "Market scan", icon: "⌕", sub: true },
+  { href: "/ai-intelligence/equity", label: "Equity AI", icon: "↗", sub: true },
+  { href: "/ai-intelligence/investment", label: "Investment AI", icon: "◷", sub: true },
   { href: "/brokers", label: "Brokers", icon: "⛓" },
 ];
 
@@ -23,7 +27,8 @@ const LIVE_SLUGS = new Set(["strategy-lab", "options-screener", "futures", "ai",
 export function TerminalNav() {
   const path = usePathname();
   const active = (href: string) =>
-    href === "/options" ? path === "/options"
+    href === "/ai-intelligence" ? path === "/ai-intelligence"
+    : href === "/options" ? path === "/options"
     : href === "/markets" ? path === "/markets" || path.startsWith("/instrument")
     : path === href || path.startsWith(href + "/");
   return (
