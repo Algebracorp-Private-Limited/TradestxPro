@@ -123,3 +123,32 @@ Each job is marked `kind = 'fo'` when equity is not selected.
 | `PERSONALIZED_RECOMMENDATIONS` | Lots and costs |
 
 The registry endpoint is educational: it returns structures only, with no prices.
+
+## Strategy optimisation (`strategy/optimize.ts`, `/api/intelligence/strategy/optimize`)
+
+The optimiser runs a bounded, exhaustive search for one registry strategy. The strategy's structure is kept: the sides, rights, ratios and relative leg spacing don't change.
+
+**The search covers:**
+- **Strike shift:** −5…+5 strikes, moving every option leg together.
+- **Width:** ×1…×6 of the base spacing. The base is the gcd of the leg offsets, so ×(base width) reproduces the canonical strategy, and ×1 is the narrowest version.
+- **Expiry:** the near leg on each of the first 3 unexpired expiries. Calendar legs keep "next" as the following expiry.
+
+That's at most 198 candidates.
+
+**For every candidate:**
+1. It is priced from the chain and evaluated by the Strategy AI engine.
+2. It is checked by the independent validator.
+3. It is filtered by the user's constraints: maximum loss per lot, minimum reward : risk, defined risk only, and the breakeven distance vs the expected move.
+
+Candidates that fail are counted by reason (insufficient data, validation, constraints). Identical leg sets are de-duplicated.
+
+**Objectives:**
+- highest score;
+- best reward : risk;
+- smallest maximum loss;
+- breakevens best placed relative to the expected move;
+- largest net credit.
+
+Reward : risk ignores how likely each outcome is, so the UI warns that far-out-of-the-money spreads rank high on that objective.
+
+Leg strikes are withheld unless `ACTIONABLE_RECOMMENDATIONS` is on, and the route requires `RESEARCH`.

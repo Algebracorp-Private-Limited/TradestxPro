@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { FuturesDetail, StrategyDetail, type FuturesView, type StrategyView } from "./fo-detail";
+import { Optimizer } from "./optimizer";
 import { Card, Empty, FreshnessBadge, Loading, Notice, type Prov } from "./ui";
 
 type Mode = "ALL" | "BUY_ONLY" | "SELL_ONLY";
@@ -105,6 +106,7 @@ export function StrategyAI({ initial }: { initial?: string }) {
           )}
         </Card>
       )}
+      <Optimizer u={u} strategies={reg?.strategies.map((s) => ({ id: s.id, name: s.name })) ?? []} />
       <Card title={`Futures AI · ${u}`}>{fut ? <FuturesDetail f={fut} /> : <Empty>No futures analysis available.</Empty>}</Card>
       <Card title={`Strategy registry${reg ? ` · ${reg.total} strategies` : ""}`} right={reg && <select value={family} onChange={(e) => setFamily(e.target.value)} className="rounded-md border border-line bg-ink px-2 py-1 text-xs" aria-label="Family"><option value="">All families</option>{reg.families.map((f) => <option key={f}>{f}</option>)}</select>}>
         {!reg ? <Loading /> : (

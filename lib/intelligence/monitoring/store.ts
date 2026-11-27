@@ -8,6 +8,7 @@ import { advancePlan, initialState, validatePlan, type DayBar, type PlanLevels, 
 import { tradeStats, calibration, type TradeResult } from "../backtest/stats.ts";
 import { activeAlerts, dispatchEmails, evaluateAlert, evaluateWatch, notify, watchItems, type Digest } from "./alerts.ts";
 import { evaluateSeries } from "./conditions.ts";
+import { runPaper } from "../paper/store.ts";
 
 type Sql = postgres.Sql;
 export { MonitorError } from "./errors.ts";
@@ -122,8 +123,10 @@ export async function runMonitoring(sql: Sql, opts: { deadlineMs?: number; limit
     if (Date.now() > deadline) break;
     if (await evaluateWatch(sql, it)) watched++;
   }
+  // Paper trading (migration 007): fills open orders on new sessions and settles expired F&O positions.
+  const paper = await runPaper(sql, deadline);
   const emails = opts.email ? await dispatchEmails(sql, opts.email) : null;
-  return { ok: true as const, plansAdvanced: plans, alertsEvaluated: alerts, watchEvaluated: watched, openPlans: open.length, activeAlerts: act.length, watchItems: w.length, emails };
+  return { ok: true as const, plansAdvanced: plans, alertsEvaluated: alerts, watchEvaluated: watched, openPlans: open.length, activeAlerts: act.length, watchItems: w.length, paper, emails };
 }
 
 /** Performance of the user's closed paper plans (net R), with calibration by engine score. */
