@@ -3,6 +3,7 @@ import { Logo } from "@/components/site";
 import { LogoutButton } from "@/components/logout-button";
 import { TerminalNav } from "@/components/terminal-nav";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { NotificationBell } from "@/components/notification-bell";
 import { MarketPanel } from "@/components/market-panel";
 import { BrokerBanner } from "@/components/broker-banner";
 import { TickerBar } from "@/components/ticker-bar";
@@ -21,6 +22,7 @@ export default async function TerminalLayout({ children }: { children: React.Rea
         <Logo />
         <div className="flex items-center gap-3">
           <span className="hidden text-sm text-muted sm:inline">{user.email}</span>
+          <NotificationBell />
           <ThemeToggle />
           <LogoutButton />
         </div>

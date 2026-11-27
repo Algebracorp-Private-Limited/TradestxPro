@@ -3,6 +3,7 @@ import { fail, json } from "@/lib/api";
 import { advanceScan, pendingScans, scanTablesAvailable } from "@/lib/intelligence/market-scan/jobs";
 import { intelligenceAI } from "@/lib/intelligence/server";
 import { runMonitoring } from "@/lib/intelligence/monitoring/store";
+import { sendNotificationDigest } from "@/lib/mail";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -19,7 +20,7 @@ export async function GET(req: Request) {
   if (secret && req.headers.get("authorization") !== `Bearer ${secret}`) return fail("Unauthorized", 401);
   if (!isDbConfigured()) return fail("Database not configured.", 503);
   const sql = await db();
-  const monitoring = await runMonitoring(sql, { deadlineMs: 15_000 }).catch((e) => ({ ok: false as const, note: String(e).slice(0, 200) }));
+  const monitoring = await runMonitoring(sql, { deadlineMs: 15_000, email: (d) => sendNotificationDigest(d.email, d.name, d.items) }).catch((e) => ({ ok: false as const, note: String(e).slice(0, 200) }));
   if (!(await scanTablesAvailable(sql))) return json({ ok: true, advanced: 0, monitoring, note: "scan storage not migrated" });
   const deadline = Date.now() + 45_000;
   let advanced = 0;

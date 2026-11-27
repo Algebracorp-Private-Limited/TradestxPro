@@ -48,11 +48,39 @@ Results are measured in R:
 
 Plans tracked from the engine are rebuilt on the server by the equity engine; levels sent by the client are never trusted. Tracking them requires `ACTIONABLE_RECOMMENDATIONS`. Manual plans use your own levels and need only `RESEARCH`.
 
-## Price alerts
+## Alerts (migration 006 extends the 005 price alerts)
 
-The conditions are close above or below, high above, low below, and daily % change above or below. Each alert has an optional note, with markup stripped, and can repeat. Triggered alerts are highlighted in the Alerts tab until you view it.
+| Category | Instrument | Conditions |
+|---|---|---|
+| Price | `NSE:SYMBOL`, `NSEIDX:INDEX` | close above or below; high above; low below; daily % change above or below |
+| Technical | `NSE:SYMBOL`, `NSEIDX:INDEX` | RSI(n) above or below; close crosses above or below SMA(n) or EMA(n); volume above k× its 20-day average (the current bar is excluded from the average) |
+| Open interest | `FO:UNDERLYING` | Day-over-day % change in total OI across the underlying's F&O contracts (`fo_activity`). Describes OI only; nothing about who holds positions. |
+| Implied volatility | `FO:UNDERLYING` | ATM IV (%) of the nearest unexpired expiry, computed (Black-Scholes) from the latest bhavcopy chain. Evaluated once per session. |
+| Engine setup | `NSE:SYMBOL` | The setup engine's status is one of the chosen statuses and its score is at least the minimum (a rank, not a probability). Needs `RESEARCH`. |
 
-Limits: 200 active alerts and 100 open plans per user.
+The rules are in `lib/intelligence/monitoring/conditions.ts`:
+- Indicators are computed on the full history, so a signal matches the chart.
+- Crosses fire only on the crossing bar.
+- Every alert starts after the latest data that exists when it is created, so it never fires on old bars.
+- Repeat alerts stay active and record every trigger.
+
+Limits: 200 active alerts per user. Notes are stripped of markup. Without migration 006, only price alerts are accepted (other types return 503).
+
+## Notifications
+
+Alert triggers, plan events (entered, stop, target, time exit, expired, invalidated) and AI-watchlist transitions write `notifications` rows.
+
+- **In the app:** the header bell shows the unread count, and Monitor → **Notifications** lists them (mark one or all as read).
+- **By e-mail (opt-in):** "E-mail me" in Notifications settings, which is off by default. After each monitoring run, one plain-text digest per opted-in user is sent through the configured mail service (Resend: `RESEND_API_KEY`, `EMAIL_FROM`). Items are marked e-mailed only after a successful send, and a failure is retried on the next run.
+- **Push notifications:** not implemented.
+
+## AI watchlist
+
+Monitor → **AI watchlist** (`RESEARCH`) holds up to 100 symbols per user, each with a horizon.
+
+- **Evaluation:** each symbol is evaluated when added and again on every new session by the equity setup engine, with independent plan validation.
+- **Notification:** sent when a symbol *newly* reaches "enter if confirmed" or "wait for confirmation".
+- **Levels:** setup details pass through the presentation gate, so plan levels are withheld unless `ACTIONABLE_RECOMMENDATIONS` is on.
 
 ## Backtesting (`backtest/engine.ts`)
 
@@ -97,5 +125,6 @@ Statutory cost schedules start at IN-2024-10. For earlier dates the engine **omi
 | Endpoint | Flag |
 |---|---|
 | plans, backtest, performance | `RESEARCH` |
-| alerts | `MARKET_ANALYTICS` |
+| alerts (setup alerts need `RESEARCH`), notifications | `MARKET_ANALYTICS` |
+| AI watchlist | `RESEARCH` |
 | Tracking engine plans; showing engine plan levels in the list | `ACTIONABLE_RECOMMENDATIONS` |

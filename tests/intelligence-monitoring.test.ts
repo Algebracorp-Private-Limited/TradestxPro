@@ -155,7 +155,7 @@ test("monitoring store: plans, events, alerts, daily job, isolation, performance
     await assert.rejects(createPlan(sql, alice, { instrument: "NSE:NOPE", origin: "manual", plan: long }), (e: unknown) => e instanceof MonitorError && e.status === 404);
     const aid = await createAlert(sql, alice, { instrument: "NSE:ABC", condition: "close_above", threshold: 108, note: "<b>breakout</b>" });
     await createAlert(sql, bob, { instrument: "NSE:ABC", condition: "pct_change_below", threshold: -50 });
-    await assert.rejects(createAlert(sql, alice, { instrument: "NSE:ABC", condition: "rsi_above", threshold: 70 }), MonitorError);
+    await assert.rejects(createAlert(sql, alice, { instrument: "NSE:ABC", condition: "moon_phase_above", threshold: 70 }), MonitorError);
 
     // Nothing new yet.
     let r = await runMonitoring(sql);

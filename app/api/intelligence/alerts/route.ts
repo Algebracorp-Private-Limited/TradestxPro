@@ -1,16 +1,18 @@
 import { fail, json, userHandler } from "@/lib/api";
 import { intParam, monitorDb, requireFlag } from "@/lib/intelligence/http";
 import { createAlert, deleteAlert, listAlerts, markAlertsSeen, MonitorError } from "@/lib/intelligence/monitoring/store";
+import { CONDITIONS } from "@/lib/intelligence/monitoring/conditions";
+import { isEnabled } from "@/lib/flags";
 
 export const dynamic = "force-dynamic";
 
-/** Price alerts, evaluated on end-of-day bars after each daily load (in-app notifications). */
+/** Alerts (price, technical, OI, IV, engine setup), evaluated on end-of-day data after each daily load. */
 export const GET = userHandler(async ({ user }) => {
   const off = await requireFlag("MARKET_ANALYTICS");
   if (off) return off;
   const r = await monitorDb();
   if (r.error) return r.error;
-  return json({ ok: true, alerts: await listAlerts(r.sql, user.id), basis: "Evaluated on end-of-day bars after each daily data load; not real-time." });
+  return json({ ok: true, alerts: await listAlerts(r.sql, user.id), conditions: CONDITIONS.filter((c) => c.category !== "setup" || isEnabled("RESEARCH")), basis: "Evaluated on end-of-day data after each daily data load; not real-time." });
 });
 
 export const POST = userHandler(async ({ user, body }) => {
@@ -25,7 +27,7 @@ export const POST = userHandler(async ({ user, body }) => {
     return json({ ok: true });
   }
   try {
-    const id = await createAlert(r.sql, user.id, { instrument: String(b.instrument ?? "").toUpperCase(), condition: String(b.condition ?? ""), threshold: Number(b.threshold), note: typeof b.note === "string" ? b.note : null, repeat: b.repeat === true });
+    const id = await createAlert(r.sql, user.id, { instrument: String(b.instrument ?? "").toUpperCase(), condition: String(b.condition ?? ""), threshold: Number(b.threshold), note: typeof b.note === "string" ? b.note : null, repeat: b.repeat === true, params: b.params }, { research: isEnabled("RESEARCH") });
     return json({ ok: true, id });
   } catch (e) {
     if (e instanceof MonitorError) return fail(e.message, e.status);

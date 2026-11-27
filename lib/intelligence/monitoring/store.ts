@@ -6,15 +6,12 @@
 import type postgres from "postgres";
 import { advancePlan, initialState, validatePlan, type DayBar, type PlanLevels, type PlanState } from "./lifecycle.ts";
 import { tradeStats, calibration, type TradeResult } from "../backtest/stats.ts";
+import { activeAlerts, dispatchEmails, evaluateAlert, evaluateWatch, notify, watchItems, type Digest } from "./alerts.ts";
+import { evaluateSeries } from "./conditions.ts";
 
 type Sql = postgres.Sql;
-export class MonitorError extends Error {
-  readonly status: number;
-  constructor(message: string, status = 400) {
-    super(message);
-    this.status = status;
-  }
-}
+export { MonitorError } from "./errors.ts";
+import { MonitorError } from "./errors.ts";
 
 export async function monitoringAvailable(sql: Sql): Promise<boolean> {
   const [r] = await sql<{ t: string | null }[]>`SELECT to_regclass('public.trade_plans')::text AS t`;
@@ -85,86 +82,48 @@ export async function evaluatePlan(sql: Sql, r: PlanRow) {
     for (const e of events) await tx`INSERT INTO trade_plan_events (plan_id, d, kind, price, note) VALUES (${r.id}, ${e.d}, ${e.kind}, ${e.price}, ${e.note})`;
     await tx`UPDATE trade_plans SET status = ${state.status}, outcome = ${tx.json(state as never)}, evaluated_through = ${through}, updated_at = now() WHERE id = ${r.id} AND status IN ('WATCHING', 'ACTIVE')`;
   });
+  const label = r.instrument.replace(/^(NSE|NSEIDX):/, "");
+  for (const e of events) await notify(sql, Number(r.user_id), { kind: "plan", d: e.d, title: `${label} plan: ${e.kind.toLowerCase().replace("_", " ")}`, body: `${e.note}. Paper plan evaluated on end-of-day data.`, link: "/ai-intelligence/monitor?tab=plans" });
   return true;
 }
 
-// ---------------- Alerts ----------------
-export const ALERT_CONDITIONS = ["close_above", "close_below", "high_above", "low_below", "pct_change_above", "pct_change_below"] as const;
-export type AlertCondition = (typeof ALERT_CONDITIONS)[number];
+// ---------------- Alerts, notifications, AI watchlist (monitoring/alerts.ts) ----------------
+export { createAlert, listAlerts, deleteAlert, markAlertsSeen } from "./alerts.ts";
+export { CONDITION_IDS as ALERT_CONDITIONS } from "./conditions.ts";
 
-export async function createAlert(sql: Sql, userId: number, a: { instrument: string; condition: string; threshold: number; note?: string | null; repeat?: boolean }) {
-  if (!INSTRUMENT.test(a.instrument)) throw new MonitorError("instrument must look like NSE:SYMBOL or NSEIDX:INDEX");
-  if (!ALERT_CONDITIONS.includes(a.condition as AlertCondition)) throw new MonitorError("unknown alert condition");
-  if (!Number.isFinite(a.threshold) || (a.condition.startsWith("pct") ? Math.abs(a.threshold) > 50 : a.threshold <= 0)) throw new MonitorError("threshold out of range");
-  const note = typeof a.note === "string" ? a.note.replace(/[<>]/g, "").slice(0, 200) : null;
-  const [{ n }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM price_alerts WHERE user_id = ${userId} AND status = 'ACTIVE'`;
-  if (n >= 200) throw new MonitorError("You can have at most 200 active alerts.", 429);
-  const last = await lastBarDate(sql, a.instrument);
-  if (!last) throw new MonitorError("No price history for this instrument.", 404);
-  const [row] = await sql<{ id: number }[]>`INSERT INTO price_alerts (user_id, instrument, condition, threshold, note, repeat, last_evaluated) VALUES (${userId}, ${a.instrument}, ${a.condition}, ${a.threshold}, ${note}, ${Boolean(a.repeat)}, ${last}) RETURNING id`;
-  return Number(row.id);
+/** Evaluates a price condition on one bar (kept for callers of the 4G API). */
+export function alertHit(condition: string, threshold: number, bar: DayBar, prevClose: number | null): number | null {
+  const prev = { d: "0000-00-00", o: prevClose ?? bar.o, h: prevClose ?? bar.h, l: prevClose ?? bar.l, c: prevClose ?? NaN, v: 0 };
+  if (prevClose === null && condition.startsWith("pct")) return null;
+  const hits = evaluateSeries(condition, threshold, {}, [prev, { ...bar, v: 0 }], "0000-00-00");
+  return hits[0]?.value ?? null;
 }
 
-export async function listAlerts(sql: Sql, userId: number) {
-  const rows = await sql<{ id: number; instrument: string; condition: string; threshold: number; note: string | null; status: string; repeat: boolean; last_evaluated: Date | null; triggered_at: Date | null; trigger_d: Date | null; trigger_value: number | null; seen: boolean }[]>`
-    SELECT id, instrument, condition, threshold, note, status, repeat, last_evaluated, triggered_at, trigger_d, trigger_value, seen FROM price_alerts WHERE user_id = ${userId} ORDER BY created_at DESC LIMIT 300`;
-  return rows.map((r) => ({ id: Number(r.id), instrument: r.instrument, condition: r.condition, threshold: r.threshold, note: r.note, status: r.status, repeat: r.repeat, lastEvaluated: r.last_evaluated ? iso(r.last_evaluated) : null, triggeredOn: r.trigger_d ? iso(r.trigger_d) : null, triggerValue: r.trigger_value, unseen: r.trigger_d !== null && !r.seen }));
-}
-
-export async function deleteAlert(sql: Sql, userId: number, id: number) {
-  return (await sql`DELETE FROM price_alerts WHERE id = ${id} AND user_id = ${userId} RETURNING id`).length > 0;
-}
-export async function markAlertsSeen(sql: Sql, userId: number) {
-  await sql`UPDATE price_alerts SET seen = true WHERE user_id = ${userId} AND trigger_d IS NOT NULL AND seen = false`;
-}
-
-/** Evaluates a condition on one bar (with the previous close for % change). Returns the trigger value or null. */
-export function alertHit(condition: AlertCondition, threshold: number, bar: DayBar, prevClose: number | null): number | null {
-  switch (condition) {
-    case "close_above": return bar.c > threshold ? bar.c : null;
-    case "close_below": return bar.c < threshold ? bar.c : null;
-    case "high_above": return bar.h > threshold ? bar.h : null;
-    case "low_below": return bar.l < threshold ? bar.l : null;
-    case "pct_change_above": { if (!prevClose) return null; const p = ((bar.c - prevClose) / prevClose) * 100; return p > threshold ? Math.round(p * 100) / 100 : null; }
-    case "pct_change_below": { if (!prevClose) return null; const p = ((bar.c - prevClose) / prevClose) * 100; return p < threshold ? Math.round(p * 100) / 100 : null; }
-  }
-}
-
-type AlertRow = { id: number; instrument: string; condition: AlertCondition; threshold: number; repeat: boolean; last_evaluated: Date | null; created_at: Date };
-async function evaluateAlert(sql: Sql, a: AlertRow) {
-  const after = iso(a.last_evaluated ?? a.created_at);
-  const [prev] = await sql<{ c: number }[]>`SELECT c FROM candles WHERE series = ${a.instrument} AND d <= ${after} ORDER BY d DESC LIMIT 1`;
-  const bars = await barsAfter(sql, a.instrument, after, 60);
-  if (!bars.length) return false;
-  let prevClose = prev ? Number(prev.c) : null;
-  for (const b of bars) {
-    const v = alertHit(a.condition, a.threshold, b, prevClose);
-    prevClose = b.c;
-    if (v !== null) {
-      await sql`UPDATE price_alerts SET status = ${a.repeat ? "ACTIVE" : "TRIGGERED"}, triggered_at = now(), trigger_d = ${b.d}, trigger_value = ${v}, seen = false, last_evaluated = ${b.d} WHERE id = ${a.id}`;
-      if (!a.repeat) return true;
-    }
-  }
-  await sql`UPDATE price_alerts SET last_evaluated = ${bars.at(-1)!.d} WHERE id = ${a.id} AND status = 'ACTIVE'`;
-  return true;
-}
-
-/** Background job (daily after the EOD load): advances open plans and active alerts within a time budget. */
-export async function runMonitoring(sql: Sql, opts: { deadlineMs?: number; limit?: number } = {}) {
+/**
+ * Background job (daily after the EOD load): advances open plans, evaluates active alerts and the AI
+ * watchlist within a time budget, then sends e-mail digests to opted-in users when `email` is given.
+ */
+export async function runMonitoring(sql: Sql, opts: { deadlineMs?: number; limit?: number; email?: (d: Digest) => Promise<void> } = {}) {
   if (!(await monitoringAvailable(sql))) return { ok: false as const, note: "monitoring storage not migrated (005-trade-monitoring)" };
   const deadline = Date.now() + (opts.deadlineMs ?? 40_000);
-  let plans = 0, alerts = 0;
+  let plans = 0, alerts = 0, watched = 0;
   const open = await sql<PlanRow[]>`SELECT * FROM trade_plans WHERE status IN ('WATCHING', 'ACTIVE') ORDER BY evaluated_through NULLS FIRST LIMIT ${opts.limit ?? 2000}`;
   for (const r of open) {
     if (Date.now() > deadline) break;
     if (await evaluatePlan(sql, r)) plans++;
   }
-  const act = await sql<AlertRow[]>`SELECT id, instrument, condition, threshold, repeat, last_evaluated, created_at FROM price_alerts WHERE status = 'ACTIVE' ORDER BY last_evaluated NULLS FIRST LIMIT ${opts.limit ?? 5000}`;
+  const act = await activeAlerts(sql, opts.limit ?? 5000);
   for (const a of act) {
     if (Date.now() > deadline) break;
     if (await evaluateAlert(sql, a)) alerts++;
   }
-  return { ok: true as const, plansAdvanced: plans, alertsEvaluated: alerts, openPlans: open.length, activeAlerts: act.length };
+  const w = await watchItems(sql, opts.limit ?? 5000);
+  for (const it of w) {
+    if (Date.now() > deadline) break;
+    if (await evaluateWatch(sql, it)) watched++;
+  }
+  const emails = opts.email ? await dispatchEmails(sql, opts.email) : null;
+  return { ok: true as const, plansAdvanced: plans, alertsEvaluated: alerts, watchEvaluated: watched, openPlans: open.length, activeAlerts: act.length, watchItems: w.length, emails };
 }
 
 /** Performance of the user's closed paper plans (net R), with calibration by engine score. */
