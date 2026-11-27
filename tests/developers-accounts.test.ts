@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { freshDb, makeUser, noDbReason, TEST_DB_URL } from "./helpers/test-db.ts";
+import { freshDb, makeUser, noDbReason, scratchDb } from "./helpers/test-db.ts";
 import {
   DevAccessError, authenticateKey, createOrganization, createProject, generateKey, grantEntitlement, issueKey, listKeys,
   listOrganizations, listProjects, parseKey, revokeKey, rotateKey, usage, accountsAvailable, addMember,
@@ -32,7 +32,7 @@ test("feature flags default off (except low-risk analytics) and live execution c
 });
 
 test("developer accounts on Postgres: isolation, keys, entitlements, rate limits, rotation", { skip: noDbReason }, async () => {
-  const sql = await freshDb();
+  const sql = await freshDb("devaccounts");
   try {
     assert.equal(await accountsAvailable(sql), true);
     const alice = await makeUser(sql, "alice@example.test"), bob = await makeUser(sql, "bob@example.test"), admin = await makeUser(sql, "admin@example.test");
@@ -89,13 +89,11 @@ test("developer accounts on Postgres: isolation, keys, entitlements, rate limits
 });
 
 test("migration runner: dry run by default, applies once, refuses edited migrations", { skip: noDbReason }, async () => {
-  const sql = await freshDb();
-  await sql.unsafe("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
-  const { SCHEMA_SQL } = await import("../lib/schema.ts");
-  await sql.unsafe(SCHEMA_SQL);
-  const run = (...a: string[]) => execFileSync(process.execPath, ["--experimental-strip-types", "--no-warnings", join(import.meta.dirname, "../scripts/migrate.ts"), "--database-url", TEST_DB_URL, ...a], { encoding: "utf8" });
+  const { sql, url } = await scratchDb("migrations", { migrate: false });
+  const run = (...a: string[]) => execFileSync(process.execPath, ["--experimental-strip-types", "--no-warnings", join(import.meta.dirname, "../scripts/migrate.ts"), "--database-url", url, ...a], { encoding: "utf8" });
   try {
     assert.match(run(), /\+ 001-developer-accounts .*pending/);
+    assert.match(run(), /\+ 002-intelligence-core .*pending/);
     assert.equal(await accountsAvailable(sql), false, "dry run changes nothing");
     assert.match(run("--apply"), /✔ 001-developer-accounts applied/);
     assert.match(run("--apply"), /= 001-developer-accounts \(applied\)/);

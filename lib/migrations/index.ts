@@ -7,10 +7,11 @@
  * "not configured" when they are missing. Migrations are append-only: never edit an applied one.
  */
 import { DEVELOPER_ACCOUNTS } from "./001-developer-accounts.ts";
+import { INTELLIGENCE_CORE } from "./002-intelligence-core.ts";
 
 export type Migration = { id: string; description: string; sql: string };
 
-export const MIGRATIONS: Migration[] = [DEVELOPER_ACCOUNTS];
+export const MIGRATIONS: Migration[] = [DEVELOPER_ACCOUNTS, INTELLIGENCE_CORE];
 
 /** Bookkeeping table for applied migrations. */
 export const MIGRATIONS_TABLE_SQL = `
