@@ -73,7 +73,10 @@ export function ContractPanel({ u, expiry, strike, right, onClose }: { u: string
       <div ref={ref} tabIndex={-1} role="dialog" aria-modal="true" aria-label={`Contract analysis ${u} ${strike} ${right}`} className="h-full w-full max-w-3xl overflow-y-auto border-l border-line bg-panel p-4 outline-none" onClick={(e) => e.stopPropagation()}>
         <div className="mb-3 flex items-center justify-between gap-2">
           <h2 className="font-semibold">{u} {expiry ?? ""} {strike} {right} <span className="text-xs font-normal text-muted">contract analysis</span></h2>
-          <button onClick={onClose} className="rounded-md border border-line px-2 py-1 text-xs" aria-label="Close">Close</button>
+          <span className="flex items-center gap-2">
+            {expiry && <a href={`/ai-intelligence/workspace?${new URLSearchParams({ u, expiry, strike: String(strike), right })}`} className="rounded-md border border-line px-2 py-1 text-xs hover:bg-white/5">Open charts</a>}
+            <button onClick={onClose} className="rounded-md border border-line px-2 py-1 text-xs" aria-label="Close">Close</button>
+          </span>
         </div>
         {err && <Notice tone="error">{err}</Notice>}
         {!a && !err && <Loading label="Analysing contract…" />}
