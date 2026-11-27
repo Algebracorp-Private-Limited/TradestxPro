@@ -7,7 +7,7 @@
 import * as ta from "../../ta/indicators.ts";
 import { usableForEndOfDay, usableForIntraday } from "../core/freshness.ts";
 import { isInsufficient, type Evidence, type Provenance, type SetupStatus } from "../core/types.ts";
-import { estimateCosts, type CostAssumptions, type CostEstimate } from "../risk/costs.ts";
+import { estimateCosts, type CostAssumptions, type CostEstimate, hasScheduleFor } from "../risk/costs.ts";
 import { sizePosition, type RiskConstraints, type Sizing } from "../risk/sizing.ts";
 import { score, type Score } from "../scoring.ts";
 import { detectRegime, type Regime } from "../technical/regime.ts";
@@ -140,7 +140,8 @@ export function analyzeEquity(i: EquityInput): EquitySetup {
   const rr = reward / risk;
   const sizing = sizePosition(entry, stop, i.constraints);
   const tradeDate = (i.provenance.exchangeTime ?? i.today ?? new Date().toISOString()).slice(0, 10);
-  const costs = sizing.quantity > 0 ? estimateCosts([{ segment: "equity-delivery", side: "BUY", price: entry, quantity: sizing.quantity }, { segment: "equity-delivery", side: "SELL", price: t1, quantity: sizing.quantity }], { ...(i.costs ?? {}), tradeDate, today: i.today }) : null;
+  // No statutory schedule before the first recorded one: costs are omitted, not estimated with other rates.
+  const costs = sizing.quantity > 0 && hasScheduleFor(tradeDate) ? estimateCosts([{ segment: "equity-delivery", side: "BUY", price: entry, quantity: sizing.quantity }, { segment: "equity-delivery", side: "SELL", price: t1, quantity: sizing.quantity }], { ...(i.costs ?? {}), tradeDate, today: i.today }) : null;
 
   if (!liquidityOk) reasons.push(`median daily traded value ${tv === null ? "unknown" : `₹${(tv / 1e7).toFixed(2)} crore`} is below your minimum`);
   if (rr < (i.constraints.minRewardRisk ?? 1.5)) reasons.push(`reward-to-risk to Target 1 is ${r2(rr)}, below your minimum of ${i.constraints.minRewardRisk ?? 1.5}`);
@@ -177,6 +178,6 @@ export function analyzeEquity(i: EquityInput): EquitySetup {
     riskPerShare: r2(risk), rewardPerShare: r2(reward), rewardRisk: r2(rr), sizing, costs,
     liquidity: { medianTradedValue: tv, ok: liquidityOk }, volatility: { atrPct: reg.metrics.atrPct, realisedVol: reg.metrics.realisedVol },
     regime: reg, score: sc, evidenceQuality: reg.confidence === "high" && i.provenance.freshness === "eod" ? "medium" : reg.confidence === "low" ? "low" : "medium",
-    evidence: ev, reasonsToAvoid: reasons, missing: ["corporate-action adjustments", "event calendar"],
+    evidence: ev, reasonsToAvoid: reasons, missing: ["corporate-action adjustments", "event calendar", ...(sizing.quantity > 0 && !hasScheduleFor(tradeDate) ? [`cost schedule for ${tradeDate}`] : [])],
   };
 }

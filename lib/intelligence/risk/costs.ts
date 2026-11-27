@@ -75,6 +75,11 @@ export type CostEstimate = {
   assumptions: string[];
 };
 
+/** True when a statutory cost schedule covers the trade date (older dates are not estimated). */
+export function hasScheduleFor(tradeDate: string, schedules: CostSchedule[] = activeSchedules()): boolean {
+  return schedules.some((x) => x.effectiveFrom <= tradeDate);
+}
+
 export function scheduleFor(tradeDate: string, schedules: CostSchedule[] = activeSchedules()): CostSchedule {
   const s = [...schedules].filter((x) => x.effectiveFrom <= tradeDate).sort((a, b) => (a.effectiveFrom < b.effectiveFrom ? 1 : -1))[0];
   if (!s) throw new Error(`no cost schedule effective on ${tradeDate}`);

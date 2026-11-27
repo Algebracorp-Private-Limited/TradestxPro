@@ -22,6 +22,7 @@ export const LIVE_LINKS: { href: string; label: string; icon: string; sub?: bool
   { href: "/ai-intelligence/option-chain", label: "Chain Intelligence", icon: "⛓", sub: true },
   { href: "/ai-intelligence/strategy", label: "Strategy AI", icon: "Σ", sub: true },
   { href: "/ai-intelligence/tradevision", label: "TradeVision", icon: "◭", sub: true },
+  { href: "/ai-intelligence/monitor", label: "Monitor & backtest", icon: "◔", sub: true },
   { href: "/brokers", label: "Brokers", icon: "⛓" },
 ];
 

@@ -53,7 +53,10 @@ test("developer accounts on Postgres: isolation, keys, entitlements, rate limits
     const key = await issueKey(sql, alice, proj.id, "prod", 3);
     const listed = await listKeys(sql, alice, proj.id);
     assert.equal(listed.length, 1);
-    assert.ok(!JSON.stringify(listed).includes(key.plaintext.split("_")[2]), "secret never listed");
+    // The secret is everything after "xck_<12-char prefix>_" (base64url, so it may itself contain "_").
+    const secret = key.plaintext.slice("xck_".length + 13);
+    assert.equal(secret.length, 43);
+    assert.ok(!JSON.stringify(listed).includes(secret), "secret never listed");
     const [stored] = await sql<{ key_hash: string }[]>`SELECT key_hash FROM dev_api_keys WHERE id = ${key.id}`;
     assert.notEqual(stored.key_hash, key.plaintext, "only the hash is stored");
 

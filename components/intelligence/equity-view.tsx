@@ -14,6 +14,13 @@ export function EquityAI() {
   const [res, setRes] = useState<{ setup: SetupView; provenance: Prov; analysisId: number | null } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [track, setTrack] = useState<string | null>(null);
+  const trackPlan = () => {
+    if (!res) return;
+    setTrack("Saving…");
+    fetch("/api/intelligence/plans", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fromEngine: true, symbol: res.setup.symbol, horizon }) })
+      .then(async (r) => { const j = await r.json().catch(() => ({})); setTrack(r.ok ? "Tracking: see Monitor & backtest → Plans." : j.error ?? "Could not track this plan."); }, () => setTrack("Network error"));
+  };
   const analyze = async (sym: string, fresh = false) => {
     setBusy(true);
     setErr(null);
@@ -48,6 +55,12 @@ export function EquityAI() {
       {res && !busy && (
         <Card title={<span>{res.setup.name} <span className="font-mono text-xs text-muted">NSE:{res.setup.symbol}{res.setup.sector ? ` · ${res.setup.sector}` : ""}</span></span>} right={res.analysisId ? <span className="text-[10px] text-muted">analysis #{res.analysisId} (stored, immutable)</span> : null}>
           <SetupDetail s={res.setup} provenance={res.provenance} />
+          {res.setup.entry && res.setup.stop && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+              <button onClick={trackPlan} className="rounded-md border border-line px-3 py-1.5 hover:bg-white/5">Track this plan (paper)</button>
+              {track && <span className="text-muted">{track} <a href="/ai-intelligence/monitor?tab=plans" className="text-accent hover:underline">Open monitor</a></span>}
+            </div>
+          )}
         </Card>
       )}
       <p className="text-[11px] leading-5 text-muted">Conditional setups from end-of-day data. A setup is not a prediction or a recommendation: act only after the stated confirmation, and only after confirming prices with your broker. Stops are not guaranteed fills; gaps can exceed the planned risk.</p>
