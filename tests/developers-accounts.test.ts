@@ -67,11 +67,13 @@ test("developer accounts on Postgres: isolation, keys, entitlements, rate limits
     assert.equal((await authenticateKey(sql, key.plaintext, "https://evil.example") as { status: number }).status, 403, "origin allow-list");
 
     // Rate limit 3/min: the 4th request in the same minute is rejected and counted.
-    const t = new Date("2026-11-27T10:00:10Z");
+    // A minute boundary one hour ahead, so the entitlement just granted is active (no fixed calendar dates).
+    const minute = new Date(Math.floor(Date.now() / 60_000) * 60_000 + 3_600_000);
+    const t = new Date(minute.getTime() + 10_000);
     for (let i = 0; i < 3; i++) assert.equal((await authenticateKey(sql, key.plaintext, "https://alice.example", t)).ok, true);
     assert.equal((await authenticateKey(sql, key.plaintext, null, t) as { status: number }).status, 429);
-    assert.equal((await authenticateKey(sql, key.plaintext, null, new Date("2026-11-27T10:01:01Z"))).ok, true, "next minute");
-    const [u] = await sql<{ requests: number; rejected: number }[]>`SELECT requests, rejected FROM dev_api_usage WHERE key_id = ${key.id} AND minute = '2026-11-27T10:00:00Z'`;
+    assert.equal((await authenticateKey(sql, key.plaintext, null, new Date(minute.getTime() + 61_000))).ok, true, "next minute");
+    const [u] = await sql<{ requests: number; rejected: number }[]>`SELECT requests, rejected FROM dev_api_usage WHERE key_id = ${key.id} AND minute = ${minute}`;
     assert.deepEqual([u.requests, u.rejected], [3, 1]);
     assert.ok(Array.isArray(await usage(sql, alice, proj.id)));
 
